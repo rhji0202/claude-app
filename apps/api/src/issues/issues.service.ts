@@ -14,6 +14,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
 import { AgentService } from "../agent/agent.service";
 import { GithubService } from "../github/github.service";
+import { ProjectsService } from "../projects/projects.service";
 import type {
   IssueTask as IssueDto,
   IssueSource,
@@ -43,6 +44,7 @@ export class IssuesService {
     private readonly crypto: CryptoService,
     private readonly agent: AgentService,
     private readonly github: GithubService,
+    private readonly projects: ProjectsService,
   ) {}
 
   private toDto(i: PrismaIssue): IssueDto {
@@ -68,16 +70,24 @@ export class IssuesService {
     };
   }
 
-  async list(projectId?: string): Promise<IssueDto[]> {
+  async list(userId: string, projectId?: string): Promise<IssueDto[]> {
+    if (projectId) {
+      await this.projects.assertAccess(projectId, userId);
+    }
+    const ids = projectId
+      ? [projectId]
+      : await this.projects.accessibleProjectIds(userId);
     const rows = await this.prisma.issueTask.findMany({
-      where: projectId ? { projectId } : undefined,
+      where: { projectId: { in: ids } },
       orderBy: { createdAt: "desc" },
     });
     return rows.map((r) => this.toDto(r));
   }
 
-  async get(id: string): Promise<IssueDto> {
-    return this.toDto(await this.getRaw(id));
+  async get(id: string, userId: string): Promise<IssueDto> {
+    const task = await this.getRaw(id);
+    await this.projects.assertAccess(task.projectId, userId);
+    return this.toDto(task);
   }
 
   async getRaw(id: string): Promise<PrismaIssue> {
@@ -86,7 +96,8 @@ export class IssuesService {
     return row;
   }
 
-  async create(dto: CreateIssueTaskDto): Promise<IssueDto> {
+  async create(dto: CreateIssueTaskDto, userId: string): Promise<IssueDto> {
+    await this.projects.assertCanEdit(dto.projectId, userId);
     const project = await this.prisma.project.findUnique({ where: { id: dto.projectId } });
     if (!project) throw new BadRequestException("프로젝트를 찾을 수 없습니다.");
     const row = await this.prisma.issueTask.create({
@@ -131,8 +142,9 @@ export class IssuesService {
     return this.toDto(row);
   }
 
-  async update(id: string, dto: UpdateIssueTaskDto): Promise<IssueDto> {
-    await this.getRaw(id);
+  async update(id: string, dto: UpdateIssueTaskDto, userId: string): Promise<IssueDto> {
+    const task = await this.getRaw(id);
+    await this.projects.assertCanEdit(task.projectId, userId);
     const row = await this.prisma.issueTask.update({
       where: { id },
       data: {
@@ -145,8 +157,9 @@ export class IssuesService {
     return this.toDto(row);
   }
 
-  async remove(id: string): Promise<void> {
-    await this.getRaw(id);
+  async remove(id: string, userId: string): Promise<void> {
+    const task = await this.getRaw(id);
+    await this.projects.assertCanEdit(task.projectId, userId);
     await this.prisma.issueTask.delete({ where: { id } });
   }
 
@@ -160,8 +173,10 @@ export class IssuesService {
   /** 저장소의 이슈를 실시간 조회 (프로젝트 토큰 사용) */
   async listGithubIssues(
     projectId: string,
+    userId: string,
     state: "open" | "closed" | "all" = "open",
   ) {
+    await this.projects.assertAccess(projectId, userId);
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new BadRequestException("프로젝트를 찾을 수 없습니다.");
     if (!project.gitRepo)
@@ -170,7 +185,12 @@ export class IssuesService {
   }
 
   /** 선택한 GitHub 이슈들을 큐로 가져온다 (중복 제외) */
-  async importIssues(projectId: string, numbers: number[]): Promise<IssueDto[]> {
+  async importIssues(
+    projectId: string,
+    numbers: number[],
+    userId: string,
+  ): Promise<IssueDto[]> {
+    await this.projects.assertCanEdit(projectId, userId);
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new BadRequestException("프로젝트를 찾을 수 없습니다.");
     if (!project.gitRepo)
@@ -250,8 +270,9 @@ export class IssuesService {
   }
 
   /** 이슈 작업을 에이전트로 실행한다. (백그라운드 처리, 즉시 running 상태 반환) */
-  async startRun(id: string): Promise<IssueDto> {
+  async startRun(id: string, userId: string): Promise<IssueDto> {
     const task = await this.getRaw(id);
+    await this.projects.assertCanEdit(task.projectId, userId);
     const project = await this.prisma.project.findUnique({
       where: { id: task.projectId },
     });
@@ -275,7 +296,7 @@ export class IssuesService {
         data: { status: IssueStatus.ERROR, error: String(err) },
       });
     });
-    return this.get(id);
+    return this.get(id, userId);
   }
 
   private async executeRun(task: PrismaIssue, project: Project): Promise<void> {
@@ -299,8 +320,9 @@ export class IssuesService {
   }
 
   /** 실행 결과를 GitHub 이슈에 코멘트로 게시 (외부 쓰기) */
-  async commentResult(id: string): Promise<IssueDto> {
+  async commentResult(id: string, userId: string): Promise<IssueDto> {
     const task = await this.getRaw(id);
+    await this.projects.assertCanEdit(task.projectId, userId);
     const project = await this.prisma.project.findUnique({
       where: { id: task.projectId },
     });

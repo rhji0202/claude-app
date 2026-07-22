@@ -57,11 +57,32 @@ pnpm dev:web    # Next.js
 - [x] **1. 기반**: 모노레포, NestJS 스켈레톤, Prisma 스키마, 공유 타입, 암호화/설정 모듈
 - [x] **2. 핵심 CRUD**: projects/issues/cron/skills/mcp 모듈, 프로젝트별 git·API키(암호화), 크론식 검증, 수동 이슈 등록
 - [x] **3. 에이전트·크론·큐**: 프로젝트별 키 주입 실행(SDK env), 동적 크론(SchedulerRegistry, 부팅 복원), 동시성 큐(p-limit), 프로젝트별 GitHub 연동(가져오기·실행·코멘트)
-- [ ] **4. 인증·공유**: JWT 인증, 팀 공유, 공유 링크(테스터 이슈 등록)
+- [x] **4. 인증·공유**: JWT 인증(전역 가드+@Public), 프로젝트 소유권·팀 공유(viewer/editor), 공유 링크(read/issue_report — 테스터 로그인 없이 이슈 등록)
 - [ ] **5. 프론트 연동**: Next.js를 NestJS API 소비로 전환
 
 > 현재 `apps/web`에는 마이그레이션 이전의 Next.js 풀스택 코드(API 라우트 포함)가
 > 그대로 남아 있으며, 5단계에서 NestJS API 소비로 전환하면서 정리됩니다.
+
+## 인증 · 공유 API
+
+```
+POST /api/auth/register           회원가입 → { accessToken, user }
+POST /api/auth/login              로그인
+GET  /api/auth/me                 (Bearer) 내 정보
+# 이하 Bearer 토큰 필요
+POST   /api/projects/:id/shares          팀원 공유 { email, role: viewer|editor } (소유자)
+GET    /api/projects/:id/shares
+DELETE /api/projects/:id/shares/:userId
+POST   /api/projects/:id/share-links     공유 링크 발급 { scope: read|issue_report }
+GET    /api/projects/:id/share-links
+DELETE /api/share-links/:linkId
+# 공개(비로그인) — 공유 링크 토큰으로 접근
+GET  /api/public/share/:token            읽기 전용 프로젝트 뷰(시크릿 제외)
+POST /api/public/share/:token/issues     테스터 수동 이슈 등록 (scope=issue_report)
+```
+
+모든 리소스 라우트는 전역 JWT 가드로 보호되며, 프로젝트 접근은 소유자 또는
+공유받은 사용자만 가능합니다(viewer는 읽기, editor는 편집, owner는 삭제·공유 관리).
 
 ## 보안 메모
 

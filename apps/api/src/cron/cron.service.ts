@@ -7,6 +7,7 @@ import { CronJob as PrismaCronJob, CronStatus } from "@prisma/client";
 import { CronTime } from "cron";
 import { PrismaService } from "../prisma/prisma.service";
 import { CronRegistryService } from "./cron-registry.service";
+import { ProjectsService } from "../projects/projects.service";
 import type { CronJob as CronDto, CronStatus as CronStatusDto } from "@claude-app/shared";
 import { CreateCronJobDto, UpdateCronJobDto } from "./cron.dto";
 
@@ -15,6 +16,7 @@ export class CronService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly registry: CronRegistryService,
+    private readonly projects: ProjectsService,
   ) {}
 
   /** 크론식 유효성 검증 (cron 패키지 사용). 잘못되면 400. */
@@ -51,13 +53,19 @@ export class CronService {
     };
   }
 
-  async list(): Promise<CronDto[]> {
-    const rows = await this.prisma.cronJob.findMany({ orderBy: { createdAt: "desc" } });
+  async list(userId: string): Promise<CronDto[]> {
+    const ids = await this.projects.accessibleProjectIds(userId);
+    const rows = await this.prisma.cronJob.findMany({
+      where: { projectId: { in: ids } },
+      orderBy: { createdAt: "desc" },
+    });
     return rows.map((r) => this.toDto(r));
   }
 
-  async get(id: string): Promise<CronDto> {
-    return this.toDto(await this.getRaw(id));
+  async get(id: string, userId: string): Promise<CronDto> {
+    const row = await this.getRaw(id);
+    await this.projects.assertAccess(row.projectId, userId);
+    return this.toDto(row);
   }
 
   async getRaw(id: string): Promise<PrismaCronJob> {
@@ -66,8 +74,9 @@ export class CronService {
     return row;
   }
 
-  async create(dto: CreateCronJobDto): Promise<CronDto> {
+  async create(dto: CreateCronJobDto, userId: string): Promise<CronDto> {
     CronService.validateSchedule(dto.schedule);
+    await this.projects.assertCanEdit(dto.projectId, userId);
     const project = await this.prisma.project.findUnique({ where: { id: dto.projectId } });
     if (!project) throw new BadRequestException("프로젝트를 찾을 수 없습니다.");
 
@@ -84,8 +93,9 @@ export class CronService {
     return this.toDto(row);
   }
 
-  async update(id: string, dto: UpdateCronJobDto): Promise<CronDto> {
-    await this.getRaw(id);
+  async update(id: string, dto: UpdateCronJobDto, userId: string): Promise<CronDto> {
+    const existing = await this.getRaw(id);
+    await this.projects.assertCanEdit(existing.projectId, userId);
     if (dto.schedule) CronService.validateSchedule(dto.schedule);
     const row = await this.prisma.cronJob.update({
       where: { id },
@@ -100,16 +110,18 @@ export class CronService {
     return this.toDto(row);
   }
 
-  async remove(id: string): Promise<void> {
-    await this.getRaw(id);
+  async remove(id: string, userId: string): Promise<void> {
+    const existing = await this.getRaw(id);
+    await this.projects.assertCanEdit(existing.projectId, userId);
     this.registry.remove(id);
     await this.prisma.cronJob.delete({ where: { id } });
   }
 
   /** 즉시 실행 후 갱신된 작업 반환 */
-  async runNow(id: string): Promise<CronDto> {
-    await this.getRaw(id);
+  async runNow(id: string, userId: string): Promise<CronDto> {
+    const existing = await this.getRaw(id);
+    await this.projects.assertCanEdit(existing.projectId, userId);
     await this.registry.fire(id);
-    return this.get(id);
+    return this.get(id, userId);
   }
 }

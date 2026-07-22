@@ -10,54 +10,66 @@ import {
 } from "@nestjs/common";
 import { IssuesService } from "./issues.service";
 import { CreateIssueTaskDto, UpdateIssueTaskDto } from "./issues.dto";
+import { CurrentUser, type AuthUser } from "../auth/current-user.decorator";
 
 @Controller("issues")
 export class IssuesController {
   constructor(private readonly issues: IssuesService) {}
 
-  @Get() list(@Query("projectId") projectId?: string) {
-    return this.issues.list(projectId);
+  @Get() list(
+    @CurrentUser() user: AuthUser,
+    @Query("projectId") projectId?: string,
+  ) {
+    return this.issues.list(user.userId, projectId);
   }
-  @Post() create(@Body() dto: CreateIssueTaskDto) {
-    return this.issues.create(dto);
+
+  @Post() create(@Body() dto: CreateIssueTaskDto, @CurrentUser() user: AuthUser) {
+    return this.issues.create(dto, user.userId);
   }
-  @Get(":id") get(@Param("id") id: string) {
-    return this.issues.get(id);
+
+  @Get(":id") get(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.issues.get(id, user.userId);
   }
-  @Patch(":id") update(@Param("id") id: string, @Body() dto: UpdateIssueTaskDto) {
-    return this.issues.update(id, dto);
+
+  @Patch(":id") update(
+    @Param("id") id: string,
+    @Body() dto: UpdateIssueTaskDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.issues.update(id, dto, user.userId);
   }
-  @Delete(":id") async remove(@Param("id") id: string) {
-    await this.issues.remove(id);
+
+  @Delete(":id") async remove(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    await this.issues.remove(id, user.userId);
     return { ok: true };
   }
 
   // ---- GitHub 연동 / 실행 ----
 
-  /** 저장소 이슈 실시간 조회: GET /api/issues/github/:projectId?state=open */
   @Get("github/:projectId")
   githubIssues(
     @Param("projectId") projectId: string,
+    @CurrentUser() user: AuthUser,
     @Query("state") state?: "open" | "closed" | "all",
   ) {
-    return this.issues.listGithubIssues(projectId, state ?? "open");
+    return this.issues.listGithubIssues(projectId, user.userId, state ?? "open");
   }
 
-  /** 선택 이슈 가져오기: POST /api/issues/import { projectId, numbers } */
   @Post("import")
-  import(@Body() body: { projectId: string; numbers: number[] }) {
-    return this.issues.importIssues(body.projectId, body.numbers ?? []);
+  import(
+    @Body() body: { projectId: string; numbers: number[] },
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.issues.importIssues(body.projectId, body.numbers ?? [], user.userId);
   }
 
-  /** 에이전트 실행: POST /api/issues/:id/run */
   @Post(":id/run")
-  run(@Param("id") id: string) {
-    return this.issues.startRun(id);
+  run(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.issues.startRun(id, user.userId);
   }
 
-  /** 결과 코멘트 게시: POST /api/issues/:id/comment */
   @Post(":id/comment")
-  comment(@Param("id") id: string) {
-    return this.issues.commentResult(id);
+  comment(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.issues.commentResult(id, user.userId);
   }
 }

@@ -11,6 +11,7 @@ import { ProjectsService } from "./projects.service";
 import { AgentService } from "../agent/agent.service";
 import { CreateProjectDto } from "./dto/create-project.dto";
 import { UpdateProjectDto } from "./dto/update-project.dto";
+import { CurrentUser, type AuthUser } from "../auth/current-user.decorator";
 
 @Controller("projects")
 export class ProjectsController {
@@ -20,48 +21,64 @@ export class ProjectsController {
   ) {}
 
   @Get()
-  list() {
-    return this.projects.list();
+  list(@CurrentUser() user: AuthUser) {
+    return this.projects.list(user.userId);
   }
 
   @Post()
-  create(@Body() dto: CreateProjectDto) {
-    return this.projects.create(dto);
+  create(@Body() dto: CreateProjectDto, @CurrentUser() user: AuthUser) {
+    return this.projects.create(dto, user.userId);
   }
 
   @Get(":id")
-  get(@Param("id") id: string) {
-    return this.projects.get(id);
+  get(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.projects.get(id, user.userId);
   }
 
   @Patch(":id")
-  update(@Param("id") id: string, @Body() dto: UpdateProjectDto) {
-    return this.projects.update(id, dto);
+  update(
+    @Param("id") id: string,
+    @Body() dto: UpdateProjectDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.projects.update(id, dto, user.userId);
   }
 
   @Delete(":id")
-  async remove(@Param("id") id: string) {
-    await this.projects.remove(id);
+  async remove(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    await this.projects.remove(id, user.userId);
     return { ok: true };
   }
 
   // ---- 스킬 / MCP 연결 ----
 
   @Post(":id/skills")
-  async attachSkill(@Param("id") id: string, @Body() body: { skillId: string }) {
-    await this.projects.attachSkill(id, body.skillId);
+  async attachSkill(
+    @Param("id") id: string,
+    @Body() body: { skillId: string },
+    @CurrentUser() user: AuthUser,
+  ) {
+    await this.projects.attachSkill(id, body.skillId, user.userId);
     return { ok: true };
   }
 
   @Delete(":id/skills/:skillId")
-  async detachSkill(@Param("id") id: string, @Param("skillId") skillId: string) {
-    await this.projects.detachSkill(id, skillId);
+  async detachSkill(
+    @Param("id") id: string,
+    @Param("skillId") skillId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    await this.projects.detachSkill(id, skillId, user.userId);
     return { ok: true };
   }
 
   @Post(":id/mcp")
-  async attachMcp(@Param("id") id: string, @Body() body: { mcpServerId: string }) {
-    await this.projects.attachMcp(id, body.mcpServerId);
+  async attachMcp(
+    @Param("id") id: string,
+    @Body() body: { mcpServerId: string },
+    @CurrentUser() user: AuthUser,
+  ) {
+    await this.projects.attachMcp(id, body.mcpServerId, user.userId);
     return { ok: true };
   }
 
@@ -69,8 +86,9 @@ export class ProjectsController {
   async detachMcp(
     @Param("id") id: string,
     @Param("mcpServerId") mcpServerId: string,
+    @CurrentUser() user: AuthUser,
   ) {
-    await this.projects.detachMcp(id, mcpServerId);
+    await this.projects.detachMcp(id, mcpServerId, user.userId);
     return { ok: true };
   }
 
@@ -78,10 +96,12 @@ export class ProjectsController {
 
   /** POST /api/projects/:id/run { prompt, resume? } */
   @Post(":id/run")
-  run(
+  async run(
     @Param("id") id: string,
     @Body() body: { prompt: string; resume?: string },
+    @CurrentUser() user: AuthUser,
   ) {
+    await this.projects.assertCanEdit(id, user.userId);
     return this.agent.run(id, { prompt: body.prompt, resume: body.resume });
   }
 }
