@@ -58,10 +58,10 @@ pnpm dev:web    # Next.js
 - [x] **2. 핵심 CRUD**: projects/issues/cron/skills/mcp 모듈, 프로젝트별 git·API키(암호화), 크론식 검증, 수동 이슈 등록
 - [x] **3. 에이전트·크론·큐**: 프로젝트별 키 주입 실행(SDK env), 동적 크론(SchedulerRegistry, 부팅 복원), 동시성 큐(p-limit), 프로젝트별 GitHub 연동(가져오기·실행·코멘트)
 - [x] **4. 인증·공유**: JWT 인증(전역 가드+@Public), 프로젝트 소유권·팀 공유(viewer/editor), 공유 링크(read/issue_report — 테스터 로그인 없이 이슈 등록)
-- [ ] **5. 프론트 연동**: Next.js를 NestJS API 소비로 전환
+- [x] **5. 프론트 연동**: Next.js를 NestJS API 소비로 전환, 로그인·프로젝트 관리(공유·링크·스킬/MCP 연결·실행)·이슈·크론 UI, 공개 공유 페이지(테스터 이슈 등록)
 
-> 현재 `apps/web`에는 마이그레이션 이전의 Next.js 풀스택 코드(API 라우트 포함)가
-> 그대로 남아 있으며, 5단계에서 NestJS API 소비로 전환하면서 정리됩니다.
+> `apps/web`은 이제 자체 API 라우트 없이 NestJS API만 소비합니다(`src/lib/api.ts`).
+> 인증은 JWT를 localStorage에 보관하며, 공유 링크 페이지 `/share/[token]`은 로그인 없이 접근합니다.
 
 ## 인증 · 공유 API
 

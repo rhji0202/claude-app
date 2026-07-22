@@ -52,6 +52,16 @@ export class ProjectsController {
 
   // ---- 스킬 / MCP 연결 ----
 
+  @Get(":id/skills")
+  listSkills(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.projects.listSkills(id, user.userId);
+  }
+
+  @Get(":id/mcp")
+  listMcp(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.projects.listMcp(id, user.userId);
+  }
+
   @Post(":id/skills")
   async attachSkill(
     @Param("id") id: string,

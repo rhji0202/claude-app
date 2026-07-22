@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import type { User } from "@claude-app/shared";
 
 const NAV = [
   { href: "/", label: "대시보드", icon: "◆" },
@@ -12,7 +13,13 @@ const NAV = [
   { href: "/mcp", label: "MCP 서버", icon: "⚙" },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({
+  user,
+  onLogout,
+}: {
+  user: User;
+  onLogout: () => void;
+}) {
   const pathname = usePathname();
   return (
     <aside className="sidebar">
@@ -20,21 +27,36 @@ export default function Sidebar() {
       <nav>
         {NAV.map((item) => {
           const active =
-            item.href === "/"
-              ? pathname === "/"
-              : pathname.startsWith(item.href);
+            item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
           return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={active ? "active" : ""}
-            >
+            <Link key={item.href} href={item.href} className={active ? "active" : ""}>
               <span aria-hidden>{item.icon}</span>
               {item.label}
             </Link>
           );
         })}
       </nav>
+      <div
+        style={{
+          position: "absolute",
+          bottom: 16,
+          left: 12,
+          right: 12,
+          borderTop: "1px solid var(--border)",
+          paddingTop: 12,
+        }}
+      >
+        <div style={{ fontSize: 12, color: "var(--muted)", padding: "0 12px 8px" }}>
+          {user.name || user.email}
+        </div>
+        <button
+          className="btn secondary small"
+          style={{ width: "100%" }}
+          onClick={onLogout}
+        >
+          로그아웃
+        </button>
+      </div>
     </aside>
   );
 }

@@ -10,7 +10,7 @@ export default function McpPage() {
         Model Context Protocol 서버를 등록합니다. 프로젝트에 연결하면 해당 도구가 에이전트에 노출됩니다.
       </p>
       <CrudPanel
-        endpoint="/api/mcp"
+        endpoint="/mcp"
         title="MCP 서버"
         columns={[
           {
@@ -56,11 +56,7 @@ export default function McpPage() {
               { value: "sse", label: "sse" },
             ],
           },
-          {
-            name: "command",
-            label: "명령 (stdio)",
-            placeholder: "npx",
-          },
+          { name: "command", label: "명령 (stdio)", placeholder: "npx" },
           {
             name: "args",
             label: "인자 (콤마 구분, stdio)",

@@ -186,6 +186,24 @@ export class ProjectsService {
 
   // ---- 스킬 / MCP 연결 (M:N) ----
 
+  async listSkills(projectId: string, userId: string) {
+    await this.assertAccess(projectId, userId);
+    const links = await this.prisma.projectSkill.findMany({
+      where: { projectId },
+      include: { skill: true },
+    });
+    return links.map((l) => ({ id: l.skill.id, name: l.skill.name }));
+  }
+
+  async listMcp(projectId: string, userId: string) {
+    await this.assertAccess(projectId, userId);
+    const links = await this.prisma.projectMcpServer.findMany({
+      where: { projectId },
+      include: { server: true },
+    });
+    return links.map((l) => ({ id: l.server.id, name: l.server.name }));
+  }
+
   async attachSkill(projectId: string, skillId: string, userId: string): Promise<void> {
     await this.assertCanEdit(projectId, userId);
     await this.prisma.projectSkill.upsert({

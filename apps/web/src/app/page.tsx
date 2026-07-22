@@ -2,13 +2,14 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { api } from "@/lib/api";
 
 const CARDS = [
-  { key: "projects", label: "프로젝트", href: "/projects", endpoint: "/api/projects" },
-  { key: "issues", label: "이슈 작업", href: "/issues", endpoint: "/api/issues" },
-  { key: "cron", label: "크론 작업", href: "/cron", endpoint: "/api/cron" },
-  { key: "skills", label: "스킬", href: "/skills", endpoint: "/api/skills" },
-  { key: "mcp", label: "MCP 서버", href: "/mcp", endpoint: "/api/mcp" },
+  { key: "projects", label: "프로젝트", href: "/projects", endpoint: "/projects" },
+  { key: "issues", label: "이슈 작업", href: "/issues", endpoint: "/issues" },
+  { key: "cron", label: "크론 작업", href: "/cron", endpoint: "/cron" },
+  { key: "skills", label: "스킬", href: "/skills", endpoint: "/skills" },
+  { key: "mcp", label: "MCP 서버", href: "/mcp", endpoint: "/mcp" },
 ];
 
 export default function Dashboard() {
@@ -19,8 +20,7 @@ export default function Dashboard() {
       const next: Record<string, number> = {};
       for (const c of CARDS) {
         try {
-          const res = await fetch(c.endpoint);
-          const data = await res.json();
+          const data = await api.get<unknown[]>(c.endpoint);
           next[c.key] = Array.isArray(data) ? data.length : 0;
         } catch {
           next[c.key] = 0;
@@ -52,16 +52,16 @@ export default function Dashboard() {
         <h2>시작하기</h2>
         <ol style={{ lineHeight: 1.9, paddingLeft: 20, color: "var(--muted)" }}>
           <li>
-            <strong>프로젝트</strong>를 먼저 만드세요 (작업 디렉터리 cwd, 모델, 허용 도구 지정).
+            <strong>프로젝트</strong>를 만드세요 (작업 디렉터리, 모델, git 저장소·토큰, Anthropic API 키).
           </li>
           <li>
-            <strong>MCP 서버</strong>와 <strong>스킬</strong>을 등록해 프로젝트에 연결하세요.
+            프로젝트 <strong>관리</strong>에서 팀원 공유·공유 링크 발급, 스킬·MCP 연결을 설정하세요.
           </li>
           <li>
-            <strong>이슈</strong> 작업을 큐에 넣고 실행하거나, <strong>크론</strong>으로 정기 작업을 예약하세요.
+            <strong>이슈</strong>를 GitHub에서 가져오거나 수동 등록해 실행하고, <strong>크론</strong>으로 정기 작업을 예약하세요.
           </li>
           <li>
-            크론 상시 실행은 <span className="mono">npm run scheduler</span> 워커를 함께 띄우세요.
+            <strong>공유 링크</strong>(issue_report)를 발급하면 테스터가 로그인 없이 이슈를 등록할 수 있습니다.
           </li>
         </ol>
       </div>

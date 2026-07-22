@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { api } from "@/lib/api";
 
 export type FieldType =
   | "text"
@@ -8,7 +9,7 @@ export type FieldType =
   | "textarea"
   | "checkbox"
   | "select"
-  | "csv"; // 콤마 구분 문자열 → 배열
+  | "csv";
 
 export interface OptionsFrom {
   endpoint: string;
@@ -36,7 +37,6 @@ export interface ColumnDef {
 
 export interface RowAction {
   label: string;
-  /** POST를 보낼 엔드포인트 */
   href: (row: Record<string, unknown>) => string;
   variant?: "secondary" | "danger";
   confirm?: string;
@@ -49,7 +49,6 @@ export interface CrudPanelProps {
   columns: ColumnDef[];
   fields: FieldDef[];
   rowActions?: RowAction[];
-  /** 값이 바뀌면 목록을 다시 불러온다(외부에서 데이터가 변경됐을 때). */
   reloadSignal?: number;
 }
 
@@ -64,19 +63,16 @@ export default function CrudPanel(props: CrudPanelProps) {
   const [dynOptions, setDynOptions] = useState<
     Record<string, { value: string; label: string }[]>
   >({});
-  const [form, setForm] = useState<Record<string, unknown>>(() =>
-    initialForm(fields),
-  );
+  const [form, setForm] = useState<Record<string, unknown>>(() => initialForm(fields));
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(endpoint);
-      const data = await res.json();
+      const data = await api.get<Row[]>(endpoint);
       setRows(Array.isArray(data) ? data : []);
       setError(null);
     } catch (e) {
-      setError(String(e));
+      setError((e as Error).message);
     } finally {
       setLoading(false);
     }
@@ -86,7 +82,6 @@ export default function CrudPanel(props: CrudPanelProps) {
     load();
   }, [load, props.reloadSignal]);
 
-  // 동적 select 옵션 로딩
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -94,8 +89,7 @@ export default function CrudPanel(props: CrudPanelProps) {
       for (const f of fields) {
         if (f.optionsFrom) {
           try {
-            const res = await fetch(f.optionsFrom.endpoint);
-            const data = (await res.json()) as Record<string, unknown>[];
+            const data = await api.get<Record<string, unknown>[]>(f.optionsFrom.endpoint);
             next[f.name] = data.map((d) => ({
               value: String(d[f.optionsFrom!.valueKey]),
               label: String(d[f.optionsFrom!.labelKey] ?? d[f.optionsFrom!.valueKey]),
@@ -117,16 +111,7 @@ export default function CrudPanel(props: CrudPanelProps) {
     setBusy(true);
     setError(null);
     try {
-      const payload = serialize(form, fields);
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `요청 실패 (${res.status})`);
-      }
+      await api.post(endpoint, serialize(form, fields));
       setForm(initialForm(fields));
       await load();
     } catch (e) {
@@ -138,20 +123,23 @@ export default function CrudPanel(props: CrudPanelProps) {
 
   async function remove(id: string) {
     if (!confirm("삭제하시겠습니까?")) return;
-    await fetch(`${endpoint}/${id}`, { method: "DELETE" });
-    await load();
+    try {
+      await api.del(`${endpoint}/${id}`);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    }
   }
 
   async function runAction(action: RowAction, row: Row) {
     if (action.confirm && !confirm(action.confirm)) return;
     setBusy(true);
+    setError(null);
     try {
-      const res = await fetch(action.href(row), { method: "POST" });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        setError(err.error || `실행 실패 (${res.status})`);
-      }
+      await api.post(action.href(row));
       await load();
+    } catch (e) {
+      setError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -218,10 +206,7 @@ export default function CrudPanel(props: CrudPanelProps) {
                           {a.label}
                         </button>
                       ))}
-                      <button
-                        className="btn small danger"
-                        onClick={() => remove(row.id)}
-                      >
+                      <button className="btn small danger" onClick={() => remove(row.id)}>
                         삭제
                       </button>
                     </div>
@@ -291,13 +276,11 @@ function FieldInput({
 function initialForm(fields: FieldDef[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const f of fields) {
-    out[f.name] =
-      f.defaultValue ?? (f.type === "checkbox" ? false : "");
+    out[f.name] = f.defaultValue ?? (f.type === "checkbox" ? false : "");
   }
   return out;
 }
 
-/** 폼 값을 API 페이로드로 변환 (숫자/배열/불리언 캐스팅) */
 function serialize(
   form: Record<string, unknown>,
   fields: FieldDef[],

@@ -7,11 +7,11 @@ export default function CronPage() {
     <div>
       <h1 className="page-title">크론</h1>
       <p className="page-desc">
-        정기적으로 에이전트 프롬프트를 실행합니다. 표준 5필드 크론식 사용 (예:{" "}
+        정기적으로 에이전트 프롬프트를 실행합니다. 표준 5필드 크론식 (예:{" "}
         <span className="mono">0 9 * * 1</span> = 매주 월요일 9시).
       </p>
       <CrudPanel
-        endpoint="/api/cron"
+        endpoint="/cron"
         title="크론 작업"
         columns={[
           { key: "name", label: "이름" },
@@ -50,18 +50,9 @@ export default function CronPage() {
             label: "프로젝트",
             type: "select",
             required: true,
-            optionsFrom: {
-              endpoint: "/api/projects",
-              valueKey: "id",
-              labelKey: "name",
-            },
+            optionsFrom: { endpoint: "/projects", valueKey: "id", labelKey: "name" },
           },
-          {
-            name: "schedule",
-            label: "크론식",
-            required: true,
-            placeholder: "0 9 * * 1",
-          },
+          { name: "schedule", label: "크론식", required: true, placeholder: "0 9 * * 1" },
           { name: "enabled", label: "활성화", type: "checkbox", defaultValue: true },
           {
             name: "prompt",
@@ -74,7 +65,7 @@ export default function CronPage() {
         rowActions={[
           {
             label: "지금 실행",
-            href: (r) => `/api/cron/${r.id}/run`,
+            href: (r) => `/cron/${r.id}/run`,
             confirm: "이 크론 작업을 지금 실행하시겠습니까?",
           },
         ]}

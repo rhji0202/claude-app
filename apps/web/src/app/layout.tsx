@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import Sidebar from "@/components/Sidebar";
+import Shell from "@/components/Shell";
 
 export const metadata: Metadata = {
   title: "Claude 관리 시스템",
@@ -15,10 +15,7 @@ export default function RootLayout({
   return (
     <html lang="ko">
       <body>
-        <div className="layout">
-          <Sidebar />
-          <main className="content">{children}</main>
-        </div>
+        <Shell>{children}</Shell>
       </body>
     </html>
   );

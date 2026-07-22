@@ -1,89 +1,71 @@
 /**
- * API 라우트용 공통 CRUD 헬퍼.
- * 각 컬렉션의 route.ts는 이 헬퍼로 얇게 구성한다.
+ * NestJS API 클라이언트. JWT 토큰을 localStorage에서 읽어 붙이고,
+ * 에러 응답을 표준화한다.
  */
 
-import { NextResponse } from "next/server";
-import { store } from "@/lib/store";
-import type { CollectionName, Collections } from "@/lib/types";
+export const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api";
 
-export function json(data: unknown, status = 200) {
-  return NextResponse.json(data, { status });
+const TOKEN_KEY = "claude_token";
+
+export function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(TOKEN_KEY);
 }
 
-export function badRequest(message: string) {
-  return json({ error: message }, 400);
+export function setToken(token: string | null): void {
+  if (typeof window === "undefined") return;
+  if (token) window.localStorage.setItem(TOKEN_KEY, token);
+  else window.localStorage.removeItem(TOKEN_KEY);
 }
 
-export function notFound(message = "찾을 수 없습니다.") {
-  return json({ error: message }, 404);
-}
-
-/** GET: 컬렉션 목록 */
-export async function listHandler<C extends CollectionName>(collection: C) {
-  const rows = await store.list(collection);
-  return json(rows);
-}
-
-/** POST: 컬렉션에 레코드 생성 */
-export async function createHandler<C extends CollectionName>(
-  collection: C,
-  req: Request,
-  validate?: (
-    body: Record<string, unknown>,
-  ) => { ok: true } | { ok: false; error: string },
-) {
-  let body: Record<string, unknown>;
-  try {
-    body = (await req.json()) as Record<string, unknown>;
-  } catch {
-    return badRequest("잘못된 JSON 본문입니다.");
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
   }
-  if (validate) {
-    const v = validate(body);
-    if (!v.ok) return badRequest(v.error);
+}
+
+export async function apiFetch<T = unknown>(
+  path: string,
+  opts: RequestInit & { auth?: boolean } = {},
+): Promise<T> {
+  const { auth = true, headers, ...rest } = opts;
+  const h: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(headers as Record<string, string>),
+  };
+  if (auth) {
+    const token = getToken();
+    if (token) h.Authorization = `Bearer ${token}`;
   }
-  const record = await store.create(
-    collection,
-    body as Omit<Collections[C], "id" | "createdAt" | "updatedAt">,
-  );
-  return json(record, 201);
-}
-
-/** GET /:id */
-export async function getHandler<C extends CollectionName>(
-  collection: C,
-  id: string,
-) {
-  const row = await store.get(collection, id);
-  return row ? json(row) : notFound();
-}
-
-/** PATCH /:id */
-export async function patchHandler<C extends CollectionName>(
-  collection: C,
-  id: string,
-  req: Request,
-) {
-  let body: Record<string, unknown>;
-  try {
-    body = (await req.json()) as Record<string, unknown>;
-  } catch {
-    return badRequest("잘못된 JSON 본문입니다.");
+  const res = await fetch(`${API_BASE}${path}`, { ...rest, headers: h });
+  if (!res.ok) {
+    let message = `요청 실패 (${res.status})`;
+    try {
+      const data = await res.json();
+      message = Array.isArray(data.message)
+        ? data.message.join(", ")
+        : data.message || data.error || message;
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, message);
   }
-  const updated = await store.update(
-    collection,
-    id,
-    body as Partial<Collections[C]>,
-  );
-  return updated ? json(updated) : notFound();
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
 }
 
-/** DELETE /:id */
-export async function deleteHandler<C extends CollectionName>(
-  collection: C,
-  id: string,
-) {
-  const ok = await store.remove(collection, id);
-  return ok ? json({ ok: true }) : notFound();
-}
+export const api = {
+  get: <T>(path: string, auth = true) => apiFetch<T>(path, { method: "GET", auth }),
+  post: <T>(path: string, body?: unknown, auth = true) =>
+    apiFetch<T>(path, {
+      method: "POST",
+      body: body ? JSON.stringify(body) : undefined,
+      auth,
+    }),
+  patch: <T>(path: string, body?: unknown) =>
+    apiFetch<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
+  del: <T>(path: string) => apiFetch<T>(path, { method: "DELETE" }),
+};

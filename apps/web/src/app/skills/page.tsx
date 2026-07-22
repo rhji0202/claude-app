@@ -7,10 +7,10 @@ export default function SkillsPage() {
     <div>
       <h1 className="page-title">스킬</h1>
       <p className="page-desc">
-        재사용 가능한 지시/워크플로 묶음. 프로젝트에 연결하면 에이전트 시스템 프롬프트에 주입됩니다.
+        재사용 가능한 지시/워크플로. 프로젝트에 연결하면 에이전트 시스템 프롬프트에 주입됩니다.
       </p>
       <CrudPanel
-        endpoint="/api/skills"
+        endpoint="/skills"
         title="스킬"
         columns={[
           {
