@@ -34,6 +34,6 @@ services:
       # Vercel 프론트 도메인 (쉼표로 여러 개)
       - key: WEB_ORIGIN
         sync: false
-      # 프로젝트가 자체 키를 안 쓸 때의 폴백 (선택)
-      - key: ANTHROPIC_API_KEY
+      # 활성 Claude 계정이 없을 때의 폴백 OAuth 토큰 (선택)
+      - key: ANTHROPIC_OAUTH_TOKEN
         sync: false

@@ -3,12 +3,15 @@ import { ConfigService } from "@nestjs/config";
 import pLimit from "p-limit";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
+import { ClaudeAccountService } from "../claude-account/claude-account.service";
 
 export interface RunAgentOptions {
   prompt: string;
   resume?: string;
   systemPrompt?: string;
   maxTurns?: number;
+  /** 실행 자격증명(활성 Claude 계정)을 소유한 사용자. 없으면 .env 폴백. */
+  userId?: string;
 }
 
 export interface RunResult {
@@ -17,6 +20,21 @@ export interface RunResult {
   text: string;
   error?: string;
 }
+
+/**
+ * 스트리밍 실행 중 방출되는 이벤트. claude.ai식 parts 타임라인 모델.
+ * 텍스트 세그먼트는 id로 식별 — delta는 누적, text_end는 확정(교체). 중복 방지.
+ */
+export type AgentStreamEvent =
+  | { type: "session"; sessionId: string }
+  | { type: "text_start"; id: string }
+  | { type: "text_delta"; id: string; delta: string }
+  | { type: "text_end"; id: string; text: string }
+  | { type: "tool"; id: string; name: string; input?: string }
+  | { type: "done"; text: string; sessionId?: string }
+  | { type: "error"; error: string; sessionId?: string };
+
+export interface RunStreamOptions extends RunAgentOptions {}
 
 /**
  * 에이전트 실행 서비스. Claude Agent SDK의 query()를 감싸고,
@@ -34,9 +52,46 @@ export class AgentService {
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
     private readonly config: ConfigService,
+    private readonly claudeAccounts: ClaudeAccountService,
   ) {
     const concurrency = this.config.get<number>("AGENT_CONCURRENCY") ?? 3;
     this.limit = pLimit(concurrency);
+  }
+
+  /**
+   * SDK 서브프로세스로 전달할 env 조립.
+   * - Anthropic 자격증명 우선순위: 프로젝트 지정 계정 → 실행 사용자 활성 계정 → .env 폴백.
+   * - git 토큰: 프로젝트 gitToken → GITHUB_TOKEN/GH_TOKEN.
+   */
+  private async buildEnv(
+    userId: string | undefined,
+    gitToken: string | null,
+    claudeAccountId?: string | null,
+  ): Promise<Record<string, string | undefined>> {
+    const env: Record<string, string | undefined> = { ...process.env };
+
+    const token =
+      (claudeAccountId
+        ? await this.claudeAccounts.getTokenById(claudeAccountId)
+        : null) ??
+      (userId ? await this.claudeAccounts.getActiveToken(userId) : null) ??
+      this.config.get<string>("ANTHROPIC_OAUTH_TOKEN") ??
+      null;
+
+    // 값이 없거나 어느 쪽이든, 두 자격증명이 동시에 있으면 CLI가 혼동하므로 정리한다.
+    delete env.ANTHROPIC_API_KEY;
+    delete env.CLAUDE_CODE_OAUTH_TOKEN;
+    if (token) {
+      // sk-ant-oat…은 OAuth 토큰(구독/CLI 로그인) → OAuth 경로. 그 외는 API 키.
+      if (token.startsWith("sk-ant-oat")) env.CLAUDE_CODE_OAUTH_TOKEN = token;
+      else env.ANTHROPIC_API_KEY = token;
+    }
+
+    if (gitToken) {
+      env.GITHUB_TOKEN = gitToken;
+      env.GH_TOKEN = gitToken;
+    }
+    return env;
   }
 
   /** 프로젝트에 연결된 활성 MCP 서버를 SDK mcpServers 설정으로 변환 */
@@ -88,6 +143,173 @@ export class AgentService {
     return this.limit(() => this.execute(projectId, opts));
   }
 
+  /**
+   * 스트리밍 실행. 토큰 델타(delta)·세션·완료/오류를 onEvent로 방출한다.
+   * 채팅 UI(SSE)에서 사용. 동시성 제한은 run과 공유.
+   */
+  async runStream(
+    projectId: string,
+    opts: RunStreamOptions,
+    onEvent: (e: AgentStreamEvent) => void,
+  ): Promise<void> {
+    return this.limit(() => this.executeStream(projectId, opts, onEvent));
+  }
+
+  private async executeStream(
+    projectId: string,
+    opts: RunStreamOptions,
+    onEvent: (e: AgentStreamEvent) => void,
+  ): Promise<void> {
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+    });
+    if (!project) {
+      onEvent({ type: "error", error: "프로젝트를 찾을 수 없습니다." });
+      return;
+    }
+
+    let query: typeof import("@anthropic-ai/claude-agent-sdk").query;
+    try {
+      ({ query } = await import("@anthropic-ai/claude-agent-sdk"));
+    } catch (err) {
+      onEvent({ type: "error", error: `SDK 로드 실패: ${String(err)}` });
+      return;
+    }
+
+    const gitToken = this.crypto.decryptOptional(project.gitTokenEnc);
+    const mcpServers = await this.resolveMcpServers(projectId);
+    const skillPrompt = await this.resolveSkillPrompt(projectId);
+    const systemPrompt = [opts.systemPrompt, skillPrompt]
+      .filter(Boolean)
+      .join("\n");
+    const env = await this.buildEnv(
+      opts.userId,
+      gitToken,
+      project.claudeAccountId,
+    );
+
+    let sessionId: string | undefined;
+    let finalText = "";
+    // 턴 경계 카운터 — 텍스트 세그먼트 id를 `${turn}:${blockIndex}`로 만든다.
+    let turn = 0;
+    // content_block_start로 열린 텍스트 블록의 id (index → true). text_start 중복 방지.
+    const openedText = new Set<string>();
+
+    const segId = (index: number) => `${turn}:${index}`;
+
+    try {
+      const iterator = query({
+        prompt: opts.prompt,
+        options: {
+          cwd: project.cwd,
+          maxTurns: opts.maxTurns ?? 20,
+          permissionMode: "bypassPermissions",
+          allowDangerouslySkipPermissions: true,
+          includePartialMessages: true,
+          mcpServers: mcpServers as never,
+          systemPrompt: systemPrompt || undefined,
+          resume: opts.resume,
+          settingSources: [],
+          env,
+        },
+      });
+
+      for await (const message of iterator) {
+        const m = message as {
+          type: string;
+          subtype?: string;
+          session_id?: string;
+          result?: string;
+          error?: string;
+          event?: {
+            type?: string;
+            index?: number;
+            content_block?: { type?: string };
+            delta?: { type?: string; text?: string };
+          };
+          message?: {
+            content?: Array<{
+              type: string;
+              text?: string;
+              id?: string;
+              name?: string;
+              input?: unknown;
+            }>;
+          };
+        };
+
+        if (m.type === "system" && m.subtype === "init" && m.session_id) {
+          sessionId = m.session_id;
+          onEvent({ type: "session", sessionId });
+        }
+
+        if (m.type === "stream_event" && m.event) {
+          const ev = m.event;
+          if (ev.type === "message_start") {
+            turn += 1;
+          } else if (
+            ev.type === "content_block_start" &&
+            ev.content_block?.type === "text" &&
+            typeof ev.index === "number"
+          ) {
+            const id = segId(ev.index);
+            openedText.add(id);
+            onEvent({ type: "text_start", id });
+          } else if (
+            ev.type === "content_block_delta" &&
+            ev.delta?.type === "text_delta" &&
+            ev.delta.text &&
+            typeof ev.index === "number"
+          ) {
+            onEvent({ type: "text_delta", id: segId(ev.index), delta: ev.delta.text });
+          }
+        }
+
+        // 완결된 assistant 턴 — 텍스트 블록 확정(text_end) + tool_use 블록
+        if (m.type === "assistant" && m.message?.content) {
+          m.message.content.forEach((block, index) => {
+            if (block.type === "text" && block.text) {
+              const id = segId(index);
+              // 델타가 없었던(스트리밍 안 된) 텍스트면 start도 보내 프론트가 파트를 만들게 함
+              if (!openedText.has(id)) onEvent({ type: "text_start", id });
+              onEvent({ type: "text_end", id, text: block.text });
+            } else if (block.type === "tool_use" && block.name) {
+              let input: string | undefined;
+              try {
+                input = block.input ? JSON.stringify(block.input) : undefined;
+              } catch {
+                input = undefined;
+              }
+              onEvent({
+                type: "tool",
+                id: block.id ?? segId(index),
+                name: block.name,
+                input,
+              });
+            }
+          });
+        }
+
+        if (m.type === "result") {
+          if (m.subtype === "success") {
+            onEvent({ type: "done", text: m.result ?? finalText, sessionId });
+          } else {
+            onEvent({
+              type: "error",
+              error: m.error ?? "실행 중 오류가 발생했습니다.",
+              sessionId,
+            });
+          }
+          return;
+        }
+      }
+      onEvent({ type: "done", text: finalText, sessionId });
+    } catch (err) {
+      this.logger.error(`스트리밍 실행 오류: ${String(err)}`);
+      onEvent({ type: "error", error: String(err), sessionId });
+    }
+  }
+
   private async execute(
     projectId: string,
     opts: RunAgentOptions,
@@ -109,10 +331,6 @@ export class AgentService {
       };
     }
 
-    // 프로젝트별 자격증명 복호화
-    const anthropicApiKey =
-      this.crypto.decryptOptional(project.anthropicApiKeyEnc) ??
-      this.config.get<string>("ANTHROPIC_API_KEY");
     const gitToken = this.crypto.decryptOptional(project.gitTokenEnc);
 
     const mcpServers = await this.resolveMcpServers(projectId);
@@ -121,14 +339,11 @@ export class AgentService {
       .filter(Boolean)
       .join("\n");
 
-    // 서브프로세스로 전달할 env: process.env를 펼쳐 PATH 등 유지 후 프로젝트 키 주입
-    const env: Record<string, string | undefined> = { ...process.env };
-    if (anthropicApiKey) env.ANTHROPIC_API_KEY = anthropicApiKey;
-    if (project.anthropicBaseUrl) env.ANTHROPIC_BASE_URL = project.anthropicBaseUrl;
-    if (gitToken) {
-      env.GITHUB_TOKEN = gitToken;
-      env.GH_TOKEN = gitToken;
-    }
+    const env = await this.buildEnv(
+      opts.userId,
+      gitToken,
+      project.claudeAccountId,
+    );
 
     const messages: unknown[] = [];
     let sessionId: string | undefined;
@@ -139,10 +354,11 @@ export class AgentService {
         prompt: opts.prompt,
         options: {
           cwd: project.cwd,
-          model: project.model ?? undefined,
           maxTurns: opts.maxTurns ?? 20,
-          permissionMode: "default",
-          allowedTools: project.allowedTools,
+          // 전체 bypass 실행. 헤드리스 서버 컨텍스트라 권한 프롬프트가 불가능하므로
+          // 모든 도구(bash 포함)를 무프롬프트로 실행한다. bypass에는 이 플래그가 필요.
+          permissionMode: "bypassPermissions",
+          allowDangerouslySkipPermissions: true,
           mcpServers: mcpServers as never,
           systemPrompt: systemPrompt || undefined,
           resume: opts.resume,

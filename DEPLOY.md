@@ -15,7 +15,7 @@
 3. 백엔드 환경변수 입력:
    - `ENCRYPTION_KEY` = `openssl rand -base64 32` 결과 (32바이트 base64)
    - `WEB_ORIGIN` = Vercel 프론트 도메인 (예: `https://claude-app.vercel.app`)
-   - `ANTHROPIC_API_KEY` = (선택) 프로젝트가 자체 키를 안 쓸 때 폴백
+   - `ANTHROPIC_OAUTH_TOKEN` = (선택) 활성 Claude 계정이 없을 때 폴백 OAuth 토큰
    - `DATABASE_URL`, `JWT_SECRET`은 자동 연결/생성됨
 4. 배포되면 API 주소 확인 (예: `https://claude-api.onrender.com`). 마이그레이션은
    컨테이너 시작 시 `prisma migrate deploy`로 자동 적용됩니다.
@@ -42,7 +42,7 @@ Vercel 없이 web+api+db를 한 곳에서 실행합니다. 로컬 개발에도 �
 ```bash
 export ENCRYPTION_KEY=$(openssl rand -base64 32)
 export JWT_SECRET=$(openssl rand -hex 32)
-# (선택) export ANTHROPIC_API_KEY=sk-ant-...
+# (선택) export ANTHROPIC_OAUTH_TOKEN=sk-ant-oat01-...
 docker compose up --build
 #   web → http://localhost:3000
 #   api → http://localhost:3001/api
@@ -63,7 +63,7 @@ docker compose up --build
 | `JWT_SECRET` | ✅ | JWT 서명 시크릿 |
 | `JWT_EXPIRES_IN` |  | 토큰 만료 (기본 `7d`) |
 | `WEB_ORIGIN` |  | CORS 허용 오리진(쉼표 구분). 프론트 도메인 |
-| `ANTHROPIC_API_KEY` |  | 프로젝트가 자체 키를 안 쓸 때 폴백 |
+| `ANTHROPIC_OAUTH_TOKEN` |  | 활성 Claude 계정이 없을 때 폴백 OAuth 토큰 |
 | `PORT` |  | 기본 3001 |
 
 ### 프론트 (apps/web)

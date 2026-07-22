@@ -1,10 +1,4 @@
-import {
-  IsArray,
-  IsIn,
-  IsOptional,
-  IsString,
-  MinLength,
-} from "class-validator";
+import { IsIn, IsOptional, IsString, MinLength } from "class-validator";
 import type { ProjectVisibility } from "@claude-app/shared";
 
 /**
@@ -30,15 +24,6 @@ export class UpdateProjectDto {
 
   @IsOptional()
   @IsString()
-  model?: string;
-
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  allowedTools?: string[];
-
-  @IsOptional()
-  @IsString()
   gitRepo?: string;
 
   @IsOptional()
@@ -49,13 +34,10 @@ export class UpdateProjectDto {
   @IsString()
   gitToken?: string;
 
+  /** "" → 해제(null), 값 → 지정 */
   @IsOptional()
   @IsString()
-  anthropicApiKey?: string;
-
-  @IsOptional()
-  @IsString()
-  anthropicBaseUrl?: string;
+  claudeAccountId?: string;
 
   @IsOptional()
   @IsIn(["private", "shared", "public"])

@@ -1,293 +1,168 @@
+@import "tailwindcss";
+
+/* streamdown이 마크다운 렌더에 쓰는 Tailwind 클래스를 스캔 대상에 포함 */
+@source "../../node_modules/streamdown/dist/*.js";
+
+/*
+ * Tailwind v4 CSS-first 설정. shadcn/ui 호환 시맨틱 토큰 사용.
+ * 디자인 방향: Modern Dark (slate base + green accent, Fira Sans/Fira Code).
+ * 다크가 기본이며, :root 는 라이트, .dark 클래스로 다크 전환.
+ *
+ * 이전 커스텀 클래스 → 신규 매핑 (참고용):
+ *   .card    → <Card>            .btn        → <Button>
+ *   .badge   → <Badge>           .stat-grid  → grid + <Card>
+ *   .page-title/.page-desc → PageHeader 컴포넌트
+ *   .mono    → font-mono text-muted-foreground
+ */
+
+/* .dark 클래스를 다크 모드 셀렉터로 사용 */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
-  --bg: #0d1117;
-  --panel: #161b22;
-  --panel-2: #1c2129;
-  --border: #30363d;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #2f81f7;
-  --accent-hover: #388bfd;
-  --green: #3fb950;
-  --red: #f85149;
-  --yellow: #d29922;
+  --radius: 0.65rem;
+
+  /* Light theme */
+  --background: oklch(0.99 0 0);
+  --foreground: oklch(0.21 0.03 256);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.03 256);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.03 256);
+  --primary: oklch(0.28 0.04 260);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.96 0.01 256);
+  --secondary-foreground: oklch(0.28 0.04 260);
+  --muted: oklch(0.96 0.01 256);
+  --muted-foreground: oklch(0.52 0.02 257);
+  --accent: oklch(0.72 0.19 149);
+  --accent-foreground: oklch(0.98 0 0);
+  --destructive: oklch(0.58 0.22 27);
+  --destructive-foreground: oklch(0.98 0 0);
+  --success: oklch(0.72 0.19 149);
+  --warning: oklch(0.68 0.16 76);
+  --border: oklch(0.92 0.01 256);
+  --input: oklch(0.92 0.01 256);
+  --ring: oklch(0.72 0.19 149);
+  --sidebar: oklch(0.98 0.003 256);
+  --sidebar-foreground: oklch(0.21 0.03 256);
+  --sidebar-border: oklch(0.92 0.01 256);
 }
 
-* {
-  box-sizing: border-box;
+.dark {
+  /* Dark theme — slate base, green accent (GitHub-dark 톤 계승) */
+  --background: oklch(0.19 0.02 264);
+  --foreground: oklch(0.95 0.01 256);
+  --card: oklch(0.23 0.02 264);
+  --card-foreground: oklch(0.95 0.01 256);
+  --popover: oklch(0.23 0.02 264);
+  --popover-foreground: oklch(0.95 0.01 256);
+  --primary: oklch(0.85 0.02 256);
+  --primary-foreground: oklch(0.23 0.02 264);
+  --secondary: oklch(0.28 0.02 264);
+  --secondary-foreground: oklch(0.95 0.01 256);
+  --muted: oklch(0.28 0.02 264);
+  --muted-foreground: oklch(0.68 0.02 257);
+  --accent: oklch(0.72 0.19 149);
+  --accent-foreground: oklch(0.21 0.03 256);
+  --destructive: oklch(0.64 0.21 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --success: oklch(0.72 0.19 149);
+  --warning: oklch(0.79 0.16 79);
+  --border: oklch(0.32 0.02 264);
+  --input: oklch(0.32 0.02 264);
+  --ring: oklch(0.72 0.19 149);
+  --sidebar: oklch(0.23 0.02 264);
+  --sidebar-foreground: oklch(0.95 0.01 256);
+  --sidebar-border: oklch(0.32 0.02 264);
 }
 
-html,
-body {
-  margin: 0;
-  padding: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
-  font-size: 14px;
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+
+  --font-sans: var(--font-fira-sans), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  --font-mono: var(--font-fira-code), ui-monospace, SFMono-Regular, Menlo,
+    monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --animate-overlay-in: overlay-in 0.15s ease-out;
+  --animate-dialog-in: dialog-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
-.layout {
-  display: flex;
-  min-height: 100vh;
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
 }
 
-.sidebar {
-  width: 240px;
-  flex-shrink: 0;
-  background: var(--panel);
-  border-right: 1px solid var(--border);
-  padding: 20px 12px;
-  position: sticky;
-  top: 0;
-  height: 100vh;
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html {
+    /* 다크 우선: JS 로드 전 FOUC 방지 스크립트가 .dark 를 지정 */
+    color-scheme: light dark;
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  /* 접근성: 키보드 포커스 링 */
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
 }
 
-.sidebar .brand {
-  font-weight: 700;
-  font-size: 16px;
-  padding: 8px 12px 20px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.sidebar nav a {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  border-radius: 8px;
-  color: var(--muted);
-  margin-bottom: 2px;
-  transition: background 0.12s, color 0.12s;
-}
-
-.sidebar nav a:hover {
-  background: var(--panel-2);
-  color: var(--text);
-}
-
-.sidebar nav a.active {
-  background: rgba(47, 129, 247, 0.15);
-  color: var(--accent-hover);
-}
-
-.content {
-  flex: 1;
-  padding: 28px 36px;
-  max-width: 1100px;
-}
-
-.page-title {
-  font-size: 22px;
-  font-weight: 700;
-  margin: 0 0 4px;
-}
-
-.page-desc {
-  color: var(--muted);
-  margin: 0 0 24px;
-}
-
-.card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px 20px;
-  margin-bottom: 20px;
-}
-
-.card h2 {
-  font-size: 15px;
-  margin: 0 0 14px;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-th,
-td {
-  text-align: left;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
-}
-
-th {
-  color: var(--muted);
-  font-weight: 600;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-tbody tr:last-child td {
-  border-bottom: none;
-}
-
-.form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.field.full {
-  grid-column: 1 / -1;
-}
-
-label {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-input,
-textarea,
-select {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  padding: 8px 10px;
-  font-size: 14px;
-  font-family: inherit;
-}
-
-input:focus,
-textarea:focus,
-select:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-textarea {
-  min-height: 80px;
-  resize: vertical;
-}
-
-.btn {
-  background: var(--accent);
-  color: white;
-  border: none;
-  border-radius: 8px;
-  padding: 8px 16px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-
-.btn:hover {
-  background: var(--accent-hover);
-}
-
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn.secondary {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text);
-}
-
-.btn.secondary:hover {
-  background: var(--panel-2);
-}
-
-.btn.danger {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--red);
-}
-
-.btn.small {
-  padding: 5px 10px;
-  font-size: 12px;
-}
-
-.row-actions {
-  display: flex;
-  gap: 6px;
-}
-
-.badge {
-  display: inline-block;
-  padding: 2px 9px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.badge.queued {
-  background: rgba(139, 148, 158, 0.2);
-  color: var(--muted);
-}
-.badge.running {
-  background: rgba(210, 153, 34, 0.2);
-  color: var(--yellow);
-}
-.badge.done,
-.badge.ok {
-  background: rgba(63, 185, 80, 0.18);
-  color: var(--green);
-}
-.badge.error {
-  background: rgba(248, 81, 73, 0.18);
-  color: var(--red);
-}
-
-.empty {
-  color: var(--muted);
-  padding: 20px;
-  text-align: center;
-}
-
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 16px;
-}
-
-.stat {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px 20px;
-}
-
-.stat .num {
-  font-size: 30px;
-  font-weight: 700;
-}
-
-.stat .lbl {
-  color: var(--muted);
-  margin-top: 4px;
-}
-
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.error-text {
-  color: var(--red);
-  font-size: 13px;
-  margin-top: 8px;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

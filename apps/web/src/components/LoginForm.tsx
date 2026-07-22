@@ -1,14 +1,23 @@
 "use client";
 
 import { useState } from "react";
+import { Bot } from "lucide-react";
 import { useAuth } from "@/lib/auth";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 export default function LoginForm() {
-  const { login, register } = useAuth();
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -17,8 +26,7 @@ export default function LoginForm() {
     setBusy(true);
     setError(null);
     try {
-      if (mode === "login") await login(email, password);
-      else await register(email, password, name || undefined);
+      await login(email, password);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -27,62 +35,53 @@ export default function LoginForm() {
   }
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <div className="card" style={{ width: 360 }}>
-        <h2 style={{ marginBottom: 4 }}>🤖 Claude 관리</h2>
-        <p className="page-desc" style={{ marginBottom: 18 }}>
-          {mode === "login" ? "로그인" : "회원가입"}
-        </p>
-        <form onSubmit={submit}>
-          <div className="field" style={{ marginBottom: 12 }}>
-            <label>이메일</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
+    <div className="flex min-h-dvh items-center justify-center px-4">
+      <Card className="w-full max-w-sm">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Bot className="size-6 text-accent" />
+            <CardTitle className="text-lg">Claude 관리</CardTitle>
           </div>
-          {mode === "register" && (
-            <div className="field" style={{ marginBottom: 12 }}>
-              <label>이름 (선택)</label>
-              <input value={name} onChange={(e) => setName(e.target.value)} />
+          <CardDescription>로그인</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={submit} className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="email">이메일</Label>
+              <Input
+                id="email"
+                type="email"
+                autoComplete="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
             </div>
-          )}
-          <div className="field" style={{ marginBottom: 16 }}>
-            <label>비밀번호 {mode === "register" && "(8자 이상)"}</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </div>
-          <button className="btn" type="submit" disabled={busy} style={{ width: "100%" }}>
-            {busy ? "처리 중..." : mode === "login" ? "로그인" : "가입하기"}
-          </button>
-          {error && <div className="error-text">{error}</div>}
-        </form>
-        <div style={{ marginTop: 14, textAlign: "center", color: "var(--muted)" }}>
-          {mode === "login" ? "계정이 없으신가요? " : "이미 계정이 있으신가요? "}
-          <a
-            style={{ color: "var(--accent)", cursor: "pointer" }}
-            onClick={() => {
-              setMode(mode === "login" ? "register" : "login");
-              setError(null);
-            }}
-          >
-            {mode === "login" ? "회원가입" : "로그인"}
-          </a>
-        </div>
-      </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="password">비밀번호</Label>
+              <Input
+                id="password"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+            <Button type="submit" className="w-full" disabled={busy}>
+              {busy ? "처리 중..." : "로그인"}
+            </Button>
+            {error && (
+              <p className="text-sm text-destructive" role="alert" aria-live="polite">
+                {error}
+              </p>
+            )}
+          </form>
+          <p className="mt-4 text-center text-xs text-muted-foreground">
+            계정이 필요하면 관리자에게 문의하세요.
+          </p>
+        </CardContent>
+      </Card>
     </div>
   );
 }

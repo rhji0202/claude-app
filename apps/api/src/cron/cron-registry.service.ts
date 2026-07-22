@@ -59,11 +59,15 @@ export class CronRegistryService implements OnModuleInit {
 
   /** 크론 작업을 즉시 실행 (에이전트 호출 + 결과 기록) */
   async fire(id: string): Promise<void> {
-    const job = await this.prisma.cronJob.findUnique({ where: { id } });
+    const job = await this.prisma.cronJob.findUnique({
+      where: { id },
+      include: { project: { select: { ownerId: true } } },
+    });
     if (!job) return;
     this.logger.log(`크론 실행: ${job.name} (${id})`);
     const res = await this.agent.run(job.projectId, {
       prompt: job.prompt,
+      userId: job.project.ownerId ?? undefined,
       systemPrompt: "당신은 정기 작업을 수행하는 자동화 에이전트입니다.",
     });
     await this.prisma.cronJob.update({

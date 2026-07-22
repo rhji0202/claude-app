@@ -3,8 +3,29 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { ArrowLeft, Copy, Play, Trash2, X, Plus } from "lucide-react";
+import { toast } from "sonner";
 import type { Project, ShareLinkScope, UserRole } from "@claude-app/shared";
 import { api } from "@/lib/api";
+import { Mono } from "@/components/StatusBadge";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface Share {
   userId: string;
@@ -35,7 +56,6 @@ export default function ProjectDetailPage() {
   const [attachedMcp, setAttachedMcp] = useState<NamedRef[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // 폼 상태
   const [shareEmail, setShareEmail] = useState("");
   const [shareRole, setShareRole] = useState<"viewer" | "editor">("viewer");
   const [linkScope, setLinkScope] = useState<ShareLinkScope>("issue_report");
@@ -73,12 +93,13 @@ export default function ProjectDetailPage() {
     load();
   }, [load]);
 
-  const wrap = (fn: () => Promise<unknown>) => async () => {
+  const wrap = (fn: () => Promise<unknown>, ok?: string) => async () => {
     try {
       await fn();
+      if (ok) toast.success(ok);
       await load();
     } catch (e) {
-      setError((e as Error).message);
+      toast.error((e as Error).message);
     }
   };
 
@@ -90,200 +111,284 @@ export default function ProjectDetailPage() {
         `/projects/${id}/run`,
         { prompt },
       );
-      setRunResult(res.status === "ok" ? res.text : `오류: ${res.error}`);
+      if (res.status === "ok") {
+        setRunResult(res.text);
+        toast.success("실행 완료");
+      } else {
+        setRunResult(`오류: ${res.error}`);
+        toast.error("실행 오류");
+      }
     } catch (e) {
       setRunResult(`오류: ${(e as Error).message}`);
+      toast.error((e as Error).message);
     } finally {
       setRunning(false);
     }
+  }
+
+  function copyLink(url: string) {
+    navigator.clipboard
+      ?.writeText(url)
+      .then(() => toast.success("링크가 복사되었습니다."))
+      .catch(() => toast.error("복사에 실패했습니다."));
   }
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
 
   if (!project) {
     return (
-      <div>
-        {error ? <div className="error-text">{error}</div> : <div className="empty">불러오는 중...</div>}
+      <div className="space-y-4">
+        {error ? (
+          <p className="text-sm text-destructive">{error}</p>
+        ) : (
+          <>
+            <Skeleton className="h-6 w-32" />
+            <Skeleton className="h-40 w-full" />
+            <Skeleton className="h-40 w-full" />
+          </>
+        )}
       </div>
     );
   }
 
   return (
     <div>
-      <Link href="/projects" style={{ color: "var(--muted)" }}>
-        ← 프로젝트
+      <Link
+        href="/projects"
+        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+      >
+        <ArrowLeft className="size-4" />
+        프로젝트
       </Link>
-      <h1 className="page-title" style={{ marginTop: 8 }}>
+      <h1 className="mt-2 text-xl font-bold tracking-tight md:text-2xl">
         {project.name}
       </h1>
-      <p className="page-desc mono">{project.cwd}</p>
-      {error && <div className="error-text">{error}</div>}
+      <p className="mt-1">
+        <Mono>{project.cwd}</Mono>
+      </p>
 
-      {/* 팀 공유 */}
-      <div className="card">
-        <h2>팀 공유</h2>
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <input
-            placeholder="user@email.com"
-            value={shareEmail}
-            onChange={(e) => setShareEmail(e.target.value)}
-            style={{ flex: 1 }}
-          />
-          <select value={shareRole} onChange={(e) => setShareRole(e.target.value as "viewer" | "editor")}>
-            <option value="viewer">viewer</option>
-            <option value="editor">editor</option>
-          </select>
-          <button
-            className="btn"
-            onClick={wrap(async () => {
-              await api.post(`/projects/${id}/shares`, { email: shareEmail, role: shareRole });
-              setShareEmail("");
-            })}
-          >
-            공유
-          </button>
-        </div>
-        {shares.length === 0 ? (
-          <div className="empty">공유된 팀원이 없습니다.</div>
-        ) : (
-          <table>
-            <tbody>
-              {shares.map((s) => (
-                <tr key={s.userId}>
-                  <td>{s.email}</td>
-                  <td>
-                    <span className="badge queued">{s.role}</span>
-                  </td>
-                  <td style={{ width: 1 }}>
-                    <button
-                      className="btn small danger"
-                      onClick={wrap(() => api.del(`/projects/${id}/shares/${s.userId}`))}
+      <div className="mt-6 space-y-5">
+        {/* 팀 공유 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">팀 공유</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                placeholder="user@email.com"
+                type="email"
+                value={shareEmail}
+                onChange={(e) => setShareEmail(e.target.value)}
+                className="flex-1"
+              />
+              <Select
+                value={shareRole}
+                onValueChange={(v) => setShareRole(v as "viewer" | "editor")}
+              >
+                <SelectTrigger className="sm:w-32">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="viewer">viewer</SelectItem>
+                  <SelectItem value="editor">editor</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                onClick={wrap(async () => {
+                  await api.post(`/projects/${id}/shares`, {
+                    email: shareEmail,
+                    role: shareRole,
+                  });
+                  setShareEmail("");
+                }, "공유했습니다.")}
+              >
+                <Plus className="size-4" />
+                공유
+              </Button>
+            </div>
+            {shares.length === 0 ? (
+              <p className="mt-3 text-sm text-muted-foreground">
+                공유된 팀원이 없습니다.
+              </p>
+            ) : (
+              <ul className="mt-3 divide-y divide-border">
+                {shares.map((s) => (
+                  <li
+                    key={s.userId}
+                    className="flex items-center gap-3 py-2.5 text-sm"
+                  >
+                    <span className="min-w-0 flex-1 truncate">{s.email}</span>
+                    <Badge variant="muted">{s.role}</Badge>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={wrap(
+                        () => api.del(`/projects/${id}/shares/${s.userId}`),
+                        "해제했습니다.",
+                      )}
                     >
                       해제
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
 
-      {/* 공유 링크 */}
-      <div className="card">
-        <h2>공유 링크</h2>
-        <p className="page-desc" style={{ marginBottom: 12 }}>
-          <span className="mono">read</span>: 읽기 전용 대시보드 · <span className="mono">issue_report</span>:
-          테스터가 로그인 없이 이슈 등록
-        </p>
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <select value={linkScope} onChange={(e) => setLinkScope(e.target.value as ShareLinkScope)}>
-            <option value="issue_report">issue_report (이슈 등록)</option>
-            <option value="read">read (읽기 전용)</option>
-          </select>
-          <button
-            className="btn"
-            onClick={wrap(() => api.post(`/projects/${id}/share-links`, { scope: linkScope }))}
-          >
-            링크 발급
-          </button>
-        </div>
-        {links.length === 0 ? (
-          <div className="empty">발급된 링크가 없습니다.</div>
-        ) : (
-          <table>
-            <tbody>
-              {links.map((l) => {
-                const url = `${origin}/share/${l.token}`;
-                return (
-                  <tr key={l.id}>
-                    <td>
-                      <span className="badge queued">{l.scope}</span>
-                    </td>
-                    <td>
-                      <a href={url} target="_blank" rel="noreferrer" className="mono">
-                        {url.length > 48 ? url.slice(0, 48) + "…" : url}
-                      </a>
-                    </td>
-                    <td style={{ width: 1 }}>
-                      <button
-                        className="btn small secondary"
-                        onClick={() => navigator.clipboard?.writeText(url)}
+        {/* 공유 링크 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">공유 링크</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              <Mono>read</Mono>: 읽기 전용 대시보드 · <Mono>issue_report</Mono>:
+              테스터가 로그인 없이 이슈 등록
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Select
+                value={linkScope}
+                onValueChange={(v) => setLinkScope(v as ShareLinkScope)}
+              >
+                <SelectTrigger className="sm:flex-1">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="issue_report">
+                    issue_report (이슈 등록)
+                  </SelectItem>
+                  <SelectItem value="read">read (읽기 전용)</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                onClick={wrap(
+                  () => api.post(`/projects/${id}/share-links`, { scope: linkScope }),
+                  "링크를 발급했습니다.",
+                )}
+              >
+                <Plus className="size-4" />
+                링크 발급
+              </Button>
+            </div>
+            {links.length === 0 ? (
+              <p className="mt-3 text-sm text-muted-foreground">
+                발급된 링크가 없습니다.
+              </p>
+            ) : (
+              <ul className="mt-3 divide-y divide-border">
+                {links.map((l) => {
+                  const url = `${origin}/share/${l.token}`;
+                  return (
+                    <li
+                      key={l.id}
+                      className="flex flex-wrap items-center gap-2 py-2.5 text-sm"
+                    >
+                      <Badge variant="muted">{l.scope}</Badge>
+                      <a
+                        href={url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="min-w-0 flex-1 truncate"
                       >
+                        <Mono>{url}</Mono>
+                      </a>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => copyLink(url)}
+                      >
+                        <Copy className="size-4" />
                         복사
-                      </button>
-                    </td>
-                    <td style={{ width: 1 }}>
-                      <button
-                        className="btn small danger"
-                        onClick={wrap(() => api.del(`/share-links/${l.id}`))}
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={wrap(
+                          () => api.del(`/share-links/${l.id}`),
+                          "폐기했습니다.",
+                        )}
                       >
                         폐기
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
 
-      {/* 스킬 / MCP 연결 */}
-      <div className="card">
-        <h2>스킬 · MCP 연결</h2>
-        <AttachRow
-          label="스킬"
-          all={allSkills}
-          attached={attachedSkills}
-          selected={skillSel}
-          onSelect={setSkillSel}
-          onAttach={wrap(async () => {
-            if (skillSel) await api.post(`/projects/${id}/skills`, { skillId: skillSel });
-          })}
-          onDetach={(sid) => wrap(() => api.del(`/projects/${id}/skills/${sid}`))()}
-        />
-        <div style={{ height: 12 }} />
-        <AttachRow
-          label="MCP"
-          all={allMcp}
-          attached={attachedMcp}
-          selected={mcpSel}
-          onSelect={setMcpSel}
-          onAttach={wrap(async () => {
-            if (mcpSel) await api.post(`/projects/${id}/mcp`, { mcpServerId: mcpSel });
-          })}
-          onDetach={(mid) => wrap(() => api.del(`/projects/${id}/mcp/${mid}`))()}
-        />
-      </div>
+        {/* 스킬 / MCP 연결 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">스킬 · MCP 연결</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <AttachRow
+              label="스킬"
+              all={allSkills}
+              attached={attachedSkills}
+              selected={skillSel}
+              onSelect={setSkillSel}
+              onAttach={wrap(async () => {
+                if (skillSel)
+                  await api.post(`/projects/${id}/skills`, { skillId: skillSel });
+                setSkillSel("");
+              }, "연결했습니다.")}
+              onDetach={(sid) =>
+                wrap(
+                  () => api.del(`/projects/${id}/skills/${sid}`),
+                  "해제했습니다.",
+                )()
+              }
+            />
+            <AttachRow
+              label="MCP"
+              all={allMcp}
+              attached={attachedMcp}
+              selected={mcpSel}
+              onSelect={setMcpSel}
+              onAttach={wrap(async () => {
+                if (mcpSel)
+                  await api.post(`/projects/${id}/mcp`, { mcpServerId: mcpSel });
+                setMcpSel("");
+              }, "연결했습니다.")}
+              onDetach={(mid) =>
+                wrap(() => api.del(`/projects/${id}/mcp/${mid}`), "해제했습니다.")()
+              }
+            />
+          </CardContent>
+        </Card>
 
-      {/* 임의 실행 */}
-      <div className="card">
-        <h2>에이전트 실행</h2>
-        <textarea
-          placeholder="이 프로젝트 컨텍스트에서 실행할 프롬프트"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-        />
-        <div style={{ marginTop: 10 }}>
-          <button className="btn" disabled={running || !prompt} onClick={runAgent}>
-            {running ? "실행 중..." : "실행"}
-          </button>
-        </div>
-        {runResult && (
-          <pre
-            style={{
-              marginTop: 12,
-              whiteSpace: "pre-wrap",
-              background: "var(--bg)",
-              padding: 12,
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-            }}
-          >
-            {runResult}
-          </pre>
-        )}
+        {/* 임의 실행 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">에이전트 실행</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Textarea
+              placeholder="이 프로젝트 컨텍스트에서 실행할 프롬프트"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+            />
+            <div className="mt-3">
+              <Button disabled={running || !prompt} onClick={runAgent}>
+                <Play className="size-4" />
+                {running ? "실행 중..." : "실행"}
+              </Button>
+            </div>
+            {running && !runResult && (
+              <Skeleton className="mt-3 h-24 w-full" />
+            )}
+            {runResult && (
+              <pre className="mt-3 overflow-x-auto whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-3 font-mono text-xs">
+                {runResult}
+              </pre>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
@@ -310,33 +415,48 @@ function AttachRow({
   const available = all.filter((a) => !attachedIds.has(a.id));
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-        <strong style={{ width: 48 }}>{label}</strong>
-        <select value={selected} onChange={(e) => onSelect(e.target.value)} style={{ flex: 1 }}>
-          <option value="">선택...</option>
-          {available.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
-        </select>
-        <button className="btn secondary small" onClick={onAttach}>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <strong className="text-sm sm:w-12">{label}</strong>
+        <Select value={selected} onValueChange={onSelect}>
+          <SelectTrigger className="sm:flex-1">
+            <SelectValue placeholder="선택..." />
+          </SelectTrigger>
+          <SelectContent>
+            {available.length === 0 ? (
+              <div className="px-2 py-2 text-sm text-muted-foreground">
+                추가할 항목 없음
+              </div>
+            ) : (
+              available.map((a) => (
+                <SelectItem key={a.id} value={a.id}>
+                  {a.name}
+                </SelectItem>
+              ))
+            )}
+          </SelectContent>
+        </Select>
+        <Button variant="secondary" size="sm" onClick={onAttach}>
           연결
-        </button>
+        </Button>
       </div>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingLeft: 56 }}>
+      <div className="mt-2 flex flex-wrap gap-1.5 sm:pl-14">
         {attached.length === 0 ? (
-          <span className="mono" style={{ color: "var(--muted)" }}>
+          <span className="text-xs text-muted-foreground">
             연결된 {label} 없음
           </span>
         ) : (
           attached.map((a) => (
-            <span key={a.id} className="badge ok" style={{ display: "inline-flex", gap: 6 }}>
+            <Badge key={a.id} variant="success" className="gap-1.5">
               {a.name}
-              <a style={{ cursor: "pointer" }} onClick={() => onDetach(a.id)}>
-                ✕
-              </a>
-            </span>
+              <button
+                type="button"
+                className="cursor-pointer opacity-70 hover:opacity-100"
+                onClick={() => onDetach(a.id)}
+                aria-label={`${a.name} 해제`}
+              >
+                <X className="size-3" />
+              </button>
+            </Badge>
           ))
         )}
       </div>

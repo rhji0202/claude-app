@@ -3,6 +3,7 @@ import { createParamDecorator, ExecutionContext } from "@nestjs/common";
 export interface AuthUser {
   userId: string;
   email: string;
+  role: "admin" | "member";
 }
 
 /** 요청 컨텍스트에서 인증된 사용자를 추출한다. */

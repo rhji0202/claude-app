@@ -55,15 +55,12 @@ export class ProjectsService {
       name: p.name,
       description: p.description,
       cwd: p.cwd,
-      model: p.model,
-      allowedTools: p.allowedTools,
       gitRepo: p.gitRepo,
       gitBranch: p.gitBranch,
-      anthropicBaseUrl: p.anthropicBaseUrl,
+      claudeAccountId: p.claudeAccountId,
       ownerId: p.ownerId,
       visibility: toDtoVisibility(p.visibility),
       secrets: {
-        hasAnthropicApiKey: Boolean(p.anthropicApiKeyEnc),
         hasGitToken: Boolean(p.gitTokenEnc),
       },
       createdAt: p.createdAt.toISOString(),
@@ -73,7 +70,7 @@ export class ProjectsService {
 
   // ---- 접근 제어 ----
 
-  /** 사용자의 프로젝트 접근 권한(없으면 null). owner > editor > viewer */
+  /** 사용자의 프로젝트 접근 권한(없으면 null). owner > editor > viewer. 전역 admin은 owner. */
   async getAccessRole(projectId: string, userId: string): Promise<UserRole | null> {
     const p = await this.prisma.project.findUnique({
       where: { id: projectId },
@@ -82,6 +79,12 @@ export class ProjectsService {
     if (!p) throw new NotFoundException("프로젝트를 찾을 수 없습니다.");
     if (p.ownerId === userId) return "owner";
     if (p.shares.length > 0) return ROLE_TO_DTO[p.shares[0].role];
+    // 전역 admin은 모든 프로젝트에 owner 권한(전체 관리 — 사용자 결정)
+    const actor = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+    if (actor?.role === "ADMIN") return "owner";
     if (p.visibility === Visibility.PUBLIC) return "viewer";
     return null;
   }
@@ -105,12 +108,22 @@ export class ProjectsService {
 
   // ---- CRUD ----
 
-  /** 소유 또는 공유받은 프로젝트 목록 */
+  /** 전역 admin 여부 */
+  private async isAdmin(userId: string): Promise<boolean> {
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+    return u?.role === "ADMIN";
+  }
+
+  /** 소유·공유받은 프로젝트 목록 (admin은 전체) */
   async list(userId: string): Promise<ProjectDto[]> {
+    const admin = await this.isAdmin(userId);
     const rows = await this.prisma.project.findMany({
-      where: {
-        OR: [{ ownerId: userId }, { shares: { some: { userId } } }],
-      },
+      where: admin
+        ? undefined
+        : { OR: [{ ownerId: userId }, { shares: { some: { userId } } }] },
       orderBy: { createdAt: "desc" },
     });
     return rows.map((r) => this.toDto(r));
@@ -121,10 +134,13 @@ export class ProjectsService {
     return this.toDto(await this.getRaw(id));
   }
 
-  /** 사용자가 접근 가능한 프로젝트 id 목록 (이슈/크론 스코프에 사용) */
+  /** 사용자가 접근 가능한 프로젝트 id 목록 (이슈/크론 스코프에 사용). admin은 전체. */
   async accessibleProjectIds(userId: string): Promise<string[]> {
+    const admin = await this.isAdmin(userId);
     const rows = await this.prisma.project.findMany({
-      where: { OR: [{ ownerId: userId }, { shares: { some: { userId } } }] },
+      where: admin
+        ? undefined
+        : { OR: [{ ownerId: userId }, { shares: { some: { userId } } }] },
       select: { id: true },
     });
     return rows.map((r) => r.id);
@@ -137,18 +153,31 @@ export class ProjectsService {
     return row;
   }
 
+  /** 계정 id가 해당 사용자 소유인지 확인 (남의 계정 지정 방지) */
+  private async assertOwnsAccount(
+    accountId: string,
+    userId: string,
+  ): Promise<void> {
+    const acc = await this.prisma.claudeAccount.findFirst({
+      where: { id: accountId, userId },
+    });
+    if (!acc)
+      throw new ForbiddenException("본인 소유의 Claude 계정만 지정할 수 있습니다.");
+  }
+
   async create(dto: CreateProjectDto, ownerId: string): Promise<ProjectDto> {
+    if (dto.claudeAccountId)
+      await this.assertOwnsAccount(dto.claudeAccountId, ownerId);
     const data: Prisma.ProjectCreateInput = {
       name: dto.name,
       description: dto.description,
       cwd: dto.cwd,
-      model: dto.model,
-      allowedTools: dto.allowedTools ?? [],
       gitRepo: dto.gitRepo,
       gitBranch: dto.gitBranch,
       gitTokenEnc: this.crypto.encryptOptional(dto.gitToken),
-      anthropicApiKeyEnc: this.crypto.encryptOptional(dto.anthropicApiKey),
-      anthropicBaseUrl: dto.anthropicBaseUrl,
+      claudeAccount: dto.claudeAccountId
+        ? { connect: { id: dto.claudeAccountId } }
+        : undefined,
       visibility: toPrismaVisibility(dto.visibility) ?? Visibility.PRIVATE,
       owner: { connect: { id: ownerId } },
     };
@@ -162,19 +191,21 @@ export class ProjectsService {
       name: dto.name,
       description: dto.description,
       cwd: dto.cwd,
-      model: dto.model,
-      allowedTools: dto.allowedTools,
       gitRepo: dto.gitRepo,
       gitBranch: dto.gitBranch,
-      anthropicBaseUrl: dto.anthropicBaseUrl,
       visibility: toPrismaVisibility(dto.visibility),
     };
     if (dto.gitToken !== undefined) {
       data.gitTokenEnc = dto.gitToken === "" ? null : this.crypto.encrypt(dto.gitToken);
     }
-    if (dto.anthropicApiKey !== undefined) {
-      data.anthropicApiKeyEnc =
-        dto.anthropicApiKey === "" ? null : this.crypto.encrypt(dto.anthropicApiKey);
+    // "" → 해제(null), 값 → 소유 확인 후 지정
+    if (dto.claudeAccountId !== undefined) {
+      if (dto.claudeAccountId === "") {
+        data.claudeAccount = { disconnect: true };
+      } else {
+        await this.assertOwnsAccount(dto.claudeAccountId, userId);
+        data.claudeAccount = { connect: { id: dto.claudeAccountId } };
+      }
     }
     return this.toDto(await this.prisma.project.update({ where: { id }, data }));
   }
@@ -235,13 +266,9 @@ export class ProjectsService {
   }
 
   /** 에이전트 실행 계층에서 사용할 복호화된 자격증명 */
-  async resolveSecrets(id: string): Promise<{
-    anthropicApiKey: string | null;
-    gitToken: string | null;
-  }> {
+  async resolveSecrets(id: string): Promise<{ gitToken: string | null }> {
     const p = await this.getRaw(id);
     return {
-      anthropicApiKey: this.crypto.decryptOptional(p.anthropicApiKeyEnc),
       gitToken: this.crypto.decryptOptional(p.gitTokenEnc),
     };
   }

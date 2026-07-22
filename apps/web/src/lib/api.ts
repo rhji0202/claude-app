@@ -69,3 +69,58 @@ export const api = {
     apiFetch<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
   del: <T>(path: string) => apiFetch<T>(path, { method: "DELETE" }),
 };
+
+/**
+ * SSE 스트리밍 POST. 서버가 `data: <json>\n\n` 형식으로 흘려보내는 이벤트를
+ * onEvent로 전달한다. EventSource는 Authorization 헤더를 못 실으므로 fetch+reader 사용.
+ */
+export async function streamPost(
+  path: string,
+  body: unknown,
+  onEvent: (event: unknown) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const h: Record<string, string> = { "Content-Type": "application/json" };
+  const token = getToken();
+  if (token) h.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: h,
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    let message = `요청 실패 (${res.status})`;
+    try {
+      const data = await res.json();
+      message = data.message || data.error || message;
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, message);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // SSE 이벤트는 빈 줄(\n\n)로 구분
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+    for (const part of parts) {
+      const line = part.split("\n").find((l) => l.startsWith("data:"));
+      if (!line) continue;
+      const json = line.slice(5).trim();
+      if (!json) continue;
+      try {
+        onEvent(JSON.parse(json));
+      } catch {
+        /* 파싱 불가한 조각 무시 */
+      }
+    }
+  }
+}

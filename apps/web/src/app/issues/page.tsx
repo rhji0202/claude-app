@@ -1,8 +1,26 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
+import { Download } from "lucide-react";
 import CrudPanel from "@/components/CrudPanel";
+import { PageHeader } from "@/components/PageHeader";
+import { StatusBadge, Mono } from "@/components/StatusBadge";
 import { api } from "@/lib/api";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "대기",
@@ -30,26 +48,27 @@ function GithubImport({ onImported }: { onImported: () => void }) {
   const [state, setState] = useState<"open" | "closed" | "all">("open");
   const [issues, setIssues] = useState<GhIssue[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    api.get<Project[]>("/projects").then(setProjects).catch(() => setProjects([]));
+    api
+      .get<Project[]>("/projects")
+      .then(setProjects)
+      .catch(() => setProjects([]));
   }, []);
 
   async function fetchIssues() {
-    if (!projectId) return setError("프로젝트를 선택하세요.");
+    if (!projectId) return toast.error("프로젝트를 선택하세요.");
     setBusy(true);
-    setError(null);
-    setNotice(null);
     setSelected(new Set());
     try {
-      const data = await api.get<GhIssue[]>(`/issues/github/${projectId}?state=${state}`);
+      const data = await api.get<GhIssue[]>(
+        `/issues/github/${projectId}?state=${state}`,
+      );
       setIssues(data);
-      if (data.length === 0) setNotice("이슈가 없습니다.");
+      if (data.length === 0) toast.info("이슈가 없습니다.");
     } catch (e) {
-      setError((e as Error).message);
+      toast.error((e as Error).message);
       setIssues([]);
     } finally {
       setBusy(false);
@@ -58,81 +77,105 @@ function GithubImport({ onImported }: { onImported: () => void }) {
 
   async function importSel() {
     setBusy(true);
-    setError(null);
     try {
-      const res = await api.post<{ imported: number } | unknown[]>("/issues/import", {
-        projectId,
-        numbers: Array.from(selected),
-      });
+      const res = await api.post<{ imported: number } | unknown[]>(
+        "/issues/import",
+        { projectId, numbers: Array.from(selected) },
+      );
       const n = Array.isArray(res) ? res.length : 0;
-      setNotice(`${n}개 이슈를 큐에 추가했습니다.`);
+      toast.success(`${n}개 이슈를 큐에 추가했습니다.`);
       setSelected(new Set());
       setIssues([]);
       onImported();
     } catch (e) {
-      setError((e as Error).message);
+      toast.error((e as Error).message);
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div className="card">
-      <h2>GitHub에서 이슈 가져오기</h2>
-      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-        <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ flex: 1 }}>
-          <option value="">프로젝트 선택 (gitRepo 필요)</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} {p.gitRepo ? `(${p.gitRepo})` : "(repo 없음)"}
-            </option>
-          ))}
-        </select>
-        <select value={state} onChange={(e) => setState(e.target.value as "open" | "closed" | "all")}>
-          <option value="open">열림</option>
-          <option value="closed">닫힘</option>
-          <option value="all">전체</option>
-        </select>
-        <button className="btn secondary" onClick={fetchIssues} disabled={busy}>
-          {busy ? "..." : "불러오기"}
-        </button>
-      </div>
-      {error && <div className="error-text">{error}</div>}
-      {notice && <div style={{ color: "var(--green)", fontSize: 13 }}>{notice}</div>}
-      {issues.length > 0 && (
-        <>
-          <table style={{ marginTop: 12 }}>
-            <tbody>
-              {issues.map((i) => (
-                <tr key={i.number}>
-                  <td style={{ width: 1 }}>
+    <Card className="mb-5">
+      <CardHeader>
+        <CardTitle className="text-sm">GitHub에서 이슈 가져오기</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Select value={projectId} onValueChange={setProjectId}>
+            <SelectTrigger className="flex-1">
+              <SelectValue placeholder="프로젝트 선택 (gitRepo 필요)" />
+            </SelectTrigger>
+            <SelectContent>
+              {projects.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name} {p.gitRepo ? `(${p.gitRepo})` : "(repo 없음)"}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={state}
+            onValueChange={(v) => setState(v as "open" | "closed" | "all")}
+          >
+            <SelectTrigger className="sm:w-32">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="open">열림</SelectItem>
+              <SelectItem value="closed">닫힘</SelectItem>
+              <SelectItem value="all">전체</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button variant="secondary" onClick={fetchIssues} disabled={busy}>
+            <Download className="size-4" />
+            {busy ? "..." : "불러오기"}
+          </Button>
+        </div>
+
+        {issues.length > 0 && (
+          <>
+            <div className="mt-4 space-y-1">
+              {issues.map((i) => {
+                const checked = selected.has(i.number);
+                return (
+                  <label
+                    key={i.number}
+                    className="flex cursor-pointer items-center gap-3 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted/40"
+                  >
                     <input
                       type="checkbox"
-                      checked={selected.has(i.number)}
+                      className="size-4 accent-[var(--accent)]"
+                      checked={checked}
                       onChange={() =>
                         setSelected((s) => {
                           const n = new Set(s);
-                          n.has(i.number) ? n.delete(i.number) : n.add(i.number);
+                          if (n.has(i.number)) n.delete(i.number);
+                          else n.add(i.number);
                           return n;
                         })
                       }
                     />
-                  </td>
-                  <td className="mono">#{i.number}</td>
-                  <td>{i.title}</td>
-                  <td className="mono">{i.labels.join(", ")}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div style={{ marginTop: 12 }}>
-            <button className="btn" disabled={busy || selected.size === 0} onClick={importSel}>
-              선택한 {selected.size}개 큐에 추가
-            </button>
-          </div>
-        </>
-      )}
-    </div>
+                    <Mono>#{i.number}</Mono>
+                    <span className="min-w-0 flex-1 truncate">{i.title}</span>
+                    {i.labels.length > 0 && (
+                      <Mono>{i.labels.join(", ")}</Mono>
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+            <div className="mt-4">
+              <Button
+                disabled={busy || selected.size === 0}
+                onClick={importSel}
+              >
+                선택한 {selected.size}개 큐에 추가
+              </Button>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -140,10 +183,9 @@ export default function IssuesPage() {
   const [reload, setReload] = useState(0);
   return (
     <div>
-      <h1 className="page-title">GitHub 이슈</h1>
-      <p className="page-desc">
+      <PageHeader title="GitHub 이슈">
         GitHub에서 이슈를 가져오거나 수동 등록해 에이전트로 실행하고, 결과를 이슈 코멘트로 되돌립니다.
-      </p>
+      </PageHeader>
 
       <GithubImport onImported={() => setReload((r) => r + 1)} />
 
@@ -163,15 +205,16 @@ export default function IssuesPage() {
           {
             key: "source",
             label: "출처",
-            render: (r) => <span className="mono">{String(r.source)}</span>,
+            render: (r) => <Mono>{String(r.source)}</Mono>,
           },
           {
             key: "status",
             label: "상태",
             render: (r) => (
-              <span className={`badge ${String(r.status)}`}>
-                {STATUS_LABEL[String(r.status)] ?? String(r.status)}
-              </span>
+              <StatusBadge
+                status={String(r.status)}
+                label={STATUS_LABEL[String(r.status)] ?? String(r.status)}
+              />
             ),
           },
         ]}

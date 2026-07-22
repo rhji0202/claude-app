@@ -112,6 +112,10 @@ export class ProjectsController {
     @CurrentUser() user: AuthUser,
   ) {
     await this.projects.assertCanEdit(id, user.userId);
-    return this.agent.run(id, { prompt: body.prompt, resume: body.resume });
+    return this.agent.run(id, {
+      prompt: body.prompt,
+      resume: body.resume,
+      userId: user.userId,
+    });
   }
 }

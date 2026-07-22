@@ -7,6 +7,7 @@ import { AuthService } from "./auth.service";
 import { AuthController } from "./auth.controller";
 import { JwtStrategy } from "./jwt.strategy";
 import { JwtAuthGuard } from "./jwt-auth.guard";
+import { RolesGuard } from "./roles.guard";
 
 @Module({
   imports: [
@@ -26,8 +27,10 @@ import { JwtAuthGuard } from "./jwt-auth.guard";
   providers: [
     AuthService,
     JwtStrategy,
-    // 전역 JWT 가드 (@Public 라우트는 우회)
+    // 전역 JWT 가드 (@Public 라우트는 우회) — authn
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    // 전역 역할 가드 (@AdminOnly 라우트만 admin 요구) — authz, JWT 가드 다음
+    { provide: APP_GUARD, useClass: RolesGuard },
   ],
   controllers: [AuthController],
 })

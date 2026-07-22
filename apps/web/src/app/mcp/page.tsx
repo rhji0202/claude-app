@@ -1,14 +1,16 @@
 "use client";
 
 import CrudPanel from "@/components/CrudPanel";
+import { PageHeader } from "@/components/PageHeader";
+import { Mono } from "@/components/StatusBadge";
+import { Badge } from "@/components/ui/badge";
 
 export default function McpPage() {
   return (
     <div>
-      <h1 className="page-title">MCP 서버</h1>
-      <p className="page-desc">
+      <PageHeader title="MCP 서버">
         Model Context Protocol 서버를 등록합니다. 프로젝트에 연결하면 해당 도구가 에이전트에 노출됩니다.
-      </p>
+      </PageHeader>
       <CrudPanel
         endpoint="/mcp"
         title="MCP 서버"
@@ -16,7 +18,7 @@ export default function McpPage() {
           {
             key: "id",
             label: "id",
-            render: (r) => <span className="mono">{String(r.id).slice(0, 8)}</span>,
+            render: (r) => <Mono>{String(r.id).slice(0, 8)}</Mono>,
           },
           { key: "name", label: "이름" },
           { key: "type", label: "타입" },
@@ -24,11 +26,11 @@ export default function McpPage() {
             key: "target",
             label: "대상",
             render: (r) => (
-              <span className="mono">
+              <Mono>
                 {r.type === "stdio"
                   ? `${r.command ?? ""} ${((r.args as string[]) ?? []).join(" ")}`
                   : String(r.url ?? "")}
-              </span>
+              </Mono>
             ),
           },
           {
@@ -36,9 +38,9 @@ export default function McpPage() {
             label: "활성",
             render: (r) =>
               r.enabled ? (
-                <span className="badge ok">ON</span>
+                <Badge variant="success">ON</Badge>
               ) : (
-                <span className="badge queued">OFF</span>
+                <Badge variant="muted">OFF</Badge>
               ),
           },
         ]}

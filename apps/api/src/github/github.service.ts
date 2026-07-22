@@ -58,13 +58,20 @@ export class GithubService {
   }
 
   static parseRepo(repo: string): { owner: string; name: string } {
-    const parts = repo.trim().split("/");
-    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    // owner/repo, https://github.com/owner/repo(.git), git@github.com:owner/repo(.git) 모두 허용
+    let s = repo.trim();
+    s = s.replace(/^git@github\.com:/i, "");
+    s = s.replace(/^https?:\/\/github\.com\//i, "");
+    s = s.replace(/\.git$/i, "");
+    s = s.replace(/\/$/, "");
+    const parts = s.split("/").filter(Boolean);
+    if (parts.length < 2 || !parts[0] || !parts[1]) {
       throw new HttpException(
-        `잘못된 저장소 형식: "${repo}" (owner/repo)`,
+        `잘못된 저장소 형식: "${repo}" (owner/repo 또는 GitHub URL)`,
         400,
       );
     }
+    // owner/repo만 취함 (URL에 추가 경로가 붙어도 앞 2개 사용)
     return { owner: parts[0], name: parts[1] };
   }
 

@@ -5,6 +5,8 @@ import { validateEnv } from "./config/env.validation";
 import { PrismaModule } from "./prisma/prisma.module";
 import { CryptoModule } from "./crypto/crypto.module";
 import { AuthModule } from "./auth/auth.module";
+import { AdminModule } from "./admin/admin.module";
+import { ClaudeAccountModule } from "./claude-account/claude-account.module";
 import { AgentModule } from "./agent/agent.module";
 import { GithubModule } from "./github/github.module";
 import { ProjectsModule } from "./projects/projects.module";
@@ -13,6 +15,7 @@ import { CronModule } from "./cron/cron.module";
 import { SkillsModule } from "./skills/skills.module";
 import { McpModule } from "./mcp/mcp.module";
 import { ShareModule } from "./share/share.module";
+import { ChatModule } from "./chat/chat.module";
 import { HealthController } from "./health.controller";
 
 @Module({
@@ -25,6 +28,8 @@ import { HealthController } from "./health.controller";
     PrismaModule,
     CryptoModule,
     AuthModule,
+    AdminModule,
+    ClaudeAccountModule,
     AgentModule,
     GithubModule,
     ProjectsModule,
@@ -33,6 +38,7 @@ import { HealthController } from "./health.controller";
     SkillsModule,
     McpModule,
     ShareModule,
+    ChatModule,
   ],
   controllers: [HealthController],
 })

@@ -50,20 +50,84 @@ enum Role {
   VIEWER
 }
 
+// 전역(시스템) 역할 — 프로젝트 단위 Role과 별개.
+enum GlobalRole {
+  ADMIN
+  MEMBER
+}
+
 enum ShareLinkScope {
   READ
   ISSUE_REPORT
 }
 
 model User {
-  id            String         @id @default(uuid())
-  email         String         @unique
+  id            String          @id @default(uuid())
+  email         String          @unique
   name          String?
   passwordHash  String
-  ownedProjects Project[]      @relation("Owns")
+  role          GlobalRole      @default(MEMBER)
+  disabled      Boolean         @default(false)
+  ownedProjects Project[]       @relation("Owns")
   shares        ProjectShare[]
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  claudeAccounts ClaudeAccount[]
+  chatSessions  ChatSession[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+}
+
+// Claude(Anthropic) OAuth 계정. accessToken/refreshToken은 암호화 저장.
+model ClaudeAccount {
+  id               String    @id @default(uuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label            String
+  accessTokenEnc   String
+  refreshTokenEnc  String?
+  expiresAt        DateTime?
+  scopes           String[]
+  accountEmail     String?
+  subscriptionType String?
+  isActive         Boolean   @default(false)
+  projects         Project[]
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+enum ChatRole {
+  USER
+  ASSISTANT
+}
+
+model ChatSession {
+  id           String        @id @default(uuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId    String
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title        String?
+  sdkSessionId String?
+  messages     ChatMessage[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([projectId])
+}
+
+model ChatMessage {
+  id        String      @id @default(uuid())
+  sessionId String
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      ChatRole
+  content   String
+  // 순서 있는 파트 타임라인(text/tool). assistant 메시지에만 존재.
+  parts     Json?
+  createdAt DateTime    @default(now())
+
+  @@index([sessionId])
 }
 
 model Project {
@@ -71,29 +135,30 @@ model Project {
   name        String
   description String?
   cwd         String
-  model       String?
-  allowedTools String[]
 
   // 프로젝트별 git 연결
   gitRepo   String?
   gitBranch String?
 
   // 프로젝트별 자격증명 (암호화 저장)
-  gitTokenEnc        String?
-  anthropicApiKeyEnc String?
-  anthropicBaseUrl   String?
+  gitTokenEnc String?
+
+  // 프로젝트가 사용할 Claude 계정(선택). 미지정 시 실행 사용자 활성 계정 → .env 폴백.
+  claudeAccountId String?
+  claudeAccount   ClaudeAccount? @relation(fields: [claudeAccountId], references: [id], onDelete: SetNull)
 
   // 소유 / 공개 범위
   ownerId    String?
   owner      User?      @relation("Owns", fields: [ownerId], references: [id], onDelete: SetNull)
   visibility Visibility @default(PRIVATE)
 
-  shares     ProjectShare[]
-  shareLinks ShareLink[]
-  mcpServers ProjectMcpServer[]
-  skills     ProjectSkill[]
-  issueTasks IssueTask[]
-  cronJobs   CronJob[]
+  shares       ProjectShare[]
+  shareLinks   ShareLink[]
+  mcpServers   ProjectMcpServer[]
+  skills       ProjectSkill[]
+  issueTasks   IssueTask[]
+  cronJobs     CronJob[]
+  chatSessions ChatSession[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

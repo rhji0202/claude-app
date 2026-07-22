@@ -1,38 +1,46 @@
 "use client";
 
 import Link from "next/link";
+import { KeyRound } from "lucide-react";
 import CrudPanel from "@/components/CrudPanel";
+import { PageHeader } from "@/components/PageHeader";
+import { Mono } from "@/components/StatusBadge";
+import { Badge } from "@/components/ui/badge";
 
 export default function ProjectsPage() {
   return (
     <div>
-      <h1 className="page-title">프로젝트</h1>
-      <p className="page-desc">
-        에이전트 실행 컨텍스트. 작업 디렉터리·모델·git 연결·API 키(프로젝트별, 암호화 저장)를 정의합니다.
-        공유·스킬/MCP 연결은 각 프로젝트의 <strong>관리</strong>에서 설정합니다.
-      </p>
+      <PageHeader title="프로젝트">
+        에이전트 실행 컨텍스트. 작업 디렉터리·git 연결을 정의합니다. Anthropic
+        자격증명은 <strong>계정</strong>에서, 공유·스킬/MCP 연결은 각 프로젝트의{" "}
+        <strong>관리</strong>에서 설정합니다.
+      </PageHeader>
       <CrudPanel
         endpoint="/projects"
         title="프로젝트"
         columns={[
           { key: "name", label: "이름" },
-          { key: "gitRepo", label: "저장소" },
+          {
+            key: "gitRepo",
+            label: "저장소",
+            render: (r) => <Mono>{String(r.gitRepo ?? "—")}</Mono>,
+          },
           {
             key: "visibility",
             label: "공개범위",
-            render: (r) => <span className="badge queued">{String(r.visibility)}</span>,
+            render: (r) => <Badge variant="muted">{String(r.visibility)}</Badge>,
           },
           {
             key: "secrets",
             label: "자격증명",
             render: (r) => {
-              const s = r.secrets as { hasAnthropicApiKey: boolean; hasGitToken: boolean };
+              const s = r.secrets as { hasGitToken: boolean };
+              if (!s?.hasGitToken) return <Mono>—</Mono>;
               return (
-                <span className="mono">
-                  {s?.hasAnthropicApiKey ? "🔑API " : ""}
-                  {s?.hasGitToken ? "🔑git" : ""}
-                  {!s?.hasAnthropicApiKey && !s?.hasGitToken ? "—" : ""}
-                </span>
+                <Badge variant="outline">
+                  <KeyRound className="size-3" />
+                  git
+                </Badge>
               );
             },
           },
@@ -40,7 +48,10 @@ export default function ProjectsPage() {
             key: "manage",
             label: "",
             render: (r) => (
-              <Link href={`/projects/${r.id}`} style={{ color: "var(--accent)" }}>
+              <Link
+                href={`/projects/${r.id}`}
+                className="font-medium text-accent hover:underline"
+              >
                 관리 →
               </Link>
             ),
@@ -64,23 +75,14 @@ export default function ProjectsPage() {
             full: true,
           },
           {
-            name: "anthropicApiKey",
-            label: "Anthropic API 키 (암호화 저장)",
-            placeholder: "sk-ant-...",
-            full: true,
-          },
-          { name: "model", label: "모델", placeholder: "claude-sonnet-5" },
-          {
-            name: "anthropicBaseUrl",
-            label: "Anthropic Base URL (선택)",
-            placeholder: "https://gateway.example.com",
-          },
-          {
-            name: "allowedTools",
-            label: "허용 도구 (콤마 구분)",
-            type: "csv",
-            placeholder: "Read, Write, Bash, mcp__github__*",
-            full: true,
+            name: "claudeAccountId",
+            label: "Claude 계정 (미선택 시 기본 활성 계정)",
+            type: "select",
+            optionsFrom: {
+              endpoint: "/claude-accounts",
+              valueKey: "id",
+              labelKey: "label",
+            },
           },
           {
             name: "visibility",

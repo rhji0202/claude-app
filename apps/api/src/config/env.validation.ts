@@ -13,9 +13,11 @@ export const envSchema = z.object({
     .min(1, "ENCRYPTION_KEY가 필요합니다. (openssl rand -base64 32)"),
   JWT_SECRET: z.string().min(1, "JWT_SECRET이 필요합니다."),
   JWT_EXPIRES_IN: z.string().default("7d"),
-  // 프로젝트가 자체 키를 갖지 않을 때의 폴백 (선택)
-  ANTHROPIC_API_KEY: z.string().optional(),
+  // 활성 Claude 계정이 없을 때의 폴백 OAuth 토큰 (선택, sk-ant-oat...)
+  ANTHROPIC_OAUTH_TOKEN: z.string().optional(),
   WEB_ORIGIN: z.string().optional(),
+  // 부팅 시 admin으로 승격할 이메일(쉼표 구분). 첫 관리자 부트스트랩.
+  ADMIN_EMAILS: z.string().optional(),
   // 동시에 실행할 에이전트 수 상한 (에이전트 1개 = CLI 서브프로세스 1개)
   AGENT_CONCURRENCY: z.coerce.number().int().positive().default(3),
 });

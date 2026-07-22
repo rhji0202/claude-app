@@ -305,6 +305,7 @@ export class IssuesService {
     const res = await this.agent.run(project.id, {
       prompt,
       resume: task.sessionId ?? undefined,
+      userId: project.ownerId ?? undefined,
       systemPrompt:
         "당신은 GitHub 이슈를 해결하는 소프트웨어 엔지니어입니다. 신중하게 분석하고 최소한의 변경으로 해결하세요.",
     });

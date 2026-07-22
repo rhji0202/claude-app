@@ -1,14 +1,16 @@
 "use client";
 
 import CrudPanel from "@/components/CrudPanel";
+import { PageHeader } from "@/components/PageHeader";
+import { Mono } from "@/components/StatusBadge";
+import { Badge } from "@/components/ui/badge";
 
 export default function SkillsPage() {
   return (
     <div>
-      <h1 className="page-title">스킬</h1>
-      <p className="page-desc">
+      <PageHeader title="스킬">
         재사용 가능한 지시/워크플로. 프로젝트에 연결하면 에이전트 시스템 프롬프트에 주입됩니다.
-      </p>
+      </PageHeader>
       <CrudPanel
         endpoint="/skills"
         title="스킬"
@@ -16,7 +18,7 @@ export default function SkillsPage() {
           {
             key: "id",
             label: "id",
-            render: (r) => <span className="mono">{String(r.id).slice(0, 8)}</span>,
+            render: (r) => <Mono>{String(r.id).slice(0, 8)}</Mono>,
           },
           { key: "name", label: "이름" },
           { key: "description", label: "설명" },
@@ -26,9 +28,9 @@ export default function SkillsPage() {
             label: "활성",
             render: (r) =>
               r.enabled ? (
-                <span className="badge ok">ON</span>
+                <Badge variant="success">ON</Badge>
               ) : (
-                <span className="badge queued">OFF</span>
+                <Badge variant="muted">OFF</Badge>
               ),
           },
         ]}

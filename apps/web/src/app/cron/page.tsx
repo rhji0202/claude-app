@@ -1,15 +1,17 @@
 "use client";
 
 import CrudPanel from "@/components/CrudPanel";
+import { PageHeader } from "@/components/PageHeader";
+import { StatusBadge, Mono } from "@/components/StatusBadge";
+import { Badge } from "@/components/ui/badge";
 
 export default function CronPage() {
   return (
     <div>
-      <h1 className="page-title">크론</h1>
-      <p className="page-desc">
+      <PageHeader title="크론">
         정기적으로 에이전트 프롬프트를 실행합니다. 표준 5필드 크론식 (예:{" "}
-        <span className="mono">0 9 * * 1</span> = 매주 월요일 9시).
-      </p>
+        <Mono>0 9 * * 1</Mono> = 매주 월요일 9시).
+      </PageHeader>
       <CrudPanel
         endpoint="/cron"
         title="크론 작업"
@@ -18,16 +20,16 @@ export default function CronPage() {
           {
             key: "schedule",
             label: "스케줄",
-            render: (r) => <span className="mono">{String(r.schedule)}</span>,
+            render: (r) => <Mono>{String(r.schedule)}</Mono>,
           },
           {
             key: "enabled",
             label: "활성",
             render: (r) =>
               r.enabled ? (
-                <span className="badge ok">ON</span>
+                <Badge variant="success">ON</Badge>
               ) : (
-                <span className="badge queued">OFF</span>
+                <Badge variant="muted">OFF</Badge>
               ),
           },
           {
@@ -35,11 +37,9 @@ export default function CronPage() {
             label: "최근 실행",
             render: (r) =>
               r.lastStatus ? (
-                <span className={`badge ${String(r.lastStatus)}`}>
-                  {String(r.lastStatus)}
-                </span>
+                <StatusBadge status={String(r.lastStatus)} />
               ) : (
-                <span className="mono">—</span>
+                <Mono>—</Mono>
               ),
           },
         ]}

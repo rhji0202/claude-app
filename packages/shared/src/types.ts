@@ -10,7 +10,6 @@ export type ID = string;
 
 /** 시크릿 필드는 API 응답에서 절대 노출하지 않는다. 대신 보유 여부만 내려준다. */
 export interface SecretStatus {
-  hasAnthropicApiKey: boolean;
   hasGitToken: boolean;
 }
 
@@ -22,15 +21,13 @@ export interface Project {
   description?: string | null;
   /** 에이전트 실행 작업 디렉터리 */
   cwd: string;
-  model?: string | null;
-  allowedTools: string[];
 
   // 프로젝트별 git 연결
   gitRepo?: string | null;
   gitBranch?: string | null;
 
-  // 프로젝트별 Anthropic 설정 (키 자체는 노출 안 함)
-  anthropicBaseUrl?: string | null;
+  /** 이 프로젝트가 사용할 Claude 계정 id (미지정 시 활성 계정 폴백) */
+  claudeAccountId?: string | null;
 
   // 소유/공개 범위
   ownerId?: string | null;
@@ -119,10 +116,15 @@ export interface McpServer {
 
 export type UserRole = "owner" | "editor" | "viewer";
 
+/** 전역(시스템) 역할 — 프로젝트 단위 UserRole과 별개 */
+export type GlobalRole = "admin" | "member";
+
 export interface User {
   id: ID;
   email: string;
   name?: string | null;
+  role: GlobalRole;
+  disabled: boolean;
   createdAt: string;
 }
 

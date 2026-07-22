@@ -34,7 +34,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 필요}
       JWT_EXPIRES_IN: "7d"
       WEB_ORIGIN: http://localhost:3000
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_OAUTH_TOKEN: ${ANTHROPIC_OAUTH_TOKEN:-}
     ports:
       - "3001:3001"
     depends_on:

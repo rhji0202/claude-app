@@ -95,6 +95,7 @@ POST /api/public/share/:token/issues     테스터 수동 이슈 등록 (scope=i
 
 ## 보안 메모
 
-- 프로젝트별 `ANTHROPIC_API_KEY` / GitHub 토큰은 AES-256-GCM으로 암호화해 저장하며,
+- Claude 계정 OAuth 토큰 / 프로젝트별 GitHub 토큰은 AES-256-GCM으로 암호화해 저장하며,
   API 응답에는 값 대신 보유 여부만 내려줍니다.
-- 에이전트 실행 시 복호화한 키를 SDK `env` 옵션으로 주입합니다 (프로세스 전역 키 미사용).
+- 에이전트 실행 시 활성 Claude 계정의 OAuth 토큰을 복호화해 SDK `env`(`CLAUDE_CODE_OAUTH_TOKEN`)로
+  주입합니다 (프로세스 전역 키 미사용).
