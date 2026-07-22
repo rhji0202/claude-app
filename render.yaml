@@ -1,0 +1,39 @@
+# Render Blueprint — 백엔드(NestJS) + 관리형 PostgreSQL (선택 A의 백엔드 쪽)
+# Render 대시보드에서 "New > Blueprint"로 이 저장소를 연결하면 아래가 생성됩니다.
+# 프론트엔드는 Vercel에 별도 배포하고, 아래 WEB_ORIGIN에 그 도메인을 넣으세요.
+
+databases:
+  - name: claude-db
+    plan: free
+
+services:
+  - type: web
+    name: claude-api
+    runtime: docker
+    dockerfilePath: apps/api/Dockerfile
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3001"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: claude-db
+          property: connectionString
+      # 32바이트 base64. 자동 생성값은 형식이 안 맞으므로 직접 입력:
+      #   openssl rand -base64 32
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: "7d"
+      # Vercel 프론트 도메인 (쉼표로 여러 개)
+      - key: WEB_ORIGIN
+        sync: false
+      # 프로젝트가 자체 키를 안 쓸 때의 폴백 (선택)
+      - key: ANTHROPIC_API_KEY
+        sync: false

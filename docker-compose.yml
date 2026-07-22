@@ -1,0 +1,56 @@
+# 로컬 개발 / 단일 호스트 배포 (선택 B) — postgres + api + web 한 번에
+#
+#   ENCRYPTION_KEY=$(openssl rand -base64 32) JWT_SECRET=... docker compose up --build
+#
+# web은 NEXT_PUBLIC_API_URL이 빌드 시점에 박히므로, 외부 배포 시
+# args.NEXT_PUBLIC_API_URL을 실제 API 공개 주소로 바꿔서 빌드하세요.
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: claude
+      POSTGRES_PASSWORD: claude
+      POSTGRES_DB: claude_management
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claude"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://claude:claude@db:5432/claude_management?schema=public
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY 필요 - openssl rand -base64 32}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 필요}
+      JWT_EXPIRES_IN: "7d"
+      WEB_ORIGIN: http://localhost:3000
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "3001:3001"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:3001/api
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

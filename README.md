@@ -84,6 +84,15 @@ POST /api/public/share/:token/issues     테스터 수동 이슈 등록 (scope=i
 모든 리소스 라우트는 전역 JWT 가드로 보호되며, 프로젝트 접근은 소유자 또는
 공유받은 사용자만 가능합니다(viewer는 읽기, editor는 편집, owner는 삭제·공유 관리).
 
+## 배포
+
+배포 방법은 [DEPLOY.md](./DEPLOY.md) 참고:
+- **선택 A**: 프론트 → Vercel(`apps/web`), 백엔드 → Render/Railway 등 상시 호스트(`render.yaml`/`apps/api/Dockerfile`)
+- **선택 B**: 한 호스트에 전부 → `docker compose up` (`docker-compose.yml`)
+
+> Vercel은 서버리스라 백엔드(상시 크론 + 에이전트 서브프로세스)를 실행할 수 없어,
+> Vercel 사용 시 백엔드는 별도 상시 호스트가 필요합니다.
+
 ## 보안 메모
 
 - 프로젝트별 `ANTHROPIC_API_KEY` / GitHub 토큰은 AES-256-GCM으로 암호화해 저장하며,
