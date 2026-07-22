@@ -55,7 +55,7 @@ pnpm dev:web    # Next.js
 ## 진행 상황 (단계별 마이그레이션)
 
 - [x] **1. 기반**: 모노레포, NestJS 스켈레톤, Prisma 스키마, 공유 타입, 암호화/설정 모듈
-- [ ] **2. 핵심 CRUD**: projects/issues/cron/skills/mcp 모듈, 프로젝트별 git·API키, M:N 조인
+- [x] **2. 핵심 CRUD**: projects/issues/cron/skills/mcp 모듈, 프로젝트별 git·API키(암호화), 크론식 검증, 수동 이슈 등록
 - [ ] **3. 에이전트·크론·큐**: 프로젝트별 키 주입 실행, 동적 크론(SchedulerRegistry), 동시성 큐
 - [ ] **4. 인증·공유**: JWT 인증, 팀 공유, 공유 링크(테스터 이슈 등록)
 - [ ] **5. 프론트 연동**: Next.js를 NestJS API 소비로 전환
