@@ -124,6 +124,36 @@ export class ProjectsService {
     await this.prisma.project.delete({ where: { id } });
   }
 
+  // ---- 스킬 / MCP 서버 연결 (M:N) ----
+
+  async attachSkill(projectId: string, skillId: string): Promise<void> {
+    await this.getRaw(projectId);
+    await this.prisma.projectSkill.upsert({
+      where: { projectId_skillId: { projectId, skillId } },
+      create: { projectId, skillId },
+      update: {},
+    });
+  }
+
+  async detachSkill(projectId: string, skillId: string): Promise<void> {
+    await this.prisma.projectSkill.deleteMany({ where: { projectId, skillId } });
+  }
+
+  async attachMcp(projectId: string, mcpServerId: string): Promise<void> {
+    await this.getRaw(projectId);
+    await this.prisma.projectMcpServer.upsert({
+      where: { projectId_mcpServerId: { projectId, mcpServerId } },
+      create: { projectId, mcpServerId },
+      update: {},
+    });
+  }
+
+  async detachMcp(projectId: string, mcpServerId: string): Promise<void> {
+    await this.prisma.projectMcpServer.deleteMany({
+      where: { projectId, mcpServerId },
+    });
+  }
+
   /** 에이전트 실행 계층에서 사용할 복호화된 자격증명 */
   async resolveSecrets(id: string): Promise<{
     anthropicApiKey: string | null;

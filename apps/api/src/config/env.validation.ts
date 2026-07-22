@@ -16,6 +16,8 @@ export const envSchema = z.object({
   // 프로젝트가 자체 키를 갖지 않을 때의 폴백 (선택)
   ANTHROPIC_API_KEY: z.string().optional(),
   WEB_ORIGIN: z.string().optional(),
+  // 동시에 실행할 에이전트 수 상한 (에이전트 1개 = CLI 서브프로세스 1개)
+  AGENT_CONCURRENCY: z.coerce.number().int().positive().default(3),
 });
 
 export type Env = z.infer<typeof envSchema>;

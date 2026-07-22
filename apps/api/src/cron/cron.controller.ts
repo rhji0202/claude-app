@@ -30,4 +30,9 @@ export class CronController {
     await this.cron.remove(id);
     return { ok: true };
   }
+
+  /** 즉시 실행: POST /api/cron/:id/run */
+  @Post(":id/run") runNow(@Param("id") id: string) {
+    return this.cron.runNow(id);
+  }
 }

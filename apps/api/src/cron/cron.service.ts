@@ -6,12 +6,16 @@ import {
 import { CronJob as PrismaCronJob, CronStatus } from "@prisma/client";
 import { CronTime } from "cron";
 import { PrismaService } from "../prisma/prisma.service";
+import { CronRegistryService } from "./cron-registry.service";
 import type { CronJob as CronDto, CronStatus as CronStatusDto } from "@claude-app/shared";
 import { CreateCronJobDto, UpdateCronJobDto } from "./cron.dto";
 
 @Injectable()
 export class CronService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly registry: CronRegistryService,
+  ) {}
 
   /** 크론식 유효성 검증 (cron 패키지 사용). 잘못되면 400. */
   static validateSchedule(schedule: string): void {
@@ -76,6 +80,7 @@ export class CronService {
         enabled: dto.enabled ?? true,
       },
     });
+    if (row.enabled) this.registry.register(row.id, row.schedule);
     return this.toDto(row);
   }
 
@@ -91,11 +96,20 @@ export class CronService {
         enabled: dto.enabled,
       },
     });
+    this.registry.update(row.id, row.schedule, row.enabled);
     return this.toDto(row);
   }
 
   async remove(id: string): Promise<void> {
     await this.getRaw(id);
+    this.registry.remove(id);
     await this.prisma.cronJob.delete({ where: { id } });
+  }
+
+  /** 즉시 실행 후 갱신된 작업 반환 */
+  async runNow(id: string): Promise<CronDto> {
+    await this.getRaw(id);
+    await this.registry.fire(id);
+    return this.get(id);
   }
 }
