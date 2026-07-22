@@ -1,6 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import CrudPanel from "@/components/CrudPanel";
+import GithubImportPanel from "@/components/GithubImportPanel";
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "대기",
@@ -10,22 +12,37 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export default function IssuesPage() {
+  const [reload, setReload] = useState(0);
+
   return (
     <div>
       <h1 className="page-title">GitHub 이슈</h1>
       <p className="page-desc">
-        이슈를 작업 큐에 등록하고 에이전트로 실행합니다. 실행은 프로젝트 컨텍스트에서 이뤄집니다.
+        GitHub에서 이슈를 실시간으로 불러와 큐에 등록하고, 에이전트로 실행한 뒤 결과를
+        이슈 코멘트로 되돌릴 수 있습니다.
       </p>
+
+      <GithubImportPanel onImported={() => setReload((r) => r + 1)} />
+
       <CrudPanel
         endpoint="/api/issues"
         title="이슈 작업"
+        createTitle="이슈 작업 수동 추가"
+        reloadSignal={reload}
         columns={[
-          { key: "repo", label: "저장소" },
           {
-            key: "issueNumber",
-            label: "#",
-            render: (r) => `#${r.issueNumber}`,
+            key: "repo",
+            label: "저장소",
+            render: (r) =>
+              r.url ? (
+                <a href={String(r.url)} target="_blank" rel="noreferrer">
+                  {String(r.repo)}
+                </a>
+              ) : (
+                String(r.repo ?? "")
+              ),
           },
+          { key: "issueNumber", label: "#", render: (r) => `#${r.issueNumber}` },
           { key: "title", label: "제목" },
           {
             key: "status",
@@ -35,6 +52,18 @@ export default function IssuesPage() {
                 {STATUS_LABEL[String(r.status)] ?? String(r.status)}
               </span>
             ),
+          },
+          {
+            key: "resultCommentUrl",
+            label: "코멘트",
+            render: (r) =>
+              r.resultCommentUrl ? (
+                <a href={String(r.resultCommentUrl)} target="_blank" rel="noreferrer">
+                  게시됨 ↗
+                </a>
+              ) : (
+                <span className="mono">—</span>
+              ),
           },
         ]}
         fields={[
@@ -70,6 +99,12 @@ export default function IssuesPage() {
             label: "실행",
             href: (r) => `/api/issues/${r.id}/run`,
             confirm: "이 이슈 작업을 에이전트로 실행하시겠습니까?",
+          },
+          {
+            label: "결과 코멘트",
+            href: (r) => `/api/issues/${r.id}/comment`,
+            confirm:
+              "실행 결과를 GitHub 이슈에 코멘트로 게시합니다. 진행하시겠습니까?",
           },
         ]}
       />

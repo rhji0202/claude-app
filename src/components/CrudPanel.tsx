@@ -49,6 +49,8 @@ export interface CrudPanelProps {
   columns: ColumnDef[];
   fields: FieldDef[];
   rowActions?: RowAction[];
+  /** 값이 바뀌면 목록을 다시 불러온다(외부에서 데이터가 변경됐을 때). */
+  reloadSignal?: number;
 }
 
 type Row = Record<string, unknown> & { id: string };
@@ -82,7 +84,7 @@ export default function CrudPanel(props: CrudPanelProps) {
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, props.reloadSignal]);
 
   // 동적 select 옵션 로딩
   useEffect(() => {

@@ -33,12 +33,22 @@ export interface IssueTask {
   repo: string;
   issueNumber: number;
   title: string;
+  /** GitHub에서 가져온 이슈 본문 */
+  body?: string;
+  /** GitHub 이슈 URL */
+  url?: string;
+  /** 이슈 라벨 */
+  labels?: string[];
+  /** 이슈 작성자 로그인 */
+  author?: string;
   /** 에이전트에게 줄 지시(미지정 시 이슈 본문 기반 기본 프롬프트 생성) */
   prompt?: string;
   status: IssueTaskStatus;
   sessionId?: string;
   result?: string;
   error?: string;
+  /** 결과를 이슈에 코멘트로 남겼을 때의 코멘트 URL */
+  resultCommentUrl?: string;
   createdAt: string;
   updatedAt: string;
 }

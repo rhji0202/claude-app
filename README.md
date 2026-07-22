@@ -69,9 +69,29 @@ npm run dev            # http://localhost:3000
 npm run scheduler
 ```
 
-## 다음 단계 (뼈대 이후 확장 예정)
+## GitHub 이슈 실연동
 
-- GitHub API/MCP 실연동으로 이슈 자동 fetch, PR 생성
+`GITHUB_TOKEN`을 설정하면 이슈 모듈이 GitHub REST API와 실시간으로 연동됩니다.
+
+- **불러오기**: 이슈 페이지에서 저장소(`owner/repo`)의 이슈를 실시간 조회 → 선택해 작업 큐로 가져오기
+- **실행**: 실행 시 이슈 본문·라벨·코멘트를 GitHub에서 가져와 에이전트 프롬프트에 주입
+- **결과 코멘트**: 실행 결과를 이슈에 코멘트로 게시 (외부 쓰기이므로 명시적 확인 후 실행)
+
+관련 코드/엔드포인트:
+
+```
+lib/github/client.ts             GitHub REST 클라이언트 (조회/코멘트)
+lib/modules/issues.ts            프롬프트 구성 · 실행 · import · comment
+GET  /api/github/status          GITHUB_TOKEN 설정 여부
+GET  /api/github/issues?repo=…   저장소 이슈 실시간 조회 (PR 제외)
+POST /api/issues/import          선택 이슈를 큐로 가져오기
+POST /api/issues/[id]/run        에이전트 실행
+POST /api/issues/[id]/comment    결과를 이슈 코멘트로 게시
+```
+
+## 다음 단계 (확장 예정)
+
+- 에이전트가 변경 사항으로 브랜치·PR 자동 생성 (github MCP 연동)
 - 에이전트 실행 로그 실시간 스트리밍(SSE) UI
 - 이슈/크론 실행 비동기 큐 처리 (현재는 동기 실행)
 - 사용자 인증 및 권한, 감사 로그
