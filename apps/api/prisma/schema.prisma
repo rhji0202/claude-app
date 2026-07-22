@@ -1,0 +1,211 @@
+// Claude 관리 시스템 데이터 모델
+// 시크릿(anthropicApiKey, gitToken)은 AES-256-GCM으로 암호화해 *Enc 컬럼에 저장한다.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Visibility {
+  PRIVATE
+  SHARED
+  PUBLIC
+}
+
+enum IssueStatus {
+  QUEUED
+  RUNNING
+  DONE
+  ERROR
+}
+
+enum IssueSource {
+  GITHUB
+  MANUAL
+}
+
+enum CronStatus {
+  OK
+  ERROR
+}
+
+enum SkillScope {
+  GLOBAL
+  PROJECT
+}
+
+enum McpType {
+  STDIO
+  HTTP
+  SSE
+}
+
+enum Role {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+enum ShareLinkScope {
+  READ
+  ISSUE_REPORT
+}
+
+model User {
+  id            String         @id @default(uuid())
+  email         String         @unique
+  name          String?
+  passwordHash  String
+  ownedProjects Project[]      @relation("Owns")
+  shares        ProjectShare[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+}
+
+model Project {
+  id          String  @id @default(uuid())
+  name        String
+  description String?
+  cwd         String
+  model       String?
+  allowedTools String[]
+
+  // 프로젝트별 git 연결
+  gitRepo   String?
+  gitBranch String?
+
+  // 프로젝트별 자격증명 (암호화 저장)
+  gitTokenEnc        String?
+  anthropicApiKeyEnc String?
+  anthropicBaseUrl   String?
+
+  // 소유 / 공개 범위
+  ownerId    String?
+  owner      User?      @relation("Owns", fields: [ownerId], references: [id], onDelete: SetNull)
+  visibility Visibility @default(PRIVATE)
+
+  shares     ProjectShare[]
+  shareLinks ShareLink[]
+  mcpServers ProjectMcpServer[]
+  skills     ProjectSkill[]
+  issueTasks IssueTask[]
+  cronJobs   CronJob[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model IssueTask {
+  id          String      @id @default(uuid())
+  projectId   String
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  repo        String
+  issueNumber Int?
+  title       String
+  body        String?
+  url         String?
+  labels      String[]
+  author      String?
+  source      IssueSource @default(GITHUB)
+  prompt      String?
+  status      IssueStatus @default(QUEUED)
+  sessionId   String?
+  result      String?
+  error       String?
+  resultCommentUrl String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([projectId])
+}
+
+model CronJob {
+  id         String      @id @default(uuid())
+  name       String
+  schedule   String
+  prompt     String
+  projectId  String
+  project    Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  enabled    Boolean     @default(true)
+  lastRunAt  DateTime?
+  lastResult String?
+  lastStatus CronStatus?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@index([projectId])
+}
+
+model Skill {
+  id          String         @id @default(uuid())
+  name        String
+  description String
+  content     String
+  scope       SkillScope     @default(PROJECT)
+  enabled     Boolean        @default(true)
+  projects    ProjectSkill[]
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+}
+
+model McpServer {
+  id        String             @id @default(uuid())
+  name      String
+  type      McpType
+  command   String?
+  args      String[]
+  url       String?
+  // 시크릿 값을 포함할 수 있는 env는 JSON으로 저장(값 암호화는 서비스 계층에서 처리)
+  env       Json?
+  enabled   Boolean            @default(true)
+  projects  ProjectMcpServer[]
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+}
+
+// M:N 조인 - 스킬/ MCP 서버를 여러 프로젝트가 공유
+model ProjectSkill {
+  projectId String
+  skillId   String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  skill     Skill   @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, skillId])
+}
+
+model ProjectMcpServer {
+  projectId   String
+  mcpServerId String
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  server      McpServer @relation(fields: [mcpServerId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, mcpServerId])
+}
+
+// 팀원 공유 (멀티유저)
+model ProjectShare {
+  projectId String
+  userId    String
+  role      Role    @default(VIEWER)
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, userId])
+}
+
+// 공유 링크 (로그인 없이 스코프된 접근 - 테스터 이슈 등록 등)
+model ShareLink {
+  id        String         @id @default(uuid())
+  token     String         @unique
+  projectId String
+  project   Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scope     ShareLinkScope @default(READ)
+  expiresAt DateTime?
+  createdAt DateTime       @default(now())
+
+  @@index([projectId])
+}

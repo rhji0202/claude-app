@@ -1,17 +1,24 @@
 # dependencies
-/node_modules
-/.pnp
+node_modules/
+.pnp
 .pnp.js
 
 # next.js
-/.next/
-/out/
+.next/
+out/
+
+# nest build output
+dist/
+
+# prisma generated client
+apps/api/src/generated/
+**/.prisma/
 
 # production
-/build
+build/
 
-# local data store (JSON persistence for skeleton)
-/.data/
+# local data store (legacy JSON persistence)
+.data/
 
 # env
 .env
