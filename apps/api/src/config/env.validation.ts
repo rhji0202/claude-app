@@ -27,8 +27,11 @@ export const envSchema = z.object({
   ISSUE_WORKER_POLL_MS: z.coerce.number().int().nonnegative().default(5000),
   // 실패/중단 이슈 자동 재시도 최대 횟수
   ISSUE_MAX_RETRY: z.coerce.number().int().nonnegative().default(2),
+  // 이슈 실행 최대 턴 수(에이전트 왕복). 넉넉히 잡아 조사+수정+요약이 한 실행에 끝나게 한다.
+  ISSUE_MAX_TURNS: z.coerce.number().int().positive().default(300),
   // stale 클레임 회수 임계(ms). RUNNING인데 이 시간 넘게 갱신 없으면 회수(INTERRUPTED).
-  ISSUE_STALE_MS: z.coerce.number().int().positive().default(600000),
+  // maxTurns가 크면 실행이 길어지므로 넉넉히(기본 30분).
+  ISSUE_STALE_MS: z.coerce.number().int().positive().default(1800000),
   // per-run worktree 루트. 미설정 시 apps/api/worktrees.
   ISSUE_WORKTREE_ROOT: z.string().optional(),
   // 시스템 관리 clone 루트. 미설정 시 apps/api/repos. UPLOADS_DIR와 분리 필수(정적 노출 방지).

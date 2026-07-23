@@ -46,6 +46,38 @@ const NOTE_AUTHOR_TO_DTO: Record<IssueNoteAuthor, IssueNoteAuthorDto> = {
 };
 import { CreateIssueTaskDto, UpdateIssueTaskDto } from "./issues.dto";
 
+/** 텍스트를 한 줄 미리보기로(개행 정리 + 길이 제한). */
+function preview(text: string, max = 140): string {
+  const s = text.replace(/\s+/g, " ").trim();
+  return s.length > max ? s.slice(0, max) + "…" : s;
+}
+
+/**
+ * 도구 입력(JSON 문자열)을 사람이 읽을 한 줄 요약으로.
+ * 흔한 키(command/file_path/path/pattern/url/description)를 우선 노출, 없으면 앞부분.
+ */
+function summarizeToolInput(input: string | undefined): string {
+  if (!input) return "";
+  try {
+    const obj = JSON.parse(input) as Record<string, unknown>;
+    for (const k of [
+      "command",
+      "file_path",
+      "path",
+      "pattern",
+      "query",
+      "url",
+      "description",
+      "prompt",
+    ]) {
+      if (typeof obj[k] === "string" && obj[k]) return preview(String(obj[k]), 120);
+    }
+    return preview(input, 120);
+  } catch {
+    return preview(input, 120);
+  }
+}
+
 const fromSource = (s: PrismaSource): IssueSource =>
   s === PrismaSource.MANUAL ? "manual" : "github";
 const toSource = (s: IssueSource): PrismaSource =>
@@ -674,8 +706,9 @@ export class IssuesService implements OnModuleInit {
           userId: project.ownerId ?? undefined,
           images: images.length > 0 ? images : undefined,
           cwd: wt.path,
-          // PR 생성·triage(코멘트/gh 왕복)는 기본 20턴을 넘길 수 있음 → 상향.
-          maxTurns: prOpts || triage ? 40 : undefined,
+          // 이슈 실행 턴 예산(ISSUE_MAX_TURNS, 기본 300). 조사+수정+(PR/triage)+요약이
+          // 한 실행에 끝나도록 넉넉히. 크론·채팅은 영향 없음(각자 기본값 사용).
+          maxTurns: this.config.get<number>("ISSUE_MAX_TURNS") ?? 300,
           systemPrompt: prOpts
             ? "당신은 GitHub 이슈를 해결하는 소프트웨어 엔지니어입니다. 신중하게 분석하고 최소한의 변경으로 해결한 뒤, 지시에 따라 브랜치를 push하고 Pull Request를 만드세요."
             : "당신은 GitHub 이슈를 해결하는 소프트웨어 엔지니어입니다. 신중하게 분석하고 최소한의 변경으로 해결하세요.",
@@ -797,21 +830,28 @@ export class IssuesService implements OnModuleInit {
         .catch(() => undefined); // RUNNING 아님/삭제 등은 무시
     };
 
+    const push = (ev: {
+      t: "tool" | "text";
+      name?: string;
+      detail?: string;
+    }) => {
+      log.push({ ...ev, at: new Date().toISOString() });
+      if (log.length > MAX_LOG) log.shift();
+      dirty = true;
+      void flush();
+    };
+
     const onEvent = (e: AgentStreamEvent) => {
       if (e.type === "session") sessionId = e.sessionId;
       else if (e.type === "tool") {
-        progress = `도구: ${e.name}`;
-        log.push({ t: "tool", name: e.name, at: new Date().toISOString() });
-        if (log.length > MAX_LOG) log.shift();
-        dirty = true;
-        void flush();
+        const detail = summarizeToolInput(e.input);
+        progress = detail ? `도구: ${e.name} — ${detail}` : `도구: ${e.name}`;
+        push({ t: "tool", name: e.name, detail });
       } else if (e.type === "text_end" && e.text) {
         lastText = e.text;
+        const detail = preview(e.text);
         progress = "작성 중…";
-        log.push({ t: "text", at: new Date().toISOString() });
-        if (log.length > MAX_LOG) log.shift();
-        dirty = true;
-        void flush();
+        push({ t: "text", detail });
       } else if (e.type === "done") {
         finalText = e.text || lastText;
         done = true;
@@ -833,8 +873,12 @@ export class IssuesService implements OnModuleInit {
     }
 
     if (errored !== undefined) {
-      // result 없이 스트림이 끝난 '중단'과 실제 오류를 구분(agent.execute와 동일 규약)
-      const interrupted = errored.includes("결과를 반환하기 전에 실행이 중단");
+      // 진짜 오류가 아닌 '중단'을 구분(오류 아님 → INTERRUPTED로 표시, resume/재실행으로 이어감):
+      //  - result 없이 스트림 종료(프로세스 kill 등)
+      //  - 최대 턴 수 도달(작업이 길어 예산 소진 — describeResultError의 "최대 턴 수…" 문구)
+      const interrupted =
+        errored.includes("결과를 반환하기 전에 실행이 중단") ||
+        errored.includes("최대 턴 수");
       return {
         status: "error",
         sessionId,

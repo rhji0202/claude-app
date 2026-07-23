@@ -68,6 +68,8 @@ export interface IssueProgressEvent {
   t: "tool" | "text";
   /** 도구 이름(t=tool일 때) */
   name?: string;
+  /** 내용 요약: 도구 입력 요약 또는 텍스트 앞부분(길이 제한) */
+  detail?: string;
   /** ISO 시각 */
   at: string;
 }

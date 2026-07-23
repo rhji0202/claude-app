@@ -162,7 +162,9 @@ function RunningCell({
     <div className="flex flex-col gap-1">
       {badge}
       {progress && (
-        <span className="text-xs text-muted-foreground">{progress}</span>
+        <span className="block max-w-[16rem] truncate text-xs text-muted-foreground">
+          {progress}
+        </span>
       )}
     </div>
   );
@@ -178,17 +180,24 @@ function RunningCell({
           <DialogTitle>진행 내역</DialogTitle>
           <DialogDescription>{String(row.title ?? "")}</DialogDescription>
         </DialogHeader>
-        <div className="max-h-[60vh] space-y-1.5 overflow-y-auto">
+        <div className="max-h-[60vh] space-y-2 overflow-y-auto">
           {log.map((ev, i) => (
-            <div key={i} className="flex items-center gap-2 text-sm">
-              <span className="text-xs tabular-nums text-muted-foreground">
+            <div key={i} className="flex gap-2 text-sm">
+              <span className="shrink-0 pt-0.5 text-xs tabular-nums text-muted-foreground">
                 {new Date(ev.at).toLocaleTimeString()}
               </span>
-              {ev.t === "tool" ? (
-                <Mono>🔧 {ev.name}</Mono>
-              ) : (
-                <span className="text-muted-foreground">✍️ 텍스트 작성</span>
-              )}
+              <div className="min-w-0 flex-1">
+                {ev.t === "tool" ? (
+                  <Mono>🔧 {ev.name}</Mono>
+                ) : (
+                  <span className="text-xs text-muted-foreground">✍️ 텍스트</span>
+                )}
+                {ev.detail && (
+                  <div className="mt-0.5 whitespace-pre-wrap break-words text-xs text-muted-foreground">
+                    {ev.detail}
+                  </div>
+                )}
+              </div>
             </div>
           ))}
           <p className="pt-2 text-xs text-muted-foreground">
