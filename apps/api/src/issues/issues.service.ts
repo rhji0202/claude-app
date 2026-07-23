@@ -830,11 +830,7 @@ export class IssuesService implements OnModuleInit {
         .catch(() => undefined); // RUNNING 아님/삭제 등은 무시
     };
 
-    const push = (ev: {
-      t: "tool" | "text";
-      name?: string;
-      detail?: string;
-    }) => {
+    const push = (ev: { t: "tool"; name?: string; detail?: string }) => {
       log.push({ ...ev, at: new Date().toISOString() });
       if (log.length > MAX_LOG) log.shift();
       dirty = true;
@@ -848,10 +844,8 @@ export class IssuesService implements OnModuleInit {
         progress = detail ? `도구: ${e.name} — ${detail}` : `도구: ${e.name}`;
         push({ t: "tool", name: e.name, detail });
       } else if (e.type === "text_end" && e.text) {
+        // 텍스트는 타임라인에 남기지 않고(노이즈), 최종 결과 폴백용으로만 보관.
         lastText = e.text;
-        const detail = preview(e.text);
-        progress = "작성 중…";
-        push({ t: "text", detail });
       } else if (e.type === "done") {
         finalText = e.text || lastText;
         done = true;

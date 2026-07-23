@@ -187,11 +187,7 @@ function RunningCell({
                 {new Date(ev.at).toLocaleTimeString()}
               </span>
               <div className="min-w-0 flex-1">
-                {ev.t === "tool" ? (
-                  <Mono>🔧 {ev.name}</Mono>
-                ) : (
-                  <span className="text-xs text-muted-foreground">✍️ 텍스트</span>
-                )}
+                <Mono>🔧 {ev.name}</Mono>
                 {ev.detail && (
                   <div className="mt-0.5 whitespace-pre-wrap break-words text-xs text-muted-foreground">
                     {ev.detail}
@@ -669,6 +665,10 @@ export default function IssuesPage() {
     ? `/issues?projectId=${filterProjectId}`
     : "/issues";
 
+  // projectId → 이름 매핑(저장소 대신 프로젝트 이름 표시용)
+  const projectName = (id: unknown) =>
+    projects.find((p) => p.id === String(id))?.name ?? "—";
+
   return (
     <div>
       <PageHeader title="GitHub 이슈">
@@ -726,14 +726,14 @@ export default function IssuesPage() {
         pollMs={4000}
         columns={[
           {
-            key: "repo",
-            label: "저장소",
+            key: "projectId",
+            label: "프로젝트",
             render: (r) => (
               <span
-                className="block max-w-[40vw] truncate sm:max-w-[14rem]"
-                title={String(r.repo ?? "")}
+                className="block max-w-[10rem] truncate"
+                title={projectName(r.projectId)}
               >
-                {String(r.repo ?? "")}
+                {projectName(r.projectId)}
               </span>
             ),
           },
@@ -747,7 +747,7 @@ export default function IssuesPage() {
             label: "제목",
             render: (r) => (
               <span
-                className="block max-w-[55vw] truncate sm:max-w-[32rem]"
+                className="block max-w-[55vw] truncate sm:max-w-[26rem]"
                 title={String(r.title ?? "")}
               >
                 {String(r.title ?? "")}
