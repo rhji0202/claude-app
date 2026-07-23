@@ -2,13 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Download, Play, Plus } from "lucide-react";
+import { Download, Loader2, Play, Plus } from "lucide-react";
 import { Streamdown } from "streamdown";
 import type { IssueNote, IssueProgressEvent } from "@claude-app/shared";
 import CrudPanel from "@/components/CrudPanel";
 import { WorkerDashboard } from "./WorkerDashboard";
 import { PageHeader } from "@/components/PageHeader";
 import { StatusBadge, Mono } from "@/components/StatusBadge";
+import { Badge } from "@/components/ui/badge";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { api, upload, uploadUrl } from "@/lib/api";
 import { Input } from "@/components/ui/input";
@@ -222,7 +223,7 @@ function ImageCell({ imgs, title }: { imgs: string[]; title: string }) {
           alt=""
           className="size-6 rounded object-cover"
         />
-        <span className="text-xs text-muted-foreground">{imgs.length}</span>
+        <Badge variant="muted">{imgs.length}</Badge>
       </DialogTrigger>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
@@ -848,9 +849,17 @@ export default function IssuesPage() {
             key: "rerun",
             label: "재실행",
             render: (r) => {
-              // 실행 중에는 재실행 버튼을 막는다.
+              // 실행 중에는 재실행 대신 회전 아이콘으로 표시(재실행 막음).
               if (String(r.status) === "running")
-                return <Mono>실행 중</Mono>;
+                return (
+                  <span
+                    className="inline-flex size-8 items-center justify-center text-muted-foreground"
+                    title="실행 중"
+                    aria-label="실행 중"
+                  >
+                    <Loader2 className="size-4 animate-spin" />
+                  </span>
+                );
               return (
                 <RerunDialog
                   row={r}
