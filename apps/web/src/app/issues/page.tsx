@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Download, Plus } from "lucide-react";
+import { Download, Play, Plus } from "lucide-react";
 import { Streamdown } from "streamdown";
 import type { IssueNote } from "@claude-app/shared";
 import CrudPanel from "@/components/CrudPanel";
@@ -84,9 +84,9 @@ function IssueStatusCell({
     );
   }
 
-  // 결정 대기: 에이전트 질문 + 메모/이력 + 재개
+  // 결정 대기: 배지 클릭 → 에이전트 질문 + 이력 + 추가 지시 + 재개
   if (status === "needs_decision") {
-    return <DecisionCell row={row} badge={badge} onChanged={onChanged} />;
+    return <RerunDialog row={row} trigger={badge} onChanged={onChanged} />;
   }
 
   // 볼 내용이 없으면 배지만 (대기 등)
@@ -152,25 +152,33 @@ const NOTE_LABEL: Record<string, string> = {
 };
 
 /**
- * 결정 대기 셀: 배지 클릭 → 에이전트 질문·이력 타임라인 + 메모 입력 + 재개.
- * 열 때 GET /issues/:id/notes로 이력을 지연 로드한다.
+ * 재실행 다이얼로그: 이력 타임라인 + 추가 지시 입력 + 재실행.
+ * 어떤 상태의 이슈에도 쓸 수 있다. 열 때 GET /issues/:id/notes로 이력 지연 로드.
+ *
+ * 재실행 동작:
+ *  - 입력한 추가 지시가 있으면 먼저 POST /notes(HUMAN)로 남긴다(실행 시 프롬프트에 주입됨).
+ *  - 상태가 needs_decision이면 POST /resume, 그 외에는 POST /run으로 재큐한다.
  */
-function DecisionCell({
+function RerunDialog({
   row,
-  badge,
+  trigger,
   onChanged,
 }: {
   row: Record<string, unknown>;
-  badge: React.ReactNode;
+  trigger: React.ReactNode;
   onChanged?: () => void;
 }) {
   const id = String(row.id);
+  const status = String(row.status);
+  const isDecision = status === "needs_decision";
+  const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState<IssueNote[] | null>(null);
   const [memo, setMemo] = useState("");
   const [busy, setBusy] = useState(false);
 
-  async function loadNotes(open: boolean) {
-    if (!open) return;
+  async function loadNotes(next: boolean) {
+    setOpen(next);
+    if (!next) return;
     try {
       setNotes(await api.get<IssueNote[]>(`/issues/${id}/notes`));
     } catch (e) {
@@ -186,7 +194,7 @@ function DecisionCell({
       await api.post(`/issues/${id}/notes`, { content: memo.trim() });
       setMemo("");
       await loadNotes(true);
-      toast.success("메모를 추가했습니다.");
+      toast.success("지시를 추가했습니다.");
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -194,11 +202,18 @@ function DecisionCell({
     }
   }
 
-  async function resume() {
+  async function rerun() {
     setBusy(true);
     try {
-      await api.post(`/issues/${id}/resume`);
-      toast.success("재개했습니다. 워커가 다시 처리합니다.");
+      // 입력한 추가 지시가 있으면 먼저 메모로 남긴다(다음 실행 프롬프트에 주입).
+      if (memo.trim()) {
+        await api.post(`/issues/${id}/notes`, { content: memo.trim() });
+        setMemo("");
+      }
+      // 결정 대기는 resume, 그 외 상태는 run으로 재큐.
+      await api.post(`/issues/${id}/${isDecision ? "resume" : "run"}`);
+      toast.success("재실행 대기열에 넣었습니다. 워커가 처리합니다.");
+      setOpen(false);
       onChanged?.();
     } catch (e) {
       toast.error((e as Error).message);
@@ -207,23 +222,25 @@ function DecisionCell({
     }
   }
 
-  // 에이전트의 마지막 질문(가장 최근 AGENT 메모)
+  // 에이전트의 마지막 질문(가장 최근 AGENT 메모) — 결정 대기일 때 강조
   const question = notes
     ? [...notes].reverse().find((n) => n.author === "agent")?.content
     : null;
 
   return (
-    <Dialog onOpenChange={loadNotes}>
-      <DialogTrigger className="cursor-pointer" title="결정 대기 상세">
-        {badge}
+    <Dialog open={open} onOpenChange={loadNotes}>
+      <DialogTrigger className="cursor-pointer" title="지시 후 재실행">
+        {trigger}
       </DialogTrigger>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>사람 결정이 필요합니다</DialogTitle>
+          <DialogTitle>
+            {isDecision ? "사람 결정이 필요합니다" : "추가 지시 후 재실행"}
+          </DialogTitle>
           <DialogDescription>{String(row.title ?? "")}</DialogDescription>
         </DialogHeader>
         <div className="max-h-[60vh] space-y-4 overflow-y-auto">
-          {question && (
+          {isDecision && question && (
             <div className="rounded-md border border-[var(--accent)]/40 bg-[var(--accent)]/5 p-3 text-sm">
               <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 에이전트 질문
@@ -249,10 +266,10 @@ function DecisionCell({
               ))
             )}
           </div>
-          {/* 메모 입력 */}
+          {/* 추가 지시 입력 */}
           <div className="space-y-2">
             <Textarea
-              placeholder="에이전트에게 전달할 결정·지시를 입력하세요."
+              placeholder="이번 실행에 반영할 추가 지시를 입력하세요. (선택 — 비워두면 그대로 재실행)"
               value={memo}
               onChange={(e) => setMemo(e.target.value)}
             />
@@ -262,10 +279,10 @@ function DecisionCell({
                 onClick={addMemo}
                 disabled={busy || !memo.trim()}
               >
-                메모 추가
+                지시만 저장
               </Button>
-              <Button onClick={resume} disabled={busy}>
-                재개
+              <Button onClick={rerun} disabled={busy}>
+                {memo.trim() ? "지시 반영해 재실행" : "재실행"}
               </Button>
             </div>
           </div>
@@ -708,19 +725,30 @@ export default function IssuesPage() {
               );
             },
           },
+          {
+            key: "rerun",
+            label: "재실행",
+            render: (r) => {
+              // 실행 중에는 재실행 버튼을 막는다.
+              if (String(r.status) === "running")
+                return <Mono>실행 중</Mono>;
+              return (
+                <RerunDialog
+                  row={r}
+                  onChanged={() => setReload((n) => n + 1)}
+                  trigger={
+                    <span className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs hover:bg-muted/50">
+                      <Play className="size-3" />
+                      지시·재실행
+                    </span>
+                  }
+                />
+              );
+            },
+          },
         ]}
         fields={[]}
         rowActions={[
-          {
-            label: "실행",
-            href: (r) => `/issues/${r.id}/run`,
-            confirm: "이 이슈를 에이전트로 실행하시겠습니까?",
-          },
-          {
-            label: "재큐",
-            href: (r) => `/issues/${r.id}/requeue`,
-            confirm: "이 이슈를 다시 큐에 넣어 재실행합니다. 진행할까요?",
-          },
           {
             label: "결과 코멘트",
             href: (r) => `/issues/${r.id}/comment`,
