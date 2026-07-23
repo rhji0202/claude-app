@@ -60,13 +60,11 @@ export default function ProjectsPage() {
         fields={[
           { name: "name", label: "이름", required: true, placeholder: "my-project" },
           {
-            name: "cwd",
-            label: "작업 디렉터리(cwd)",
-            required: true,
-            placeholder: "/home/user/projects/my-project",
+            name: "gitRepo",
+            label: "GitHub 저장소 (실행에 필요)",
+            placeholder: "owner/repo",
             full: true,
           },
-          { name: "gitRepo", label: "GitHub 저장소", placeholder: "owner/repo" },
           { name: "gitBranch", label: "브랜치", placeholder: "main" },
           {
             name: "gitToken",

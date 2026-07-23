@@ -212,7 +212,9 @@ export default function ProjectDetailPage() {
         {project.name}
       </h1>
       <p className="mt-1">
-        <Mono>{project.cwd}</Mono>
+        <Mono>
+          {project.gitRepo ?? "gitRepo 미설정 — 실행하려면 저장소를 연결하세요"}
+        </Mono>
       </p>
 
       <div className="mt-6 space-y-5">
