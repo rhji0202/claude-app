@@ -79,6 +79,8 @@ export interface RowAction {
   href: (row: Record<string, unknown>) => string;
   variant?: "secondary" | "danger";
   confirm?: string;
+  /** 지정 시 라벨 텍스트 대신 아이콘만 표시(label은 툴팁·접근성용) */
+  icon?: React.ReactNode;
 }
 
 /** 선택된 행에 대한 일괄 작업(체크박스 다중 선택). */
@@ -624,18 +626,33 @@ function RowActions({
 }) {
   return (
     <div className="flex flex-nowrap items-center justify-end gap-1.5">
-      {actions?.map((a) => (
-        <Button
-          key={a.label}
-          variant={a.variant === "danger" ? "destructive" : "secondary"}
-          size="sm"
-          className="shrink-0 whitespace-nowrap"
-          disabled={busy}
-          onClick={() => onRun(a, row)}
-        >
-          {a.label}
-        </Button>
-      ))}
+      {actions?.map((a) =>
+        a.icon ? (
+          <Button
+            key={a.label}
+            variant={a.variant === "danger" ? "destructive" : "secondary"}
+            size="icon"
+            className="size-8 shrink-0"
+            disabled={busy}
+            onClick={() => onRun(a, row)}
+            title={a.label}
+            aria-label={a.label}
+          >
+            {a.icon}
+          </Button>
+        ) : (
+          <Button
+            key={a.label}
+            variant={a.variant === "danger" ? "destructive" : "secondary"}
+            size="sm"
+            className="shrink-0 whitespace-nowrap"
+            disabled={busy}
+            onClick={() => onRun(a, row)}
+          >
+            {a.label}
+          </Button>
+        ),
+      )}
       {onEdit && (
         <Button
           variant="secondary"
@@ -649,12 +666,13 @@ function RowActions({
       )}
       <Button
         variant="destructive"
-        size="sm"
-        className="shrink-0"
+        size="icon"
+        className="size-8 shrink-0"
         onClick={onDelete}
+        title="삭제"
+        aria-label="삭제"
       >
         <Trash2 className="size-4" />
-        삭제
       </Button>
     </div>
   );

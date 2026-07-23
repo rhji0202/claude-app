@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Download, Loader2, Play, Plus } from "lucide-react";
+import { Download, Loader2, MessageSquare, Play, Plus } from "lucide-react";
 import { Streamdown } from "streamdown";
 import type { IssueNote, IssueProgressEvent } from "@claude-app/shared";
 import CrudPanel from "@/components/CrudPanel";
@@ -884,6 +884,7 @@ export default function IssuesPage() {
             label: "결과 코멘트",
             href: (r) => `/issues/${r.id}/comment`,
             confirm: "실행 결과를 GitHub 이슈에 코멘트로 게시합니다. 진행할까요?",
+            icon: <MessageSquare className="size-4" />,
           },
         ]}
       />
