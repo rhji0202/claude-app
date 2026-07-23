@@ -646,13 +646,35 @@ export default function IssuesPage() {
         }
         pollMs={4000}
         columns={[
-          { key: "repo", label: "저장소" },
+          {
+            key: "repo",
+            label: "저장소",
+            render: (r) => (
+              <span
+                className="block max-w-[40vw] truncate sm:max-w-[14rem]"
+                title={String(r.repo ?? "")}
+              >
+                {String(r.repo ?? "")}
+              </span>
+            ),
+          },
           {
             key: "issueNumber",
             label: "#",
             render: (r) => (r.issueNumber ? `#${r.issueNumber}` : "—"),
           },
-          { key: "title", label: "제목" },
+          {
+            key: "title",
+            label: "제목",
+            render: (r) => (
+              <span
+                className="block max-w-[55vw] truncate sm:max-w-[22rem]"
+                title={String(r.title ?? "")}
+              >
+                {String(r.title ?? "")}
+              </span>
+            ),
+          },
           {
             key: "source",
             label: "출처",
