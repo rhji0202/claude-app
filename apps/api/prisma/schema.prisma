@@ -146,6 +146,9 @@ model Project {
   autoPr    Boolean @default(false)
   // PR 생성 후 자동 머지까지 진행할지(gh pr merge --auto). autoPr가 true일 때만 의미 있음.
   autoMerge Boolean @default(false)
+  // 이슈 실행 전 triage 분류(auto-fix/needs-decision/needs-info/question)를 수행하고
+  // 결과를 라벨·코멘트로 반영할지 여부.
+  autoTriage Boolean @default(false)
 
   // 프로젝트별 자격증명 (암호화 저장)
   gitTokenEnc String?
@@ -193,6 +196,8 @@ model IssueTask {
   resultCommentUrl String?
   // autoPr 실행 시 에이전트가 만든 PR URL (있으면 프론트에 링크 표시)
   prUrl       String?
+  // triage 분류 결과: auto-fix | needs-decision | needs-info | question (미분류면 null)
+  category    String?
   // 큐/워커: 재시도 횟수, 워커가 집은 시각(stale 회수용), 집은 워커 인스턴스 id(다중 워커 대비)
   attempts    Int         @default(0)
   claimedAt   DateTime?

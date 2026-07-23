@@ -37,6 +37,11 @@ export class CreateProjectDto {
   @IsBoolean()
   autoMerge?: boolean;
 
+  /** 이슈 실행 전 triage 분류 수행 */
+  @IsOptional()
+  @IsBoolean()
+  autoTriage?: boolean;
+
   /** 평문 입력 → 서버에서 암호화 저장 */
   @IsOptional()
   @IsString()

@@ -67,6 +67,7 @@ export default function ProjectDetailPage() {
   // 이슈 자동화(autoPr/autoMerge) 설정 로컬 편집 상태
   const [autoPr, setAutoPr] = useState(false);
   const [autoMerge, setAutoMerge] = useState(false);
+  const [autoTriage, setAutoTriage] = useState(false);
   const [savingPr, setSavingPr] = useState(false);
 
   const load = useCallback(async () => {
@@ -83,6 +84,7 @@ export default function ProjectDetailPage() {
       setProject(p);
       setAutoPr(Boolean(p.autoPr));
       setAutoMerge(Boolean(p.autoMerge));
+      setAutoTriage(Boolean(p.autoTriage));
       setShares(sh);
       setLinks(lk);
       setAllSkills(sk);
@@ -137,7 +139,11 @@ export default function ProjectDetailPage() {
     try {
       // autoMerge는 autoPr가 켜져 있을 때만 의미 있음 → 함께 정리해 저장.
       const nextMerge = autoPr ? autoMerge : false;
-      await api.patch(`/projects/${id}`, { autoPr, autoMerge: nextMerge });
+      await api.patch(`/projects/${id}`, {
+        autoPr,
+        autoMerge: nextMerge,
+        autoTriage,
+      });
       setAutoMerge(nextMerge);
       toast.success("이슈 자동화 설정을 저장했습니다.");
       await load();
@@ -400,6 +406,22 @@ export default function ProjectDetailPage() {
                 동작하지 않습니다. 먼저 저장소를 연결하세요.
               </p>
             )}
+            <label className="flex items-center gap-2.5 text-sm">
+              <input
+                type="checkbox"
+                className="size-4 accent-[var(--accent)]"
+                checked={autoTriage}
+                onChange={(e) => setAutoTriage(e.target.checked)}
+              />
+              <span>
+                <strong className="font-medium">자동 분류(triage)</strong>
+                <span className="text-muted-foreground">
+                  {" "}
+                  — 실행 시 이슈를 자동수정/결정필요/정보부족/질문으로 분류하고
+                  라벨·코멘트 반영
+                </span>
+              </span>
+            </label>
             <label className="flex items-center gap-2.5 text-sm">
               <input
                 type="checkbox"

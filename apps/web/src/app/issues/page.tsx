@@ -44,6 +44,13 @@ const STATUS_LABEL: Record<string, string> = {
   interrupted: "중단됨",
 };
 
+const CATEGORY_LABEL: Record<string, string> = {
+  "auto-fix": "자동수정",
+  "needs-decision": "결정필요",
+  "needs-info": "정보부족",
+  question: "질문",
+};
+
 /**
  * 상태 배지를 클릭하면 오류 메시지·실행 결과 전문을 다이얼로그로 보여준다.
  * error/result가 있는 상태(오류·완료)에서만 클릭 가능하게 한다.
@@ -482,6 +489,15 @@ export default function IssuesPage() {
             key: "status",
             label: "상태",
             render: (r) => <IssueStatusCell row={r} />,
+          },
+          {
+            key: "category",
+            label: "분류",
+            render: (r) => {
+              const cat = (r.category as string | null | undefined) ?? null;
+              if (!cat) return <Mono>—</Mono>;
+              return <StatusBadge status={cat} label={CATEGORY_LABEL[cat] ?? cat} />;
+            },
           },
           {
             key: "prUrl",

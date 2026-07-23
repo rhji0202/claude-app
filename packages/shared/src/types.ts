@@ -32,6 +32,9 @@ export interface Project {
   /** PR 생성 후 자동 머지까지 진행할지(autoPr가 true일 때만 유효) */
   autoMerge?: boolean;
 
+  /** 이슈 실행 전 triage 분류를 수행하고 라벨·코멘트로 반영할지 */
+  autoTriage?: boolean;
+
   /** 이 프로젝트가 사용할 Claude 계정 id (미지정 시 활성 계정 폴백) */
   claudeAccountId?: string | null;
 
@@ -56,6 +59,13 @@ export type IssueTaskStatus =
 /** 이슈 출처: GitHub 동기화 vs 공유 링크를 통한 테스터 수동 등록 */
 export type IssueSource = "github" | "manual";
 
+/** triage 분류 카테고리 */
+export type IssueCategory =
+  | "auto-fix"
+  | "needs-decision"
+  | "needs-info"
+  | "question";
+
 export interface IssueTask {
   id: ID;
   projectId: ID;
@@ -77,6 +87,8 @@ export interface IssueTask {
   resultCommentUrl?: string | null;
   /** autoPr 실행으로 생성된 PR URL (있으면 링크 표시) */
   prUrl?: string | null;
+  /** triage 분류 결과(미분류면 null) */
+  category?: IssueCategory | null;
   createdAt: string;
   updatedAt: string;
 }

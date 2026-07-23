@@ -277,12 +277,13 @@ REPOS_DIR=
 - [ ] 프론트: 결정 대기 팝업 + 메모 입력 + 재개 버튼 + 이력 타임라인
 - [ ] 검증: 빈 이슈("test") → NEEDS_DECISION → 메모 남기고 재개 → 이어서 진행
 
-### Phase 3 — GitHub triage 워커 (목표 3)
-- [ ] GithubService에 `setLabels`, `createPullRequest` 추가
-- [ ] 에이전트가 cwd에서 git/gh CLI로 브랜치·커밋·PR (권한/토큰 확인)
-- [ ] triage 분류 시스템 프롬프트/스킬 (auto-fix/needs-decision/needs-info/question)
-- [ ] 분류 결과 → 라벨 적용 / PR 생성 / 코멘트 / NEEDS_DECISION 전이
-- [ ] 검증: 실제 GitHub 이슈로 분류 → 라벨/PR 생성 확인
+### Phase 3 — GitHub triage 워커 (목표 3) ✅ 완료(결정대기 전이 제외)
+- [x] GithubService에 `setLabels`(PUT issues/{n}/labels) 추가. PR 생성은 REST `createPullRequest` 대신 **에이전트가 gh CLI로** 수행(설계 12절 방침) — 별도 이슈 PR 자동화(Project.autoPr/autoMerge, IssueTask.prUrl)로 구현.
+- [x] 에이전트가 worktree cwd에서 git/gh CLI로 커밋·push·PR·코멘트 (GITHUB_TOKEN/GH_TOKEN env 주입, gh 2.78 설치 확인, bypass 권한)
+- [x] triage 분류 시스템 프롬프트 (auto-fix/needs-decision/needs-info/question) — `Project.autoTriage` 옵트인. buildPrompt에 분류 지시 + `TRIAGE:<category>` 규약, executeClaimed에서 파싱.
+- [x] 분류 결과 → `IssueTask.category` 저장 + `triage:<category>` 라벨 적용(setLabels). auto-fix면 PR 경로와 결합, needs-*/question은 에이전트가 gh 코멘트.
+- [~] NEEDS_DECISION 전이는 **Phase 2(결정대기) 미구현**이라 제외 — needs-decision은 라벨+코멘트로만 표시(사용자 결정).
+- [ ] 검증: 실제 GitHub 이슈로 분류 → 라벨/PR 생성 확인 (사용자 환경 필요 — autoTriage/autoPr 켠 프로젝트로)
 
 ---
 

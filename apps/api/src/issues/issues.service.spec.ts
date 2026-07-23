@@ -39,6 +39,7 @@ describe("IssuesService (큐/워커)", () => {
   let worktrees: { create: jest.Mock; remove: jest.Mock; pruneOrphans: jest.Mock };
   let agent: { run: jest.Mock };
   let crypto: { decryptOptional: jest.Mock };
+  let github: { setLabels: jest.Mock; createComment: jest.Mock };
   let service: IssuesService;
 
   function makeService(cfg: Record<string, unknown> = {}): IssuesService {
@@ -46,7 +47,7 @@ describe("IssuesService (큐/워커)", () => {
       prisma as unknown as PrismaService,
       crypto as unknown as CryptoService,
       agent as unknown as AgentService,
-      {} as unknown as GithubService,
+      github as unknown as GithubService,
       projects as unknown as ProjectsService,
       {} as unknown as UploadsService,
       repos as unknown as RepoManagerService,
@@ -80,6 +81,10 @@ describe("IssuesService (큐/워커)", () => {
     };
     agent = { run: jest.fn() };
     crypto = { decryptOptional: jest.fn().mockReturnValue("tok") };
+    github = {
+      setLabels: jest.fn().mockResolvedValue(["triage:auto-fix"]),
+      createComment: jest.fn().mockResolvedValue({ html_url: "u" }),
+    };
     service = makeService();
   });
 
@@ -218,6 +223,72 @@ describe("IssuesService (큐/워커)", () => {
       await service.executeClaimed(task);
       const upd = prisma.issueTask.update.mock.calls[0][0];
       expect(upd.data.prUrl).toBeNull();
+    });
+
+    it("autoTriage면 분류를 파싱해 category 저장 + triage 라벨을 적용한다", async () => {
+      const ghTask = {
+        id: "i1",
+        projectId: "p1",
+        images: [],
+        sessionId: null,
+        repo: "o/r",
+        issueNumber: 7,
+        title: "t",
+        labels: ["bug"],
+      } as never;
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+        autoTriage: true,
+      });
+      agent.run.mockResolvedValue({
+        status: "ok",
+        sessionId: "s1",
+        text: "분석 결과…\nTRIAGE: auto-fix",
+      });
+      await service.executeClaimed(ghTask);
+
+      // 프롬프트에 triage 분류 지시 포함
+      expect(agent.run.mock.calls[0][1].prompt).toContain("TRIAGE:");
+      // category 저장
+      const upd = prisma.issueTask.update.mock.calls[0][0];
+      expect(upd.data.category).toBe("auto-fix");
+      // 기존 라벨 유지 + triage:auto-fix 추가로 setLabels 호출
+      expect(github.setLabels).toHaveBeenCalledWith(
+        "o/r",
+        7,
+        ["bug", "triage:auto-fix"],
+        "tok",
+      );
+    });
+
+    it("autoTriage인데 TRIAGE 규약이 없으면 category는 null, 라벨 미적용", async () => {
+      const ghTask = {
+        id: "i1",
+        projectId: "p1",
+        images: [],
+        sessionId: null,
+        repo: "o/r",
+        issueNumber: 7,
+        title: "t",
+        labels: [],
+      } as never;
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+        autoTriage: true,
+      });
+      agent.run.mockResolvedValue({ status: "ok", sessionId: "s1", text: "요약만" });
+      await service.executeClaimed(ghTask);
+      const upd = prisma.issueTask.update.mock.calls[0][0];
+      expect(upd.data.category).toBeNull();
+      expect(github.setLabels).not.toHaveBeenCalled();
     });
   });
 

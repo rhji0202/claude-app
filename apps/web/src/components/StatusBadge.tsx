@@ -1,6 +1,6 @@
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 
-/** 상태 문자열 → Badge variant 매핑 (queued/running/done|ok/error/interrupted) */
+/** 상태 문자열 → Badge variant 매핑 (실행 상태 + triage 카테고리) */
 const VARIANT: Record<string, BadgeProps["variant"]> = {
   queued: "muted",
   running: "warning",
@@ -8,6 +8,11 @@ const VARIANT: Record<string, BadgeProps["variant"]> = {
   ok: "success",
   error: "destructive",
   interrupted: "muted",
+  // triage 카테고리
+  "auto-fix": "success",
+  "needs-decision": "warning",
+  "needs-info": "warning",
+  question: "muted",
 };
 
 export function StatusBadge({

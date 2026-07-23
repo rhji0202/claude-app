@@ -102,6 +102,7 @@ export class IssuesService implements OnModuleInit {
       error: i.error,
       resultCommentUrl: i.resultCommentUrl,
       prUrl: i.prUrl,
+      category: (i.category as IssueDto["category"]) ?? null,
       createdAt: i.createdAt.toISOString(),
       updatedAt: i.updatedAt.toISOString(),
     };
@@ -388,6 +389,7 @@ export class IssuesService implements OnModuleInit {
     task: PrismaIssue,
     token: string | null,
     pr?: { branch: string; base: string; autoMerge: boolean },
+    triage?: boolean,
   ): Promise<string> {
     const lines: string[] = [
       `GitHub 저장소 ${task.repo}의 이슈 ${task.issueNumber ? `#${task.issueNumber}` : ""} "${task.title}"를 해결해 주세요.`,
@@ -423,12 +425,39 @@ export class IssuesService implements OnModuleInit {
         "",
       );
     }
-    lines.push(
-      "## 작업 지시",
-      "1. 이슈 내용을 파악하고 관련 코드를 조사합니다.",
-      "2. 최소한의 변경으로 문제를 해결합니다.",
-      "3. 변경한 파일과 이유를 요약합니다.",
-    );
+    if (triage) {
+      // triage: 먼저 이슈를 4개 카테고리로 분류하고, 카테고리에 맞는 행동을 지시한다.
+      lines.push(
+        "## 작업 지시 (triage)",
+        "먼저 이 이슈를 다음 네 카테고리 중 하나로 분류하세요:",
+        "- `auto-fix`: 코드 수정으로 자동 해결 가능한 명확한 버그·작업",
+        "- `needs-decision`: 해결 방향에 사람의 결정이 필요(설계 선택·정책 등)",
+        "- `needs-info`: 재현 정보·맥락이 부족해 진행 불가",
+        "- `question`: 코드 변경이 필요 없는 단순 질문",
+        "",
+        "분류에 따라 수행하세요:",
+        "- `auto-fix`: 관련 코드를 조사하고 최소한의 변경으로 해결한 뒤 변경 요약." +
+          (pr ? " 그리고 아래 'PR 생성' 지시를 따르세요." : ""),
+        "- `needs-decision`: 코드를 수정하지 말고, 어떤 결정이 필요한지 선택지와 함께 정리하세요." +
+          (task.issueNumber
+            ? " 그 내용을 이슈 코멘트로 남기세요(`gh issue comment` 사용 가능)."
+            : ""),
+        "- `needs-info`: 어떤 정보가 더 필요한지 구체적으로 질문하는 코멘트를 남기세요." +
+          (task.issueNumber ? " (`gh issue comment` 사용 가능)" : ""),
+        "- `question`: 질문에 답하는 코멘트를 남기세요." +
+          (task.issueNumber ? " (`gh issue comment` 사용 가능)" : ""),
+        "",
+        "응답의 **마지막 줄**에 분류 결과를 정확히 다음 형식으로 출력하세요(다른 텍스트 없이):",
+        "`TRIAGE: auto-fix` (또는 needs-decision · needs-info · question 중 하나)",
+      );
+    } else {
+      lines.push(
+        "## 작업 지시",
+        "1. 이슈 내용을 파악하고 관련 코드를 조사합니다.",
+        "2. 최소한의 변경으로 문제를 해결합니다.",
+        "3. 변경한 파일과 이유를 요약합니다.",
+      );
+    }
     if (pr) {
       // autoPr: 현재 작업 디렉터리는 issue/<id> 브랜치로 체크아웃된 git worktree다.
       // 에이전트가 직접 커밋→push→gh pr create까지 수행하도록 지시하고, 결과 URL을 규약된 형식으로 출력하게 한다.
@@ -466,6 +495,17 @@ export class IssuesService implements OnModuleInit {
     const url = m[1].trim();
     if (!url || url.toLowerCase() === "none") return null;
     return /^https?:\/\/\S+\/pull\/\d+/.test(url) ? url : null;
+  }
+
+  /** 결과 텍스트 끝의 `TRIAGE: <category>` 규약을 파싱한다. 유효 카테고리만 반환. */
+  private parseTriage(text: string | null | undefined): string | null {
+    if (!text) return null;
+    const m = text.match(/TRIAGE:\s*([a-z-]+)/i);
+    if (!m) return null;
+    const cat = m[1].toLowerCase();
+    return ["auto-fix", "needs-decision", "needs-info", "question"].includes(cat)
+      ? cat
+      : null;
   }
 
   /**
@@ -559,7 +599,8 @@ export class IssuesService implements OnModuleInit {
             }
           : undefined;
         // 3. 프롬프트·이미지 구성 후 에이전트 실행(cwd=worktree)
-        const prompt = await this.buildPrompt(task, token, prOpts);
+        const triage = project.autoTriage;
+        const prompt = await this.buildPrompt(task, token, prOpts, triage);
         const images: { data: string; mediaType: string }[] = [];
         for (const rel of task.images) {
           try {
@@ -574,8 +615,8 @@ export class IssuesService implements OnModuleInit {
           userId: project.ownerId ?? undefined,
           images: images.length > 0 ? images : undefined,
           cwd: wt.path,
-          // PR 생성은 push·gh 왕복이 있어 기본 20턴을 넘길 수 있음 → autoPr이면 상향.
-          maxTurns: prOpts ? 40 : undefined,
+          // PR 생성·triage(코멘트/gh 왕복)는 기본 20턴을 넘길 수 있음 → 상향.
+          maxTurns: prOpts || triage ? 40 : undefined,
           systemPrompt: prOpts
             ? "당신은 GitHub 이슈를 해결하는 소프트웨어 엔지니어입니다. 신중하게 분석하고 최소한의 변경으로 해결한 뒤, 지시에 따라 브랜치를 push하고 Pull Request를 만드세요."
             : "당신은 GitHub 이슈를 해결하는 소프트웨어 엔지니어입니다. 신중하게 분석하고 최소한의 변경으로 해결하세요.",
@@ -591,13 +632,20 @@ export class IssuesService implements OnModuleInit {
           prOpts && status === IssueStatus.DONE
             ? this.parsePrUrl(res.text)
             : null;
+        // triage + 성공이면 분류 결과를 파싱해 저장하고 라벨을 적용한다.
+        const category =
+          triage && status === IssueStatus.DONE
+            ? this.parseTriage(res.text)
+            : null;
         await this.finishRun(task.id, status, {
           sessionId: res.sessionId ?? task.sessionId,
           result: res.text,
           error: res.error ?? null,
           ...(prOpts ? { prUrl } : {}),
+          ...(triage ? { category } : {}),
         });
         if (prUrl) await this.postPrComment(task, token, prUrl);
+        if (category) await this.applyTriageLabel(task, token, category);
       } finally {
         // 4. worktree 정리(중단·오류 무관)
         await this.worktrees.remove(project.id, task.id);
@@ -618,6 +666,7 @@ export class IssuesService implements OnModuleInit {
       result?: string | null;
       error?: string | null;
       prUrl?: string | null;
+      category?: string | null;
     },
   ): Promise<void> {
     await this.prisma.issueTask
@@ -631,9 +680,30 @@ export class IssuesService implements OnModuleInit {
           ...(data.result !== undefined ? { result: data.result } : {}),
           ...(data.error !== undefined ? { error: data.error } : {}),
           ...(data.prUrl !== undefined ? { prUrl: data.prUrl } : {}),
+          ...(data.category !== undefined ? { category: data.category } : {}),
         },
       })
       .catch((e) => this.logger.warn(`이슈 상태 기록 실패 ${id}: ${String(e)}`));
+  }
+
+  /** triage 분류 결과를 GitHub 이슈에 `triage:<category>` 라벨로 반영(실패해도 무시). */
+  private async applyTriageLabel(
+    task: PrismaIssue,
+    token: string | null,
+    category: string,
+  ): Promise<void> {
+    if (!task.issueNumber || !task.repo || !token) return;
+    // 기존 라벨(저장본)에서 이전 triage:* 라벨을 제거하고 새 분류를 더한다.
+    const kept = task.labels.filter((l) => !l.startsWith("triage:"));
+    const labels = [...new Set([...kept, `triage:${category}`])];
+    try {
+      await this.github.setLabels(task.repo, task.issueNumber, labels, token);
+      await this.prisma.issueTask
+        .update({ where: { id: task.id }, data: { labels } })
+        .catch(() => undefined);
+    } catch (err) {
+      this.logger.warn(`triage 라벨 적용 실패 ${task.id}: ${String(err)}`);
+    }
   }
 
   /** autoPr로 만든 PR 링크를 원본 GitHub 이슈에 코멘트로 남긴다(실패해도 무시). */

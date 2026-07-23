@@ -172,4 +172,27 @@ export class GithubService {
       },
     );
   }
+
+  /**
+   * 이슈 라벨을 지정한 목록으로 설정한다(PUT — 기존 라벨을 덮어쓴다).
+   * triage 분류 결과 반영에 사용. 토큰에 이슈 쓰기 권한이 필요하다.
+   */
+  async setLabels(
+    repo: string,
+    number: number,
+    labels: string[],
+    token: string,
+  ): Promise<string[]> {
+    const { owner, name } = GithubService.parseRepo(repo);
+    const raw = await this.gh<Array<{ name: string }>>(
+      `/repos/${owner}/${name}/issues/${number}/labels`,
+      token,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ labels }),
+      },
+    );
+    return raw.map((l) => l.name);
+  }
 }

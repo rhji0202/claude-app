@@ -45,6 +45,10 @@ export class UpdateProjectDto {
   autoMerge?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  autoTriage?: boolean;
+
+  @IsOptional()
   @IsString()
   gitToken?: string;
 

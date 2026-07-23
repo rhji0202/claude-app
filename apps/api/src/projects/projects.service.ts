@@ -63,6 +63,7 @@ export class ProjectsService {
       gitBranch: p.gitBranch,
       autoPr: p.autoPr,
       autoMerge: p.autoMerge,
+      autoTriage: p.autoTriage,
       claudeAccountId: p.claudeAccountId,
       ownerId: p.ownerId,
       visibility: toDtoVisibility(p.visibility),
@@ -183,6 +184,7 @@ export class ProjectsService {
       gitBranch: dto.gitBranch,
       autoPr: dto.autoPr,
       autoMerge: dto.autoMerge,
+      autoTriage: dto.autoTriage,
       gitTokenEnc: this.crypto.encryptOptional(dto.gitToken),
       claudeAccount: dto.claudeAccountId
         ? { connect: { id: dto.claudeAccountId } }
@@ -205,6 +207,7 @@ export class ProjectsService {
       gitBranch: dto.gitBranch,
       autoPr: dto.autoPr,
       autoMerge: dto.autoMerge,
+      autoTriage: dto.autoTriage,
       visibility: toPrismaVisibility(dto.visibility),
     };
     if (dto.gitToken !== undefined) {
