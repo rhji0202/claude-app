@@ -117,17 +117,29 @@ export class GithubService {
     };
   }
 
+  /**
+   * 열린(또는 지정 상태) 이슈를 페이지네이션으로 모두 수집한다(PR 제외).
+   * 대형 저장소 폭주 방지를 위해 maxPages(기본 20 → 최대 2000건)로 상한을 둔다.
+   */
   async listIssues(
     repo: string,
     token: string | null,
     state: "open" | "closed" | "all" = "open",
+    maxPages = 20,
   ): Promise<GitHubIssue[]> {
     const { owner, name } = GithubService.parseRepo(repo);
-    const raw = await this.gh<Parameters<GithubService["normalize"]>[0][]>(
-      `/repos/${owner}/${name}/issues?state=${state}&per_page=30`,
-      token,
-    );
-    return raw.map((r) => this.normalize(r)).filter((i) => !i.isPullRequest);
+    const perPage = 100; // GitHub 최대치
+    const out: GitHubIssue[] = [];
+    for (let page = 1; page <= maxPages; page++) {
+      const raw = await this.gh<Parameters<GithubService["normalize"]>[0][]>(
+        `/repos/${owner}/${name}/issues?state=${state}&per_page=${perPage}&page=${page}`,
+        token,
+      );
+      out.push(...raw.map((r) => this.normalize(r)));
+      if (raw.length < perPage) break; // 마지막 페이지
+    }
+    // PR은 제외(GitHub는 PR도 issues에 포함해 반환)
+    return out.filter((i) => !i.isPullRequest);
   }
 
   async getIssue(

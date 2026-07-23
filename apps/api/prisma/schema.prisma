@@ -41,6 +41,11 @@ enum CronStatus {
   ERROR
 }
 
+enum CronType {
+  PROMPT // 에이전트 프롬프트 실행(기본)
+  IMPORT // GitHub 열린 이슈 자동 가져오기(신규만 등록 → 워커 자동 실행)
+}
+
 enum SkillScope {
   GLOBAL
   PROJECT
@@ -240,7 +245,10 @@ model CronJob {
   id         String      @id @default(uuid())
   name       String
   schedule   String
-  prompt     String
+  // 작업 유형. IMPORT면 prompt 없이 GitHub 이슈 가져오기를 수행.
+  type       CronType    @default(PROMPT)
+  // PROMPT 유형에서 실행할 프롬프트(IMPORT면 미사용).
+  prompt     String?
   projectId  String
   project    Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   enabled    Boolean     @default(true)

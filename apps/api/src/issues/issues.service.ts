@@ -374,6 +374,26 @@ export class IssuesService implements OnModuleInit {
     return this.github.listIssues(project.gitRepo, this.tokenOf(project), state);
   }
 
+  /**
+   * 프로젝트의 열린 GitHub 이슈 전체를 가져와 신규만 큐에 등록한다(중복 skip).
+   * 크론(IMPORT 유형)이 호출 — 사용자 권한 체크 없이 시스템 레벨로 동작한다
+   * (크론 생성 시 이미 권한·gitRepo를 검증했으므로). 등록된 신규 이슈 수를 반환.
+   */
+  async importAllOpen(projectId: string): Promise<number> {
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+    });
+    if (!project) throw new BadRequestException("프로젝트를 찾을 수 없습니다.");
+    if (!project.gitRepo)
+      throw new BadRequestException("프로젝트에 gitRepo가 설정되어 있지 않습니다.");
+    const token = this.tokenOf(project);
+    const open = await this.github.listIssues(project.gitRepo, token, "open");
+    const numbers = open.map((i) => i.number);
+    if (numbers.length === 0) return 0;
+    const created = await this.importNumbers(project, numbers, token);
+    return created.length;
+  }
+
   /** 선택한 GitHub 이슈들을 큐로 가져온다 (중복 제외) */
   async importIssues(
     projectId: string,
@@ -385,8 +405,20 @@ export class IssuesService implements OnModuleInit {
     if (!project) throw new BadRequestException("프로젝트를 찾을 수 없습니다.");
     if (!project.gitRepo)
       throw new BadRequestException("프로젝트에 gitRepo가 설정되어 있지 않습니다.");
-    const token = this.tokenOf(project);
-    const repo = project.gitRepo;
+    return this.importNumbers(project, numbers, this.tokenOf(project));
+  }
+
+  /**
+   * 주어진 이슈 번호들을 가져와 신규만 등록한다(중복 skip + body 이미지 저장).
+   * importIssues(수동 선택)·importAllOpen(크론)의 공통 로직.
+   */
+  private async importNumbers(
+    project: Project,
+    numbers: number[],
+    token: string | null,
+  ): Promise<IssueDto[]> {
+    const projectId = project.id;
+    const repo = project.gitRepo!;
 
     const existing = await this.prisma.issueTask.findMany({
       where: { projectId, repo },

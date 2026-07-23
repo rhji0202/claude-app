@@ -1,4 +1,4 @@
-import { CronStatus } from "@prisma/client";
+import { CronStatus, CronType } from "@prisma/client";
 import { SchedulerRegistry } from "@nestjs/schedule";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
@@ -6,6 +6,7 @@ import { AgentService } from "../agent/agent.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
 import { WorktreeService } from "../repo/worktree.service";
 import { NotifyService } from "../notify/notify.service";
+import { IssuesService } from "../issues/issues.service";
 import { CronRegistryService } from "./cron-registry.service";
 
 describe("CronRegistryService.fire (실행 이력)", () => {
@@ -22,6 +23,7 @@ describe("CronRegistryService.fire (실행 이력)", () => {
   let repos: { ensureRepo: jest.Mock };
   let worktrees: { create: jest.Mock; remove: jest.Mock };
   let crypto: { decryptOptional: jest.Mock };
+  let issues: { importAllOpen: jest.Mock };
   let service: CronRegistryService;
 
   beforeEach(() => {
@@ -44,6 +46,7 @@ describe("CronRegistryService.fire (실행 이력)", () => {
       remove: jest.fn().mockResolvedValue(undefined),
     };
     crypto = { decryptOptional: jest.fn().mockReturnValue("tok") };
+    issues = { importAllOpen: jest.fn().mockResolvedValue(3) };
     service = new CronRegistryService(
       {} as unknown as SchedulerRegistry,
       prisma as unknown as PrismaService,
@@ -52,6 +55,7 @@ describe("CronRegistryService.fire (실행 이력)", () => {
       repos as unknown as RepoManagerService,
       worktrees as unknown as WorktreeService,
       { notify: jest.fn().mockResolvedValue(undefined) } as unknown as NotifyService,
+      issues as unknown as IssuesService,
     );
   });
 
@@ -126,5 +130,25 @@ describe("CronRegistryService.fire (실행 이력)", () => {
     expect(prisma.cronRun.deleteMany).toHaveBeenCalledWith({
       where: { id: { in: ["old-1", "old-2"] } },
     });
+  });
+
+  it("IMPORT 유형: 에이전트 대신 importAllOpen을 호출하고 OK로 마감", async () => {
+    prisma.cronJob.findUnique.mockResolvedValue({
+      id: "c1",
+      name: "sync",
+      projectId: "p1",
+      type: CronType.IMPORT,
+      prompt: null,
+      project: { ownerId: "u1", gitRepo: "o/r", gitTokenEnc: "enc" },
+    });
+
+    await service.fire("c1");
+
+    expect(issues.importAllOpen).toHaveBeenCalledWith("p1");
+    expect(agent.run).not.toHaveBeenCalled(); // 에이전트 실행 안 함
+    expect(worktrees.create).not.toHaveBeenCalled(); // worktree도 안 만듦
+    const upd = prisma.cronRun.update.mock.calls[0][0];
+    expect(upd.data.status).toBe(CronStatus.OK);
+    expect(upd.data.result).toContain("신규 3건");
   });
 });

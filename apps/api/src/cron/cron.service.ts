@@ -7,6 +7,7 @@ import {
   CronJob as PrismaCronJob,
   CronRun as PrismaCronRun,
   CronStatus,
+  CronType,
 } from "@prisma/client";
 import { CronTime } from "cron";
 import { PrismaService } from "../prisma/prisma.service";
@@ -16,11 +17,16 @@ import type {
   CronJob as CronDto,
   CronRun as CronRunDto,
   CronStatus as CronStatusDto,
+  CronType as CronTypeDto,
 } from "@claude-app/shared";
 import { CreateCronJobDto, UpdateCronJobDto } from "./cron.dto";
 
 const toStatusDto = (s: CronStatus | null): CronStatusDto | null =>
   s === CronStatus.OK ? "ok" : s === CronStatus.ERROR ? "error" : null;
+const toTypeDto = (t: CronType): CronTypeDto =>
+  t === CronType.IMPORT ? "import" : "prompt";
+const toTypePrisma = (t: CronTypeDto | undefined): CronType =>
+  t === "import" ? CronType.IMPORT : CronType.PROMPT;
 
 @Injectable()
 export class CronService {
@@ -57,6 +63,7 @@ export class CronService {
       id: c.id,
       name: c.name,
       schedule: c.schedule,
+      type: toTypeDto(c.type),
       prompt: c.prompt,
       projectId: c.projectId,
       enabled: c.enabled,
@@ -110,11 +117,19 @@ export class CronService {
     const project = await this.prisma.project.findUnique({ where: { id: dto.projectId } });
     if (!project) throw new BadRequestException("프로젝트를 찾을 수 없습니다.");
 
+    const type = toTypePrisma(dto.type);
+    // prompt 유형은 프롬프트 필수, import 유형은 프롬프트 무시.
+    if (type === CronType.PROMPT && !dto.prompt?.trim())
+      throw new BadRequestException("프롬프트 실행 크론은 프롬프트가 필요합니다.");
+    if (type === CronType.IMPORT && !project.gitRepo)
+      throw new BadRequestException("이슈 가져오기 크론은 프로젝트에 gitRepo가 필요합니다.");
+
     const row = await this.prisma.cronJob.create({
       data: {
         name: dto.name,
         schedule: dto.schedule,
-        prompt: dto.prompt,
+        type,
+        prompt: type === CronType.PROMPT ? dto.prompt : null,
         projectId: dto.projectId,
         enabled: dto.enabled ?? true,
       },
@@ -127,12 +142,17 @@ export class CronService {
     const existing = await this.getRaw(id);
     await this.projects.assertCanEdit(existing.projectId, userId);
     if (dto.schedule) CronService.validateSchedule(dto.schedule);
+    const nextType = dto.type ? toTypePrisma(dto.type) : existing.type;
     const row = await this.prisma.cronJob.update({
       where: { id },
       data: {
         name: dto.name,
         schedule: dto.schedule,
-        prompt: dto.prompt,
+        ...(dto.type !== undefined ? { type: nextType } : {}),
+        // import 유형이면 prompt는 항상 null. prompt 유형이면 들어온 값으로.
+        ...(dto.type !== undefined || dto.prompt !== undefined
+          ? { prompt: nextType === CronType.IMPORT ? null : (dto.prompt ?? existing.prompt) }
+          : {}),
         enabled: dto.enabled,
       },
     });

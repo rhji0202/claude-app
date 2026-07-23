@@ -127,11 +127,21 @@ export default function CronPage() {
       <CrudPanel
         endpoint="/cron"
         title="크론 작업"
-        editableFields={["name", "schedule", "prompt", "enabled"]}
+        editableFields={["name", "schedule", "type", "prompt", "enabled"]}
         pollWhile={(rows) => rows.some((r) => r.lastStatus == null && r.enabled)}
         pollMs={5000}
         columns={[
           { key: "name", label: "이름" },
+          {
+            key: "type",
+            label: "유형",
+            render: (r) =>
+              r.type === "import" ? (
+                <Badge variant="muted">이슈 가져오기</Badge>
+              ) : (
+                <Badge variant="muted">프롬프트</Badge>
+              ),
+          },
           {
             key: "schedule",
             label: "스케줄",
@@ -169,13 +179,22 @@ export default function CronPage() {
             required: true,
             optionsFrom: { endpoint: "/projects", valueKey: "id", labelKey: "name" },
           },
+          {
+            name: "type",
+            label: "유형",
+            type: "select",
+            defaultValue: "prompt",
+            options: [
+              { value: "prompt", label: "프롬프트 실행" },
+              { value: "import", label: "GitHub 이슈 가져오기" },
+            ],
+          },
           { name: "schedule", label: "크론식", required: true, placeholder: "0 9 * * 1" },
           { name: "enabled", label: "활성화", type: "checkbox", defaultValue: true },
           {
             name: "prompt",
-            label: "프롬프트",
+            label: "프롬프트 (유형=프롬프트 실행일 때만)",
             type: "textarea",
-            required: true,
             placeholder: "이 프로젝트의 테스트를 실행하고 실패를 요약해줘",
           },
         ]}

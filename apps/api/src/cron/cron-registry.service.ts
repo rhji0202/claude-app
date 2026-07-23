@@ -1,8 +1,9 @@
 import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { SchedulerRegistry } from "@nestjs/schedule";
 import { CronJob } from "cron";
-import { CronStatus } from "@prisma/client";
+import { CronStatus, CronType } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { IssuesService } from "../issues/issues.service";
 import { CryptoService } from "../crypto/crypto.service";
 import { AgentService } from "../agent/agent.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
@@ -26,6 +27,7 @@ export class CronRegistryService implements OnModuleInit {
     private readonly repos: RepoManagerService,
     private readonly worktrees: WorktreeService,
     private readonly notify: NotifyService,
+    private readonly issues: IssuesService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -94,6 +96,25 @@ export class CronRegistryService implements OnModuleInit {
       return;
     }
 
+    // IMPORT 유형: 에이전트 실행 없이 GitHub 열린 이슈를 신규만 큐에 등록(워커가 자동 실행).
+    if (job.type === CronType.IMPORT) {
+      try {
+        const n = await this.issues.importAllOpen(job.projectId);
+        await this.finishRunRecord(id, run?.id, startedAt, {
+          status: CronStatus.OK,
+          result: `열린 이슈 동기화 완료 — 신규 ${n}건 등록`,
+        });
+      } catch (err) {
+        this.logger.error(`이슈 가져오기 크론 실패 ${id}: ${String(err)}`);
+        await this.finishRunRecord(id, run?.id, startedAt, {
+          status: CronStatus.ERROR,
+          error: String(err),
+        });
+        await this.notifyError(job.projectId, job.name, String(err));
+      }
+      return;
+    }
+
     // 크론은 잡 id 기준 worktree로 격리(같은 프로젝트 이슈·다른 크론과 충돌 방지).
     const wtKey = `cron-${id}`;
     try {
@@ -102,7 +123,7 @@ export class CronRegistryService implements OnModuleInit {
       const wt = await this.worktrees.create(job.projectId, wtKey);
       try {
         const res = await this.agent.run(job.projectId, {
-          prompt: job.prompt,
+          prompt: job.prompt ?? "",
           userId: job.project.ownerId ?? undefined,
           cwd: wt.path,
           systemPrompt: "당신은 정기 작업을 수행하는 자동화 에이전트입니다.",

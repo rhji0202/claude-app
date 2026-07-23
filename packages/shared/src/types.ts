@@ -140,12 +140,18 @@ export interface IssueWorkerStats {
 
 export type CronStatus = "ok" | "error";
 
+/** 크론 작업 유형: 프롬프트 실행 vs GitHub 이슈 가져오기 */
+export type CronType = "prompt" | "import";
+
 export interface CronJob {
   id: ID;
   name: string;
   /** 표준 5필드 크론식 */
   schedule: string;
-  prompt: string;
+  /** 작업 유형(기본 prompt). import면 prompt 없이 이슈를 가져온다. */
+  type: CronType;
+  /** prompt 유형에서 실행할 프롬프트(import면 null) */
+  prompt?: string | null;
   projectId: ID;
   enabled: boolean;
   lastRunAt?: string | null;
