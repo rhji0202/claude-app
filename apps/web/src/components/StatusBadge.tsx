@@ -8,6 +8,7 @@ const VARIANT: Record<string, BadgeProps["variant"]> = {
   ok: "success",
   error: "destructive",
   interrupted: "muted",
+  needs_decision: "warning",
   // triage 카테고리
   "auto-fix": "success",
   "needs-decision": "warning",

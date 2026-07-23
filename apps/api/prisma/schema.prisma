@@ -22,6 +22,13 @@ enum IssueStatus {
   DONE
   ERROR
   INTERRUPTED
+  NEEDS_DECISION // 워커가 사람 판단을 기다리는 상태
+}
+
+enum IssueNoteAuthor {
+  HUMAN // 사람이 남긴 메모/지시
+  AGENT // 에이전트 진행 결과·질문
+  SYSTEM // 상태 전이 로그
 }
 
 enum IssueSource {
@@ -207,11 +214,24 @@ model IssueTask {
   attempts    Int         @default(0)
   claimedAt   DateTime?
   lockedBy    String?
+  notes       IssueNote[]
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
   @@index([projectId])
   @@index([status])
+}
+
+// 이슈 메모/이력(누적). 결정 대기 → 사람 메모 → 재개 흐름과 진행 이력에 사용.
+model IssueNote {
+  id        String          @id @default(uuid())
+  issueId   String
+  issue     IssueTask       @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  author    IssueNoteAuthor
+  content   String
+  createdAt DateTime        @default(now())
+
+  @@index([issueId])
 }
 
 model CronJob {

@@ -10,7 +10,9 @@ import type { Project } from "@prisma/client";
 import {
   IssueSource as PrismaSource,
   IssueStatus,
+  IssueNoteAuthor,
   IssueTask as PrismaIssue,
+  IssueNote as PrismaNote,
 } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
@@ -28,11 +30,19 @@ import { WorktreeService } from "../repo/worktree.service";
 import { NotifyService } from "../notify/notify.service";
 import type {
   IssueTask as IssueDto,
+  IssueNote as IssueNoteDto,
+  IssueNoteAuthor as IssueNoteAuthorDto,
   IssueSource,
   IssueTaskStatus,
   IssueWorkerStats,
   ManualIssueReport,
 } from "@claude-app/shared";
+
+const NOTE_AUTHOR_TO_DTO: Record<IssueNoteAuthor, IssueNoteAuthorDto> = {
+  HUMAN: "human",
+  AGENT: "agent",
+  SYSTEM: "system",
+};
 import { CreateIssueTaskDto, UpdateIssueTaskDto } from "./issues.dto";
 
 const fromSource = (s: PrismaSource): IssueSource =>
@@ -45,6 +55,7 @@ const STATUS_TO_DTO: Record<IssueStatus, IssueTaskStatus> = {
   DONE: "done",
   ERROR: "error",
   INTERRUPTED: "interrupted",
+  NEEDS_DECISION: "needs_decision",
 };
 const fromStatus = (s: IssueStatus): IssueTaskStatus => STATUS_TO_DTO[s];
 
@@ -162,6 +173,7 @@ export class IssuesService implements OnModuleInit {
       done: 0,
       error: 0,
       interrupted: 0,
+      needs_decision: 0,
     };
     for (const g of grouped) counts[fromStatus(g.status)] = g._count._all;
 
@@ -398,6 +410,7 @@ export class IssuesService implements OnModuleInit {
     token: string | null,
     pr?: { branch: string; base: string; autoMerge: boolean },
     triage?: boolean,
+    notes?: PrismaNote[],
   ): Promise<string> {
     const lines: string[] = [
       `GitHub 저장소 ${task.repo}의 이슈 ${task.issueNumber ? `#${task.issueNumber}` : ""} "${task.title}"를 해결해 주세요.`,
@@ -433,6 +446,22 @@ export class IssuesService implements OnModuleInit {
         "",
       );
     }
+    // 재개 흐름: 이전 진행 이력·사람 메모를 시간순으로 주입(설계 5.3).
+    if (notes && notes.length > 0) {
+      const label: Record<IssueNoteAuthor, string> = {
+        HUMAN: "사람",
+        AGENT: "에이전트",
+        SYSTEM: "시스템",
+      };
+      lines.push(
+        "## 이전 진행 이력 (재개)",
+        "아래는 이 이슈의 이전 진행·질문·사람 지시입니다. 이를 반영해 이어서 진행하세요.",
+      );
+      for (const n of notes) {
+        lines.push(`- [${label[n.author]}] ${n.content}`);
+      }
+      lines.push("");
+    }
     if (triage) {
       // triage: 먼저 이슈를 4개 카테고리로 분류하고, 카테고리에 맞는 행동을 지시한다.
       lines.push(
@@ -466,6 +495,13 @@ export class IssuesService implements OnModuleInit {
         "3. 변경한 파일과 이유를 요약합니다.",
       );
     }
+    // 결정 대기: 사람 판단이 필요하면 진행을 멈추고 규약 형식으로 질문을 남기게 한다(설계 5.2).
+    lines.push(
+      "",
+      "## 사람 결정이 필요할 때",
+      "스스로 결론 내릴 수 없거나 사람의 결정이 필요하면, 코드를 수정하지 말고 응답의 **마지막 줄**에 정확히 다음 형식으로 질문을 남기세요:",
+      "`DECISION_NEEDED: <사람에게 묻는 구체적 질문>`",
+    );
     if (pr) {
       // autoPr: 현재 작업 디렉터리는 issue/<id> 브랜치로 체크아웃된 git worktree다.
       // 에이전트가 직접 커밋→push→gh pr create까지 수행하도록 지시하고, 결과 URL을 규약된 형식으로 출력하게 한다.
@@ -514,6 +550,14 @@ export class IssuesService implements OnModuleInit {
     return ["auto-fix", "needs-decision", "needs-info", "question"].includes(cat)
       ? cat
       : null;
+  }
+
+  /** 결과 텍스트의 `DECISION_NEEDED: <질문>` 규약을 파싱한다. 없으면 null. */
+  private parseDecision(text: string | null | undefined): string | null {
+    if (!text) return null;
+    const m = text.match(/DECISION_NEEDED:\s*(.+?)\s*$/im);
+    const q = m?.[1]?.trim();
+    return q ? q : null;
   }
 
   /**
@@ -608,7 +652,12 @@ export class IssuesService implements OnModuleInit {
           : undefined;
         // 3. 프롬프트·이미지 구성 후 에이전트 실행(cwd=worktree)
         const triage = project.autoTriage;
-        const prompt = await this.buildPrompt(task, token, prOpts, triage);
+        // 재개 시 이전 메모/이력을 프롬프트에 주입(설계 5.3)
+        const notes = await this.prisma.issueNote.findMany({
+          where: { issueId: task.id },
+          orderBy: { createdAt: "asc" },
+        });
+        const prompt = await this.buildPrompt(task, token, prOpts, triage, notes);
         const images: { data: string; mediaType: string }[] = [];
         for (const rel of task.images) {
           try {
@@ -629,12 +678,34 @@ export class IssuesService implements OnModuleInit {
             ? "당신은 GitHub 이슈를 해결하는 소프트웨어 엔지니어입니다. 신중하게 분석하고 최소한의 변경으로 해결한 뒤, 지시에 따라 브랜치를 push하고 Pull Request를 만드세요."
             : "당신은 GitHub 이슈를 해결하는 소프트웨어 엔지니어입니다. 신중하게 분석하고 최소한의 변경으로 해결하세요.",
         });
-        const status =
-          res.status === "ok"
+        // 성공했지만 에이전트가 사람 결정을 요청했으면(DECISION_NEEDED) NEEDS_DECISION 우선.
+        const question =
+          res.status === "ok" ? this.parseDecision(res.text) : null;
+        const status = question
+          ? IssueStatus.NEEDS_DECISION
+          : res.status === "ok"
             ? IssueStatus.DONE
             : res.interrupted
               ? IssueStatus.INTERRUPTED
               : IssueStatus.ERROR;
+
+        if (status === IssueStatus.NEEDS_DECISION) {
+          // 질문을 AGENT 메모로 남기고 결정 대기 상태로. PR/분류/완료 알림은 하지 않는다.
+          await this.addNote(task.id, IssueNoteAuthor.AGENT, question!);
+          await this.finishRun(task.id, status, {
+            sessionId: res.sessionId ?? task.sessionId,
+            result: res.text,
+            error: null,
+          });
+          await this.notify.notify(project.id, {
+            event: "issue.error",
+            title: `이슈 "${task.title}" — 사람 결정 필요`,
+            url: task.url,
+            detail: question!,
+          });
+          return; // finally에서 worktree 정리
+        }
+
         // autoPr + 성공이면 결과에서 PR URL을 파싱해 저장하고 이슈에 코멘트.
         const prUrl =
           prOpts && status === IssueStatus.DONE
@@ -838,6 +909,79 @@ export class IssuesService implements OnModuleInit {
     } catch (err) {
       this.logger.warn(`PR 코멘트 게시 실패 ${task.id}: ${String(err)}`);
     }
+  }
+
+  // ---- 결정 대기: 메모 / 재개 (설계 5.3) ----
+
+  private noteToDto(n: PrismaNote): IssueNoteDto {
+    return {
+      id: n.id,
+      issueId: n.issueId,
+      author: NOTE_AUTHOR_TO_DTO[n.author],
+      content: n.content,
+      createdAt: n.createdAt.toISOString(),
+    };
+  }
+
+  /** 내부: 메모 추가(실행 흐름에서 AGENT/SYSTEM 기록). 실패해도 무시. */
+  private async addNote(
+    issueId: string,
+    author: IssueNoteAuthor,
+    content: string,
+  ): Promise<void> {
+    await this.prisma.issueNote
+      .create({ data: { issueId, author, content } })
+      .catch((e) => this.logger.warn(`메모 저장 실패 ${issueId}: ${String(e)}`));
+  }
+
+  /** 이슈 메모/이력 조회(시간순). */
+  async listNotes(id: string, userId: string): Promise<IssueNoteDto[]> {
+    const task = await this.getRaw(id);
+    await this.projects.assertAccess(task.projectId, userId);
+    const rows = await this.prisma.issueNote.findMany({
+      where: { issueId: id },
+      orderBy: { createdAt: "asc" },
+    });
+    return rows.map((r) => this.noteToDto(r));
+  }
+
+  /** 사람 메모 추가(HUMAN). 결정 대기 이슈에 지시를 남길 때 사용. */
+  async addHumanNote(
+    id: string,
+    content: string,
+    userId: string,
+  ): Promise<IssueNoteDto> {
+    const task = await this.getRaw(id);
+    await this.projects.assertCanEdit(task.projectId, userId);
+    if (!content.trim())
+      throw new BadRequestException("메모 내용을 입력하세요.");
+    const row = await this.prisma.issueNote.create({
+      data: { issueId: id, author: IssueNoteAuthor.HUMAN, content: content.trim() },
+    });
+    return this.noteToDto(row);
+  }
+
+  /**
+   * 결정 대기 이슈를 재개한다: NEEDS_DECISION → QUEUED로 되돌려 워커가 다시 집게 한다.
+   * 이전 메모/이력은 buildPrompt가 프롬프트에 주입한다(sessionId로 세션 resume).
+   */
+  async resume(id: string, userId: string): Promise<IssueDto> {
+    const task = await this.getRaw(id);
+    await this.projects.assertCanEdit(task.projectId, userId);
+    if (task.status !== IssueStatus.NEEDS_DECISION)
+      throw new BadRequestException("결정 대기 상태의 이슈만 재개할 수 있습니다.");
+    await this.addNote(id, IssueNoteAuthor.SYSTEM, "사람이 재개했습니다.");
+    await this.prisma.issueTask.update({
+      where: { id },
+      data: {
+        status: IssueStatus.QUEUED,
+        error: null,
+        attempts: 0,
+        claimedAt: null,
+        lockedBy: null,
+      },
+    });
+    return this.get(id, userId);
   }
 
   /** 실행 결과를 GitHub 이슈에 코멘트로 게시 (외부 쓰기) */

@@ -268,14 +268,15 @@ REPOS_DIR=
 - [x] 검증: git worktree add/remove/prune·clone→worktree→fetch 로컬 E2E 통과(토큰 미기록 확인), Nest 부팅 시 전체 DI 그래프 정상.
 - [ ] **런타임 실행 검증(사용자 환경 필요)**: 실제 gitRepo 프로젝트로 같은 프로젝트 이슈 여러 개 큐 → 동시 N개 병렬 실행 → 서버 재시작 후 이어짐 → worktree 정리. (로컬 프로젝트는 gitRepo 지정 필요)
 
-### Phase 2 — 결정 대기 + 메모/재개 (목표 4)
-- [ ] `IssueStatus.NEEDS_DECISION` 추가 (db push)
-- [ ] `IssueNote` 모델 신설 + 관계
-- [ ] executeRun에 needs-decision 감지 (구조화 출력 파싱)
-- [ ] `buildPrompt`가 IssueNote 히스토리 주입
-- [ ] `/issues/:id/notes`, `/issues/:id/resume` API
-- [ ] 프론트: 결정 대기 팝업 + 메모 입력 + 재개 버튼 + 이력 타임라인
-- [ ] 검증: 빈 이슈("test") → NEEDS_DECISION → 메모 남기고 재개 → 이어서 진행
+### Phase 2 — 결정 대기 + 메모/재개 (목표 4) ✅ 완료
+- [x] `IssueStatus.NEEDS_DECISION` 추가 (정식 마이그레이션). shared·STATUS_TO_DTO·counts 반영.
+- [x] `IssueNoteAuthor`(HUMAN/AGENT/SYSTEM) + `IssueNote` 모델 신설 + `IssueTask.notes` 관계.
+- [x] executeClaimed에 needs-decision 감지: 결과의 `DECISION_NEEDED: <질문>` 파싱(`parseDecision`) → NEEDS_DECISION 전이 + 질문을 AGENT 메모로 저장 + 알림. 성공(DONE)보다 우선.
+- [x] `buildPrompt`가 IssueNote 히스토리를 시간순 주입(재개 시), `sessionId`로 세션 resume. "사람 결정 필요" 지시 블록 추가.
+- [x] `GET/POST /issues/:id/notes`(사람 메모), `POST /issues/:id/resume`(NEEDS_DECISION→QUEUED, SYSTEM 메모 기록). 워커는 NEEDS_DECISION을 재시도·클레임 대상에서 자연 제외.
+- [x] 프론트: NEEDS_DECISION 배지("결정 대기") + DecisionCell 팝업(에이전트 질문·이력 타임라인·메모 입력·재개 버튼).
+- [x] 단위 테스트: DECISION_NEEDED 감지·AGENT 메모·resume 전이/거부(3건). 전체 79개 통과.
+- [ ] 런타임 검증(사용자 환경): 이슈가 DECISION_NEEDED로 멈춤 → 메모 남기고 재개 → 이어서 진행. (에이전트가 DECISION_NEEDED를 출력하는 시나리오 필요)
 
 ### Phase 3 — GitHub triage 워커 (목표 3) ✅ 완료(결정대기 전이 제외)
 - [x] GithubService에 `setLabels`(PUT issues/{n}/labels) 추가. PR 생성은 REST `createPullRequest` 대신 **에이전트가 gh CLI로** 수행(설계 12절 방침) — 별도 이슈 PR 자동화(Project.autoPr/autoMerge, IssueTask.prUrl)로 구현.

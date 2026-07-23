@@ -128,6 +128,25 @@ export class IssuesController {
     return this.issues.requeue(id, user.userId);
   }
 
+  @Get(":id/notes")
+  notes(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.issues.listNotes(id, user.userId);
+  }
+
+  @Post(":id/notes")
+  addNote(
+    @Param("id") id: string,
+    @Body() body: { content: string },
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.issues.addHumanNote(id, body.content ?? "", user.userId);
+  }
+
+  @Post(":id/resume")
+  resume(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.issues.resume(id, user.userId);
+  }
+
   @Post(":id/comment")
   comment(@Param("id") id: string, @CurrentUser() user: AuthUser) {
     return this.issues.commentResult(id, user.userId);

@@ -28,6 +28,7 @@ describe("IssuesService (큐/워커)", () => {
       count: jest.Mock;
       groupBy: jest.Mock;
     };
+    issueNote: { findMany: jest.Mock; create: jest.Mock };
     project: { findUnique: jest.Mock };
   };
   let projects: {
@@ -111,6 +112,10 @@ describe("IssuesService (큐/워커)", () => {
         update: jest.fn().mockResolvedValue({}),
         count: jest.fn().mockResolvedValue(0),
         groupBy: jest.fn().mockResolvedValue([]),
+      },
+      issueNote: {
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValue({}),
       },
       project: { findUnique: jest.fn() },
     };
@@ -341,6 +346,61 @@ describe("IssuesService (큐/워커)", () => {
       expect(upd.category).toBeNull();
       expect(github.setLabels).not.toHaveBeenCalled();
     });
+
+    it("DECISION_NEEDED가 있으면 NEEDS_DECISION 전이 + AGENT 메모 저장", async () => {
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      mockAgentResult({
+        status: "ok",
+        sessionId: "s1",
+        text: "분석함.\nDECISION_NEEDED: A안과 B안 중 무엇으로 진행할까요?",
+      });
+      await service.executeClaimed(task);
+
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.NEEDS_DECISION);
+      // 질문이 AGENT 메모로 저장됨
+      expect(prisma.issueNote.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            author: "AGENT",
+            content: "A안과 B안 중 무엇으로 진행할까요?",
+          }),
+        }),
+      );
+    });
+  });
+
+  describe("resume (결정 대기 재개)", () => {
+    it("NEEDS_DECISION 이슈를 QUEUED로 되돌린다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        id: "i1",
+        projectId: "p1",
+        status: IssueStatus.NEEDS_DECISION,
+      });
+      (service as unknown as { get: jest.Mock }).get = jest
+        .fn()
+        .mockResolvedValue({ id: "i1", status: "queued" });
+      await service.resume("i1", "u1");
+      const call = prisma.issueTask.update.mock.calls.find(
+        (c) => c[0]?.data?.status === IssueStatus.QUEUED,
+      );
+      expect(call).toBeTruthy();
+    });
+
+    it("NEEDS_DECISION이 아니면 거부한다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        id: "i1",
+        projectId: "p1",
+        status: IssueStatus.DONE,
+      });
+      await expect(service.resume("i1", "u1")).rejects.toThrow();
+    });
   });
 
   describe("stats (대시보드 요약)", () => {
@@ -366,6 +426,7 @@ describe("IssuesService (큐/워커)", () => {
         done: 0,
         error: 1,
         interrupted: 0,
+        needs_decision: 0,
       });
       expect(res.retrying).toBe(3);
       expect(res.oldestQueuedAt).toBe("2026-07-23T00:00:00.000Z");

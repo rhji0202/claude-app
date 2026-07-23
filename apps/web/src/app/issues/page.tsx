@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Download, Plus } from "lucide-react";
 import { Streamdown } from "streamdown";
+import type { IssueNote } from "@claude-app/shared";
 import CrudPanel from "@/components/CrudPanel";
 import { WorkerDashboard } from "./WorkerDashboard";
 import { PageHeader } from "@/components/PageHeader";
@@ -42,6 +43,7 @@ const STATUS_LABEL: Record<string, string> = {
   done: "완료",
   error: "오류",
   interrupted: "중단됨",
+  needs_decision: "결정 대기",
 };
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -55,7 +57,13 @@ const CATEGORY_LABEL: Record<string, string> = {
  * 상태 배지를 클릭하면 오류 메시지·실행 결과 전문을 다이얼로그로 보여준다.
  * error/result가 있는 상태(오류·완료)에서만 클릭 가능하게 한다.
  */
-function IssueStatusCell({ row }: { row: Record<string, unknown> }) {
+function IssueStatusCell({
+  row,
+  onChanged,
+}: {
+  row: Record<string, unknown>;
+  onChanged?: () => void;
+}) {
   const status = String(row.status);
   const error = (row.error as string | null | undefined) ?? null;
   const result = (row.result as string | null | undefined) ?? null;
@@ -74,6 +82,11 @@ function IssueStatusCell({ row }: { row: Record<string, unknown> }) {
         )}
       </div>
     );
+  }
+
+  // 결정 대기: 에이전트 질문 + 메모/이력 + 재개
+  if (status === "needs_decision") {
+    return <DecisionCell row={row} badge={badge} onChanged={onChanged} />;
   }
 
   // 볼 내용이 없으면 배지만 (대기 등)
@@ -126,6 +139,136 @@ function IssueStatusCell({ row }: { row: Record<string, unknown> }) {
               </div>
             </div>
           )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const NOTE_LABEL: Record<string, string> = {
+  human: "사람",
+  agent: "에이전트",
+  system: "시스템",
+};
+
+/**
+ * 결정 대기 셀: 배지 클릭 → 에이전트 질문·이력 타임라인 + 메모 입력 + 재개.
+ * 열 때 GET /issues/:id/notes로 이력을 지연 로드한다.
+ */
+function DecisionCell({
+  row,
+  badge,
+  onChanged,
+}: {
+  row: Record<string, unknown>;
+  badge: React.ReactNode;
+  onChanged?: () => void;
+}) {
+  const id = String(row.id);
+  const [notes, setNotes] = useState<IssueNote[] | null>(null);
+  const [memo, setMemo] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function loadNotes(open: boolean) {
+    if (!open) return;
+    try {
+      setNotes(await api.get<IssueNote[]>(`/issues/${id}/notes`));
+    } catch (e) {
+      toast.error((e as Error).message);
+      setNotes([]);
+    }
+  }
+
+  async function addMemo() {
+    if (!memo.trim()) return;
+    setBusy(true);
+    try {
+      await api.post(`/issues/${id}/notes`, { content: memo.trim() });
+      setMemo("");
+      await loadNotes(true);
+      toast.success("메모를 추가했습니다.");
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resume() {
+    setBusy(true);
+    try {
+      await api.post(`/issues/${id}/resume`);
+      toast.success("재개했습니다. 워커가 다시 처리합니다.");
+      onChanged?.();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // 에이전트의 마지막 질문(가장 최근 AGENT 메모)
+  const question = notes
+    ? [...notes].reverse().find((n) => n.author === "agent")?.content
+    : null;
+
+  return (
+    <Dialog onOpenChange={loadNotes}>
+      <DialogTrigger className="cursor-pointer" title="결정 대기 상세">
+        {badge}
+      </DialogTrigger>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>사람 결정이 필요합니다</DialogTitle>
+          <DialogDescription>{String(row.title ?? "")}</DialogDescription>
+        </DialogHeader>
+        <div className="max-h-[60vh] space-y-4 overflow-y-auto">
+          {question && (
+            <div className="rounded-md border border-[var(--accent)]/40 bg-[var(--accent)]/5 p-3 text-sm">
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                에이전트 질문
+              </div>
+              {question}
+            </div>
+          )}
+          {/* 이력 타임라인 */}
+          <div className="space-y-2">
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              이력
+            </div>
+            {notes === null ? (
+              <p className="text-sm text-muted-foreground">불러오는 중…</p>
+            ) : notes.length === 0 ? (
+              <p className="text-sm text-muted-foreground">이력이 없습니다.</p>
+            ) : (
+              notes.map((n) => (
+                <div key={n.id} className="text-sm">
+                  <Mono>[{NOTE_LABEL[n.author] ?? n.author}]</Mono>{" "}
+                  <span className="whitespace-pre-wrap">{n.content}</span>
+                </div>
+              ))
+            )}
+          </div>
+          {/* 메모 입력 */}
+          <div className="space-y-2">
+            <Textarea
+              placeholder="에이전트에게 전달할 결정·지시를 입력하세요."
+              value={memo}
+              onChange={(e) => setMemo(e.target.value)}
+            />
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                onClick={addMemo}
+                disabled={busy || !memo.trim()}
+              >
+                메모 추가
+              </Button>
+              <Button onClick={resume} disabled={busy}>
+                재개
+              </Button>
+            </div>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
@@ -501,7 +644,9 @@ export default function IssuesPage() {
           {
             key: "status",
             label: "상태",
-            render: (r) => <IssueStatusCell row={r} />,
+            render: (r) => (
+              <IssueStatusCell row={r} onChanged={() => setReload((n) => n + 1)} />
+            ),
           },
           {
             key: "category",

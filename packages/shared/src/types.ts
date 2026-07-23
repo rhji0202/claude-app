@@ -56,7 +56,20 @@ export type IssueTaskStatus =
   | "running"
   | "done"
   | "error"
-  | "interrupted";
+  | "interrupted"
+  | "needs_decision";
+
+/** 이슈 메모 작성 주체 */
+export type IssueNoteAuthor = "human" | "agent" | "system";
+
+/** 이슈 메모/이력 한 건(결정 대기 흐름·진행 이력). */
+export interface IssueNote {
+  id: ID;
+  issueId: ID;
+  author: IssueNoteAuthor;
+  content: string;
+  createdAt: string;
+}
 
 /** 이슈 출처: GitHub 동기화 vs 공유 링크를 통한 테스터 수동 등록 */
 export type IssueSource = "github" | "manual";
