@@ -102,6 +102,9 @@ model ClaudeAccount {
   accountEmail     String?
   subscriptionType String?
   isActive         Boolean   @default(false)
+  // 이 계정으로 실행 시 사용할 모델·reasoning effort(미지정 시 env 기본값).
+  model            String?
+  effort           String?
   projects         Project[]
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt

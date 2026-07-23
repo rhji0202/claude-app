@@ -13,7 +13,16 @@ export interface ClaudeAccountDto {
   subscriptionType: string | null;
   isActive: boolean;
   tokenPreview: string;
+  /** 이 계정으로 실행 시 모델·effort(미지정 시 null → 전역 기본) */
+  model: string | null;
+  effort: string | null;
   createdAt: string;
+}
+
+/** 실행에 쓸 모델·effort (계정 지정값 또는 null). */
+export interface ModelConfig {
+  model: string | null;
+  effort: string | null;
 }
 
 @Injectable()
@@ -126,6 +135,8 @@ export class ClaudeAccountService {
     subscriptionType: string | null;
     accessTokenEnc: string;
     isActive: boolean;
+    model: string | null;
+    effort: string | null;
     createdAt: Date;
   }): ClaudeAccountDto {
     // 토큰 프리뷰: 앞 12자 + …(값은 절대 전체 노출 안 함). 복호화 실패 시 표시만 생략.
@@ -139,7 +150,51 @@ export class ClaudeAccountService {
       subscriptionType: a.subscriptionType,
       isActive: a.isActive,
       tokenPreview: preview,
+      model: a.model,
+      effort: a.effort,
       createdAt: a.createdAt.toISOString(),
     };
+  }
+
+  /** 계정의 라벨·모델·effort 수정. 본인 계정만. */
+  async update(
+    id: string,
+    userId: string,
+    data: { label?: string; model?: string | null; effort?: string | null },
+  ): Promise<ClaudeAccountDto> {
+    const acc = await this.prisma.claudeAccount.findFirst({
+      where: { id, userId },
+    });
+    if (!acc) throw new NotFoundException("계정을 찾을 수 없습니다.");
+    const updated = await this.prisma.claudeAccount.update({
+      where: { id },
+      data: {
+        ...(data.label !== undefined ? { label: data.label } : {}),
+        // "" → null(전역 기본), 값 → 지정
+        ...(data.model !== undefined ? { model: data.model || null } : {}),
+        ...(data.effort !== undefined ? { effort: data.effort || null } : {}),
+      },
+    });
+    return this.toDto(updated);
+  }
+
+  /**
+   * 실행에 쓸 모델·effort 해석: 프로젝트 지정 계정 → 실행 사용자 활성 계정 순.
+   * 계정에 지정이 없으면 null(호출부가 env 기본값으로 폴백).
+   */
+  async getModelConfig(
+    userId: string | undefined,
+    accountId?: string | null,
+  ): Promise<ModelConfig> {
+    const acc =
+      (accountId
+        ? await this.prisma.claudeAccount.findUnique({ where: { id: accountId } })
+        : null) ??
+      (userId
+        ? await this.prisma.claudeAccount.findFirst({
+            where: { userId, isActive: true },
+          })
+        : null);
+    return { model: acc?.model ?? null, effort: acc?.effort ?? null };
   }
 }

@@ -26,8 +26,26 @@ interface ClaudeAccount {
   subscriptionType: string | null;
   isActive: boolean;
   tokenPreview: string;
+  model: string | null;
+  effort: string | null;
   createdAt: string;
 }
+
+// 선택 가능한 모델(빈 값 = 전역 기본). effort 지원 최신 모델 위주.
+const MODEL_OPTIONS = [
+  { value: "", label: "기본(서버 설정)" },
+  { value: "claude-opus-4-8", label: "Opus 4.8" },
+  { value: "claude-sonnet-5", label: "Sonnet 5" },
+  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+];
+const EFFORT_OPTIONS = [
+  { value: "", label: "기본" },
+  { value: "low", label: "low" },
+  { value: "medium", label: "medium" },
+  { value: "high", label: "high" },
+  { value: "xhigh", label: "xhigh" },
+  { value: "max", label: "max" },
+];
 
 export default function AccountPage() {
   const [accounts, setAccounts] = useState<ClaudeAccount[] | null>(null);
@@ -81,6 +99,16 @@ export default function AccountPage() {
     try {
       await api.del(`/claude-accounts/${id}`);
       toast.success("계정을 삭제했습니다.");
+      await load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  }
+
+  // 계정별 모델·effort 저장(빈 값이면 전역 기본 사용).
+  async function saveModel(id: string, patch: { model?: string; effort?: string }) {
+    try {
+      await api.patch(`/claude-accounts/${id}`, patch);
       await load();
     } catch (e) {
       toast.error((e as Error).message);
@@ -176,6 +204,33 @@ export default function AccountPage() {
                     </div>
                     <div className="mt-0.5">
                       <Mono>{a.tokenPreview}</Mono>
+                    </div>
+                    {/* 계정별 실행 모델·effort (빈 값 = 서버 기본) */}
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <label className="text-xs text-muted-foreground">모델</label>
+                      <select
+                        className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+                        value={a.model ?? ""}
+                        onChange={(e) => saveModel(a.id, { model: e.target.value })}
+                      >
+                        {MODEL_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                      <label className="text-xs text-muted-foreground">effort</label>
+                      <select
+                        className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+                        value={a.effort ?? ""}
+                        onChange={(e) => saveModel(a.id, { effort: e.target.value })}
+                      >
+                        {EFFORT_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   </div>
                   {!a.isActive && (

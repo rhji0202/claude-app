@@ -4,10 +4,11 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
 } from "@nestjs/common";
 import { ClaudeAccountService } from "./claude-account.service";
-import { AddAccountDto } from "./dto";
+import { AddAccountDto, UpdateAccountDto } from "./dto";
 import { CurrentUser, type AuthUser } from "../auth/current-user.decorator";
 
 @Controller("claude-accounts")
@@ -23,6 +24,15 @@ export class ClaudeAccountController {
   @Post()
   add(@Body() dto: AddAccountDto, @CurrentUser() user: AuthUser) {
     return this.accounts.addAccount(user.userId, dto.token, dto.label);
+  }
+
+  @Patch(":id")
+  update(
+    @Param("id") id: string,
+    @Body() dto: UpdateAccountDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.accounts.update(id, user.userId, dto);
   }
 
   @Post(":id/activate")

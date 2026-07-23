@@ -113,6 +113,25 @@ export class AgentService {
     return env;
   }
 
+  /**
+   * 실행에 쓸 모델·effort 해석. 계정 지정값 우선, 없으면 env 전역 기본
+   * (ANTHROPIC_MODEL / ANTHROPIC_EFFORT). SDK query options.model/effort로 전달된다.
+   */
+  private async resolveModel(
+    userId: string | undefined,
+    claudeAccountId?: string | null,
+  ): Promise<{ model: string; effort: string }> {
+    const cfg = await this.claudeAccounts.getModelConfig(userId, claudeAccountId);
+    return {
+      model:
+        cfg.model ??
+        this.config.get<string>("ANTHROPIC_MODEL") ??
+        "claude-opus-4-8",
+      effort:
+        cfg.effort ?? this.config.get<string>("ANTHROPIC_EFFORT") ?? "high",
+    };
+  }
+
   /** 프로젝트에 연결된 활성 MCP 서버를 SDK mcpServers 설정으로 변환 */
   private async resolveMcpServers(
     projectId: string,
@@ -206,6 +225,12 @@ export class AgentService {
       gitToken,
       project.claudeAccountId,
     );
+    const { model, effort } = await this.resolveModel(
+      opts.userId,
+      project.claudeAccountId,
+    );
+    // effort는 SDK Options 타입 버전에 따라 없을 수 있어 env로 전달(CLI가 해석).
+    env.CLAUDE_CODE_EFFORT_LEVEL = effort;
 
     let sessionId: string | undefined;
     let finalText = "";
@@ -222,6 +247,7 @@ export class AgentService {
         options: {
           // 실행 디렉터리는 항상 호출측이 주입한 worktree 경로(설계 12.5). project.cwd 미사용.
           cwd: opts.cwd,
+          model,
           maxTurns: opts.maxTurns ?? 20,
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
@@ -390,6 +416,11 @@ export class AgentService {
       gitToken,
       project.claudeAccountId,
     );
+    const { model, effort } = await this.resolveModel(
+      opts.userId,
+      project.claudeAccountId,
+    );
+    env.CLAUDE_CODE_EFFORT_LEVEL = effort;
 
     const messages: unknown[] = [];
     let sessionId: string | undefined;
@@ -428,6 +459,7 @@ export class AgentService {
         options: {
           // 실행 디렉터리는 항상 호출측이 주입한 worktree 경로(설계 12.5). project.cwd 미사용.
           cwd: opts.cwd,
+          model,
           maxTurns: opts.maxTurns ?? 20,
           // 전체 bypass 실행. 헤드리스 서버 컨텍스트라 권한 프롬프트가 불가능하므로
           // 모든 도구(bash 포함)를 무프롬프트로 실행한다. bypass에는 이 플래그가 필요.
