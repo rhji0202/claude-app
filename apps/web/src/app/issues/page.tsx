@@ -722,19 +722,20 @@ export default function IssuesPage() {
               const imgs = (r.images as string[] | undefined) ?? [];
               if (imgs.length === 0) return <Mono>—</Mono>;
               return (
-                <div className="flex flex-wrap gap-1">
+                <div className="flex gap-1">
                   {imgs.slice(0, 4).map((rel) => (
                     <a
                       key={rel}
                       href={uploadUrl(rel)}
                       target="_blank"
                       rel="noreferrer"
+                      className="shrink-0"
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={uploadUrl(rel)}
                         alt=""
-                        className="size-10 rounded border border-border object-cover"
+                        className="size-10 shrink-0 rounded border border-border object-cover"
                       />
                     </a>
                   ))}
@@ -759,8 +760,8 @@ export default function IssuesPage() {
                   row={r}
                   onChanged={() => setReload((n) => n + 1)}
                   trigger={
-                    <span className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs hover:bg-muted/50">
-                      <Play className="size-3" />
+                    <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-border px-2.5 py-1 text-xs hover:bg-muted/50">
+                      <Play className="size-3 shrink-0" />
                       지시·재실행
                     </span>
                   }
