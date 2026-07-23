@@ -5,6 +5,8 @@ import { IssueStatus } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../prisma/prisma.service";
 import { IssuesService } from "./issues.service";
+import { UsageService } from "../usage/usage.service";
+import { NotifyService } from "../notify/notify.service";
 
 /**
  * DB 기반 큐 워커(설계 5.1). **API와 동일 프로세스(in-process)**로 동작한다(리스크 S1).
@@ -39,11 +41,16 @@ export class IssueWorkerService implements OnModuleInit {
    */
   private paused = false;
 
+  /** 예산 초과 알림 중복 방지(projectId → 마지막 발신 날짜 YYYY-MM-DD). */
+  private readonly budgetNotified = new Map<string, string>();
+
   constructor(
     private readonly config: ConfigService,
     private readonly scheduler: SchedulerRegistry,
     private readonly prisma: PrismaService,
     private readonly issues: IssuesService,
+    private readonly usage: UsageService,
+    private readonly notify: NotifyService,
   ) {
     this.concurrency = this.config.get<number>("AGENT_CONCURRENCY") ?? 3;
     this.pollMs = this.config.get<number>("ISSUE_WORKER_POLL_MS") ?? 5000;
@@ -131,7 +138,22 @@ export class IssueWorkerService implements OnModuleInit {
     });
     if (candidates.length === 0) return;
 
+    // 예산 판정을 프로젝트당 1회만(같은 tick의 여러 이슈가 같은 프로젝트일 수 있음).
+    const budgetCache = new Map<string, { over: boolean; reason?: string }>();
+
     for (const task of candidates) {
+      // 예산 가드레일(설계 개선): 프로젝트/계정이 월 예산 초과면 클레임하지 않고 건너뛴다.
+      // 이슈는 QUEUED로 남아 예산 리셋(다음 달)·상향 시 자연히 재개된다.
+      let budget = budgetCache.get(task.projectId);
+      if (!budget) {
+        budget = await this.budgetStatus(task.projectId);
+        budgetCache.set(task.projectId, budget);
+      }
+      if (budget.over) {
+        await this.warnBudget(task.projectId, budget.reason);
+        continue;
+      }
+
       // 단일 인스턴스 전제의 낙관적 클레임: status=QUEUED인 동안에만 RUNNING으로 전환.
       // (스케일아웃 시 FOR UPDATE SKIP LOCKED 필요 — 설계 3·10)
       const claimed = await this.prisma.issueTask.updateMany({
@@ -150,6 +172,34 @@ export class IssueWorkerService implements OnModuleInit {
       // executeClaimed는 throw하지 않으며 상태를 스스로 기록한다.
       void this.issues.executeClaimed(task);
     }
+  }
+
+  /**
+   * 프로젝트 예산 초과 여부. 프로젝트에 연결된 Claude 계정도 함께 판정한다
+   * (UsageService.isOverBudget이 프로젝트+계정 양쪽 확인).
+   */
+  private async budgetStatus(
+    projectId: string,
+  ): Promise<{ over: boolean; reason?: string }> {
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { claudeAccountId: true },
+    });
+    return this.usage.isOverBudget(projectId, project?.claudeAccountId ?? null);
+  }
+
+  /**
+   * 예산 초과 알림(프로젝트당 하루 1회). 워커 재시작 시 캐시가 초기화돼 다시 1회 발신될 수 있다.
+   */
+  private async warnBudget(projectId: string, reason?: string): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    if (this.budgetNotified.get(projectId) === today) return;
+    this.budgetNotified.set(projectId, today);
+    this.logger.warn(`예산 초과로 클레임 건너뜀 ${projectId}: ${reason ?? ""}`);
+    await this.notify.notify(projectId, {
+      event: "budget.exceeded",
+      title: reason ?? "월 예산 초과 — 이슈 실행 보류",
+    });
   }
 
   /**

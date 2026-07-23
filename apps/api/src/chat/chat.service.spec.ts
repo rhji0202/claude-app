@@ -7,6 +7,7 @@ import {
   type AgentStreamEvent,
 } from "../agent/agent.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
+import { UsageService } from "../usage/usage.service";
 
 describe("ChatService", () => {
   let service: ChatService;
@@ -38,11 +39,13 @@ describe("ChatService", () => {
     projects = { assertAccess: jest.fn().mockResolvedValue("owner") };
     agent = { runStream: jest.fn() };
     repos = { prepareForProject: jest.fn().mockResolvedValue("/repos/p1") };
+    const usage = { record: jest.fn().mockResolvedValue(undefined) };
     service = new ChatService(
       db as unknown as PrismaService,
       projects as unknown as ProjectsService,
       agent as unknown as AgentService,
       repos as unknown as RepoManagerService,
+      usage as unknown as UsageService,
     );
   });
 

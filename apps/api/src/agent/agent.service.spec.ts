@@ -149,3 +149,69 @@ describe("AgentService.describeResultError (오류 사유 해석)", () => {
     expect(describe_({})).toContain("unknown");
   });
 });
+
+/**
+ * parseUsage: SDK result 메시지 → AgentUsage. total_cost_usd/usage(snake)/modelUsage(camel).
+ */
+describe("AgentService.parseUsage (사용량 추출)", () => {
+  type Msg = Record<string, unknown>;
+  let service: AgentService;
+
+  function parse(m: Msg) {
+    return (
+      service as unknown as {
+        parseUsage: (m: Msg) => unknown;
+      }
+    ).parseUsage(m);
+  }
+
+  beforeEach(() => {
+    service = new AgentService(
+      {} as unknown as PrismaService,
+      {} as unknown as CryptoService,
+      { get: jest.fn() } as unknown as ConfigService,
+      {} as unknown as ClaudeAccountService,
+    );
+  });
+
+  it("total_cost_usd·토큰·모델을 추출한다", () => {
+    const u = parse({
+      total_cost_usd: 0.0123,
+      num_turns: 4,
+      duration_ms: 5000,
+      usage: {
+        input_tokens: 100,
+        output_tokens: 200,
+        cache_read_input_tokens: 50,
+        cache_creation_input_tokens: 10,
+      },
+      modelUsage: { "claude-opus-4-8": { costUSD: 0.0123 } },
+    }) as Record<string, unknown>;
+    expect(u).toMatchObject({
+      costUsd: 0.0123,
+      inputTokens: 100,
+      outputTokens: 200,
+      cacheReadTokens: 50,
+      cacheCreationTokens: 10,
+      model: "claude-opus-4-8",
+      durationMs: 5000,
+      numTurns: 4,
+    });
+  });
+
+  it("사용량 정보가 전혀 없으면 undefined", () => {
+    expect(parse({ subtype: "success", result: "hi" })).toBeUndefined();
+  });
+
+  it("modelUsage에 여러 모델이면 costUSD가 가장 큰 것을 대표 모델로", () => {
+    const u = parse({
+      total_cost_usd: 0.5,
+      usage: { input_tokens: 1 },
+      modelUsage: {
+        "claude-haiku": { costUSD: 0.1 },
+        "claude-opus": { costUSD: 0.4 },
+      },
+    }) as Record<string, unknown>;
+    expect(u.model).toBe("claude-opus");
+  });
+});

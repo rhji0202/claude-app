@@ -10,6 +10,7 @@ import { UploadsService } from "../uploads/uploads.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
 import { WorktreeService } from "../repo/worktree.service";
 import { NotifyService } from "../notify/notify.service";
+import { UsageService } from "../usage/usage.service";
 
 /** ConfigService 스텁: 주어진 map에서 값 반환. */
 function makeConfig(map: Record<string, unknown> = {}): ConfigService {
@@ -30,6 +31,7 @@ describe("IssuesService (큐/워커)", () => {
     };
     issueNote: { findMany: jest.Mock; create: jest.Mock };
     project: { findUnique: jest.Mock };
+    usageRecord: { aggregate: jest.Mock };
   };
   let projects: {
     assertCanEdit: jest.Mock;
@@ -99,6 +101,7 @@ describe("IssuesService (큐/워커)", () => {
       worktrees as unknown as WorktreeService,
       makeConfig(cfg),
       notify as unknown as NotifyService,
+      { record: jest.fn().mockResolvedValue(undefined) } as unknown as UsageService,
     );
   }
 
@@ -118,6 +121,9 @@ describe("IssuesService (큐/워커)", () => {
         create: jest.fn().mockResolvedValue({}),
       },
       project: { findUnique: jest.fn() },
+      usageRecord: {
+        aggregate: jest.fn().mockResolvedValue({ _sum: { costUsd: 0 } }),
+      },
     };
     projects = {
       assertCanEdit: jest.fn().mockResolvedValue(undefined),

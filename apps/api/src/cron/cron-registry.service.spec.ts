@@ -7,6 +7,7 @@ import { RepoManagerService } from "../repo/repo-manager.service";
 import { WorktreeService } from "../repo/worktree.service";
 import { NotifyService } from "../notify/notify.service";
 import { IssuesService } from "../issues/issues.service";
+import { UsageService } from "../usage/usage.service";
 import { CronRegistryService } from "./cron-registry.service";
 
 describe("CronRegistryService.fire (실행 이력)", () => {
@@ -56,6 +57,7 @@ describe("CronRegistryService.fire (실행 이력)", () => {
       worktrees as unknown as WorktreeService,
       { notify: jest.fn().mockResolvedValue(undefined) } as unknown as NotifyService,
       issues as unknown as IssuesService,
+      { record: jest.fn().mockResolvedValue(undefined) } as unknown as UsageService,
     );
   });
 

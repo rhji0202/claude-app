@@ -101,6 +101,13 @@ export function WorkerDashboard() {
                 <div className="text-xs text-muted-foreground">{s.label}</div>
               </div>
             ))}
+            {/* 이번 달 예상 비용 */}
+            <div className="text-center">
+              <div className="text-2xl font-semibold tabular-nums text-accent">
+                ${stats.monthCostUsd.toFixed(2)}
+              </div>
+              <div className="text-xs text-muted-foreground">이번 달 비용</div>
+            </div>
           </div>
 
           {/* 운영 제어 */}

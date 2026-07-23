@@ -8,6 +8,76 @@
 
 export type ID = string;
 
+/**
+ * 에이전트 1회 실행의 토큰·비용 사용량. Claude Agent SDK의 result 메시지
+ * (total_cost_usd / usage / modelUsage)에서 추출한다.
+ * OAuth 구독 계정은 정액제라 costUsd가 실제 청구액과 다를 수 있어 "예상치"로 취급한다.
+ */
+export interface AgentUsage {
+  /** SDK total_cost_usd — 예상 비용(USD). */
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  /** 실행에 사용된 모델(modelUsage 키 중 대표값). */
+  model?: string | null;
+  /** SDK duration_ms. */
+  durationMs?: number | null;
+  /** 에이전트 왕복(턴) 수. */
+  numTurns?: number | null;
+}
+
+export type UsageKind = "issue" | "cron" | "chat";
+
+/** 사용량 원장 1건(GET /usage/records). */
+export interface UsageRecord {
+  id: ID;
+  kind: UsageKind;
+  projectId: ID;
+  projectName?: string | null;
+  claudeAccountId?: string | null;
+  userId?: string | null;
+  refId?: string | null;
+  model?: string | null;
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  durationMs?: number | null;
+  createdAt: string;
+}
+
+/** 사용량 집계 한 행(GET /usage/summary). key는 groupBy 기준 값(날짜·프로젝트id·계정id·모델). */
+export interface UsageSummaryRow {
+  key: string;
+  label?: string | null;
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  count: number;
+}
+
+export type UsageGroupBy = "day" | "project" | "account" | "model" | "kind";
+
+/** 사용량 요약 응답. */
+export interface UsageSummary {
+  groupBy: UsageGroupBy;
+  from: string;
+  to: string;
+  rows: UsageSummaryRow[];
+  /** 전체 합계. */
+  total: {
+    costUsd: number;
+    inputTokens: number;
+    outputTokens: number;
+    count: number;
+  };
+}
+
 /** 시크릿 필드는 API 응답에서 절대 노출하지 않는다. 대신 보유 여부만 내려준다. */
 export interface SecretStatus {
   hasGitToken: boolean;
@@ -39,6 +109,9 @@ export interface Project {
 
   /** 이 프로젝트가 사용할 Claude 계정 id (미지정 시 활성 계정 폴백) */
   claudeAccountId?: string | null;
+
+  /** 월 예상 비용 상한(USD). 초과 시 워커가 이 프로젝트 이슈를 건너뛴다(null=무제한) */
+  monthlyBudgetUsd?: number | null;
 
   // 소유/공개 범위
   ownerId?: string | null;
@@ -120,6 +193,11 @@ export interface IssueTask {
   progress?: string | null;
   /** 실행 진행 이벤트 타임라인(최근순 누적) */
   progressLog?: IssueProgressEvent[] | null;
+  /** 마지막 실행의 예상 비용(USD, 사용량 미수집 시 null) */
+  costUsd?: number | null;
+  /** 마지막 실행의 입력·출력 토큰 */
+  inputTokens?: number | null;
+  outputTokens?: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -136,6 +214,8 @@ export interface IssueWorkerStats {
   oldestQueuedAt: string | null;
   /** 워커 런타임 상태. */
   worker: { workerId: string; paused: boolean };
+  /** 이번 달(1일 이후) 누적 예상 비용(USD, 접근 가능한 프로젝트 합계). */
+  monthCostUsd: number;
 }
 
 export type CronStatus = "ok" | "error";

@@ -1,9 +1,11 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
-import { ChatRole } from "@prisma/client";
+import { ChatRole, UsageKind } from "@prisma/client";
+import type { AgentUsage } from "@claude-app/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { ProjectsService } from "../projects/projects.service";
 import { AgentService, type AgentStreamEvent } from "../agent/agent.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
+import { UsageService } from "../usage/usage.service";
 
 export interface ChatSessionDto {
   id: string;
@@ -49,6 +51,7 @@ export class ChatService {
     private readonly projects: ProjectsService,
     private readonly agent: AgentService,
     private readonly repos: RepoManagerService,
+    private readonly usage: UsageService,
   ) {}
 
   async listSessions(userId: string): Promise<ChatSessionDto[]> {
@@ -123,6 +126,7 @@ export class ChatService {
     let finalText = "";
     let newSdkSessionId: string | undefined;
     let parts: ChatPart[] = [];
+    let usage: AgentUsage | undefined;
 
     // 실행 디렉터리: 관리 clone base(설계 12.5). gitRepo 없으면 BadRequest.
     const cwd = await this.repos.prepareForProject(session.projectId);
@@ -139,8 +143,12 @@ export class ChatService {
       },
       (e) => {
         if (e.type === "session") newSdkSessionId = e.sessionId;
-        else if (e.type === "done") finalText = e.text || finalText;
-        else parts = reduceParts(parts, e);
+        else if (e.type === "done") {
+          finalText = e.text || finalText;
+          if (e.usage) usage = e.usage;
+        } else if (e.type === "error") {
+          if (e.usage) usage = e.usage;
+        } else parts = reduceParts(parts, e);
         onEvent(e);
       },
     );
@@ -167,6 +175,22 @@ export class ChatService {
         updatedAt: new Date(),
       },
     });
+
+    // 사용량 원장 기록(있을 때만). refId=chatSessionId.
+    if (usage) {
+      const project = await this.prisma.project.findUnique({
+        where: { id: session.projectId },
+        select: { claudeAccountId: true },
+      });
+      await this.usage.record({
+        kind: UsageKind.CHAT,
+        projectId: session.projectId,
+        claudeAccountId: project?.claudeAccountId ?? null,
+        userId,
+        refId: sessionId,
+        usage,
+      });
+    }
   }
 
   private toDto(s: {

@@ -1,14 +1,15 @@
 import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { SchedulerRegistry } from "@nestjs/schedule";
 import { CronJob } from "cron";
-import { CronStatus, CronType } from "@prisma/client";
+import { CronStatus, CronType, UsageKind } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { IssuesService } from "../issues/issues.service";
 import { CryptoService } from "../crypto/crypto.service";
-import { AgentService } from "../agent/agent.service";
+import { AgentService, type RunResult } from "../agent/agent.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
 import { WorktreeService } from "../repo/worktree.service";
 import { NotifyService } from "../notify/notify.service";
+import { UsageService } from "../usage/usage.service";
 
 /**
  * 사용자 정의 크론 작업을 런타임에 등록/해제한다.
@@ -28,6 +29,7 @@ export class CronRegistryService implements OnModuleInit {
     private readonly worktrees: WorktreeService,
     private readonly notify: NotifyService,
     private readonly issues: IssuesService,
+    private readonly usage: UsageService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -75,7 +77,14 @@ export class CronRegistryService implements OnModuleInit {
     const job = await this.prisma.cronJob.findUnique({
       where: { id },
       include: {
-        project: { select: { ownerId: true, gitRepo: true, gitTokenEnc: true } },
+        project: {
+          select: {
+            ownerId: true,
+            gitRepo: true,
+            gitTokenEnc: true,
+            claudeAccountId: true,
+          },
+        },
       },
     });
     if (!job) return;
@@ -133,6 +142,10 @@ export class CronRegistryService implements OnModuleInit {
           result: res.status === "ok" ? res.text : null,
           error: res.status === "ok" ? null : (res.error ?? null),
           sessionId: res.sessionId ?? null,
+          usage: res.usage,
+          projectId: job.projectId,
+          claudeAccountId: job.project.claudeAccountId,
+          userId: job.project.ownerId,
         });
         if (res.status !== "ok")
           await this.notifyError(job.projectId, job.name, res.error ?? null);
@@ -191,10 +204,17 @@ export class CronRegistryService implements OnModuleInit {
       result?: string | null;
       error?: string | null;
       sessionId?: string | null;
+      /** SDK 사용량. 있으면 CronRun 컬럼 + 원장에 기록. */
+      usage?: RunResult["usage"];
+      /** 원장 기록용(usage가 있을 때만). */
+      projectId?: string;
+      claudeAccountId?: string | null;
+      userId?: string | null;
     },
   ): Promise<void> {
     const finishedAt = new Date();
     const durationMs = finishedAt.getTime() - startedAt.getTime();
+    const u = data.usage;
     try {
       if (runId) {
         await this.prisma.cronRun.update({
@@ -206,6 +226,15 @@ export class CronRegistryService implements OnModuleInit {
             sessionId: data.sessionId ?? null,
             durationMs,
             finishedAt,
+            ...(u
+              ? {
+                  costUsd: u.costUsd,
+                  inputTokens: u.inputTokens,
+                  outputTokens: u.outputTokens,
+                  cacheReadTokens: u.cacheReadTokens,
+                  cacheCreationTokens: u.cacheCreationTokens,
+                }
+              : {}),
           },
         });
       }
@@ -220,6 +249,18 @@ export class CronRegistryService implements OnModuleInit {
       await this.pruneRuns(cronJobId);
     } catch (e) {
       this.logger.warn(`크론 결과 기록 실패 ${cronJobId}: ${String(e)}`);
+    }
+
+    // 사용량 원장 기록(있을 때만). refId=runId. 기록 실패는 UsageService가 흡수.
+    if (u && data.projectId) {
+      await this.usage.record({
+        kind: UsageKind.CRON,
+        projectId: data.projectId,
+        claudeAccountId: data.claudeAccountId ?? null,
+        userId: data.userId ?? null,
+        refId: runId ?? null,
+        usage: u,
+      });
     }
   }
 

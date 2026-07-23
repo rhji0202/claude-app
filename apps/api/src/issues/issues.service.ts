@@ -14,6 +14,7 @@ import {
   IssueNoteAuthor,
   IssueTask as PrismaIssue,
   IssueNote as PrismaNote,
+  UsageKind,
 } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
@@ -29,6 +30,7 @@ import { UploadsService } from "../uploads/uploads.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
 import { WorktreeService } from "../repo/worktree.service";
 import { NotifyService } from "../notify/notify.service";
+import { UsageService } from "../usage/usage.service";
 import type {
   IssueTask as IssueDto,
   IssueNote as IssueNoteDto,
@@ -131,6 +133,7 @@ export class IssuesService implements OnModuleInit {
     private readonly worktrees: WorktreeService,
     private readonly config: ConfigService,
     private readonly notify: NotifyService,
+    private readonly usage: UsageService,
   ) {}
 
   private toDto(i: PrismaIssue): IssueDto {
@@ -156,6 +159,9 @@ export class IssuesService implements OnModuleInit {
       category: (i.category as IssueDto["category"]) ?? null,
       progress: i.progress,
       progressLog: (i.progressLog as IssueDto["progressLog"]) ?? null,
+      costUsd: i.costUsd,
+      inputTokens: i.inputTokens,
+      outputTokens: i.outputTokens,
       createdAt: i.createdAt.toISOString(),
       updatedAt: i.updatedAt.toISOString(),
     };
@@ -230,6 +236,15 @@ export class IssuesService implements OnModuleInit {
       select: { createdAt: true },
     });
 
+    // 이번 달 누적 비용(접근 가능한 프로젝트 원장 합계, kind 무관).
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const costAgg = await this.prisma.usageRecord.aggregate({
+      where: { projectId: { in: ids }, createdAt: { gte: monthStart } },
+      _sum: { costUsd: true },
+    });
+
     return {
       slots: {
         concurrency,
@@ -240,6 +255,7 @@ export class IssuesService implements OnModuleInit {
       retrying,
       oldestQueuedAt: oldestQueued?.createdAt.toISOString() ?? null,
       worker,
+      monthCostUsd: costAgg._sum.costUsd ?? 0,
     };
   }
 
@@ -763,6 +779,10 @@ export class IssuesService implements OnModuleInit {
             sessionId: res.sessionId ?? task.sessionId,
             result: res.text,
             error: null,
+            usage: res.usage,
+            projectId: project.id,
+            claudeAccountId: project.claudeAccountId,
+            userId: project.ownerId,
           });
           await this.notify.notify(project.id, {
             event: "issue.error",
@@ -789,6 +809,10 @@ export class IssuesService implements OnModuleInit {
           error: res.error ?? null,
           ...(prOpts ? { prUrl } : {}),
           ...(triage ? { category } : {}),
+          usage: res.usage,
+          projectId: project.id,
+          claudeAccountId: project.claudeAccountId,
+          userId: project.ownerId,
         });
         if (prUrl) await this.postPrComment(task, token, prUrl);
         if (category) await this.applyTriageLabel(task, token, category);
@@ -842,6 +866,7 @@ export class IssuesService implements OnModuleInit {
     let done = false;
     let lastWrite = 0;
     let dirty = false;
+    let usage: RunResult["usage"];
 
     // 진행 이벤트 타임라인(최근 MAX_LOG개 유지). progress 한 줄과 함께 DB에 반영.
     const MAX_LOG = 50;
@@ -881,16 +906,18 @@ export class IssuesService implements OnModuleInit {
       } else if (e.type === "done") {
         finalText = e.text || lastText;
         done = true;
+        if (e.usage) usage = e.usage;
       } else if (e.type === "error") {
         errored = e.error;
         if (e.sessionId) sessionId = e.sessionId;
+        if (e.usage) usage = e.usage;
       }
     };
 
     try {
       await this.agent.runStream(projectId, opts, onEvent);
     } catch (err) {
-      return { status: "error", sessionId, text: finalText || lastText, error: String(err) };
+      return { status: "error", sessionId, text: finalText || lastText, error: String(err), usage };
     } finally {
       // 종료 시 진행 표시 제거(throttle 무시하고 즉시). 로그는 finishRun이 정리.
       await this.prisma.issueTask
@@ -911,6 +938,7 @@ export class IssuesService implements OnModuleInit {
         text: finalText || lastText,
         error: errored,
         interrupted,
+        usage,
       };
     }
     if (!done) {
@@ -920,9 +948,10 @@ export class IssuesService implements OnModuleInit {
         text: finalText || lastText,
         error: "에이전트가 결과를 반환하기 전에 실행이 중단되었습니다.",
         interrupted: true,
+        usage,
       };
     }
-    return { status: "ok", sessionId, text: finalText || lastText };
+    return { status: "ok", sessionId, text: finalText || lastText, usage };
   }
 
   /** 실행 종료 상태 기록. 이슈가 이미 삭제됐어도 프로세스가 죽지 않도록 방어. */
@@ -935,8 +964,15 @@ export class IssuesService implements OnModuleInit {
       error?: string | null;
       prUrl?: string | null;
       category?: string | null;
+      /** SDK 사용량. 있으면 IssueTask 컬럼 + 원장(UsageRecord)에 기록. */
+      usage?: RunResult["usage"];
+      /** 원장 기록용 프로젝트·계정·사용자(usage가 있을 때만 필요). */
+      projectId?: string;
+      claudeAccountId?: string | null;
+      userId?: string | null;
     },
   ): Promise<void> {
+    const u = data.usage;
     await this.prisma.issueTask
       .update({
         where: { id },
@@ -951,9 +987,30 @@ export class IssuesService implements OnModuleInit {
           ...(data.error !== undefined ? { error: data.error } : {}),
           ...(data.prUrl !== undefined ? { prUrl: data.prUrl } : {}),
           ...(data.category !== undefined ? { category: data.category } : {}),
+          ...(u
+            ? {
+                costUsd: u.costUsd,
+                inputTokens: u.inputTokens,
+                outputTokens: u.outputTokens,
+                cacheReadTokens: u.cacheReadTokens,
+                cacheCreationTokens: u.cacheCreationTokens,
+              }
+            : {}),
         },
       })
       .catch((e) => this.logger.warn(`이슈 상태 기록 실패 ${id}: ${String(e)}`));
+
+    // 사용량 원장 기록(있을 때만). 기록 실패는 실행에 영향 없음(UsageService가 흡수).
+    if (u && data.projectId) {
+      await this.usage.record({
+        kind: UsageKind.ISSUE,
+        projectId: data.projectId,
+        claudeAccountId: data.claudeAccountId ?? null,
+        userId: data.userId ?? null,
+        refId: id,
+        usage: u,
+      });
+    }
   }
 
   /** triage 분류 결과를 GitHub 이슈에 `triage:<category>` 라벨로 반영(실패해도 무시). */

@@ -6,7 +6,8 @@ export type NotifyEvent =
   | "issue.done"
   | "issue.error"
   | "issue.pr"
-  | "cron.error";
+  | "cron.error"
+  | "budget.exceeded";
 
 export interface NotifyPayload {
   event: NotifyEvent;
@@ -83,6 +84,7 @@ export class NotifyService {
       "issue.error": "❌",
       "issue.pr": "🔀",
       "cron.error": "⏰❌",
+      "budget.exceeded": "💸",
     };
     const proj = p.projectName ? `[${p.projectName}] ` : "";
     const lines = [`${icon[p.event]} ${proj}${p.title}`];
