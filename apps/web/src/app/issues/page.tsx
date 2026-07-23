@@ -59,11 +59,24 @@ function IssueStatusCell({ row }: { row: Record<string, unknown> }) {
   const status = String(row.status);
   const error = (row.error as string | null | undefined) ?? null;
   const result = (row.result as string | null | undefined) ?? null;
+  const progress = (row.progress as string | null | undefined) ?? null;
   const badge = (
     <StatusBadge status={status} label={STATUS_LABEL[status] ?? status} />
   );
 
-  // 볼 내용이 없으면 배지만 (대기·실행 중 등)
+  // 실행 중이면 배지 + 진행 상황(현재 도구 등)을 함께 표시
+  if (status === "running") {
+    return (
+      <div className="flex flex-col gap-1">
+        {badge}
+        {progress && (
+          <span className="text-xs text-muted-foreground">{progress}</span>
+        )}
+      </div>
+    );
+  }
+
+  // 볼 내용이 없으면 배지만 (대기 등)
   if (!error && !result) return badge;
 
   return (

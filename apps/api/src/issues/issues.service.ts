@@ -14,12 +14,18 @@ import {
 } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
-import { AgentService } from "../agent/agent.service";
+import {
+  AgentService,
+  type AgentStreamEvent,
+  type RunResult,
+  type RunStreamOptions,
+} from "../agent/agent.service";
 import { GithubService } from "../github/github.service";
 import { ProjectsService } from "../projects/projects.service";
 import { UploadsService } from "../uploads/uploads.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
 import { WorktreeService } from "../repo/worktree.service";
+import { NotifyService } from "../notify/notify.service";
 import type {
   IssueTask as IssueDto,
   IssueSource,
@@ -80,6 +86,7 @@ export class IssuesService implements OnModuleInit {
     private readonly repos: RepoManagerService,
     private readonly worktrees: WorktreeService,
     private readonly config: ConfigService,
+    private readonly notify: NotifyService,
   ) {}
 
   private toDto(i: PrismaIssue): IssueDto {
@@ -103,6 +110,7 @@ export class IssuesService implements OnModuleInit {
       resultCommentUrl: i.resultCommentUrl,
       prUrl: i.prUrl,
       category: (i.category as IssueDto["category"]) ?? null,
+      progress: i.progress,
       createdAt: i.createdAt.toISOString(),
       updatedAt: i.updatedAt.toISOString(),
     };
@@ -609,7 +617,7 @@ export class IssuesService implements OnModuleInit {
             this.logger.warn(`이미지 로드 실패 ${rel}: ${String(err)}`);
           }
         }
-        const res = await this.agent.run(project.id, {
+        const res = await this.runViaStream(task.id, project.id, {
           prompt,
           resume: task.sessionId ?? undefined,
           userId: project.ownerId ?? undefined,
@@ -646,6 +654,28 @@ export class IssuesService implements OnModuleInit {
         });
         if (prUrl) await this.postPrComment(task, token, prUrl);
         if (category) await this.applyTriageLabel(task, token, category);
+        // 알림: PR 생성 → issue.pr, 그 외 완료/실패 → issue.done/error
+        if (prUrl) {
+          await this.notify.notify(project.id, {
+            event: "issue.pr",
+            title: `이슈 "${task.title}" → PR 생성`,
+            url: prUrl,
+          });
+        } else if (status === IssueStatus.DONE) {
+          await this.notify.notify(project.id, {
+            event: "issue.done",
+            title: `이슈 "${task.title}" 완료`,
+            url: task.url,
+            detail: res.text,
+          });
+        } else if (status === IssueStatus.ERROR) {
+          await this.notify.notify(project.id, {
+            event: "issue.error",
+            title: `이슈 "${task.title}" 실패`,
+            url: task.url,
+            detail: res.error,
+          });
+        }
       } finally {
         // 4. worktree 정리(중단·오류 무관)
         await this.worktrees.remove(project.id, task.id);
@@ -655,6 +685,84 @@ export class IssuesService implements OnModuleInit {
       this.logger.error(`이슈 실행 실패 ${task.id}: ${String(err)}`);
       await this.finishRun(task.id, IssueStatus.ERROR, { error: String(err) });
     }
+  }
+
+  /**
+   * runStream으로 실행하며 진행 상황을 IssueTask.progress에 반영한다.
+   * 반환값은 기존 agent.run과 동일한 RunResult 형태(호출측 로직 변경 없음).
+   * 진행 DB 쓰기는 throttle(2초)로 제한해 부하를 줄인다.
+   */
+  private async runViaStream(
+    issueId: string,
+    projectId: string,
+    opts: RunStreamOptions,
+  ): Promise<RunResult> {
+    let sessionId: string | undefined;
+    let finalText = "";
+    let lastText = "";
+    let errored: string | undefined;
+    let done = false;
+    let lastWrite = 0;
+    let lastProgress = "";
+
+    const writeProgress = async (label: string) => {
+      const now = Date.now();
+      if (label === lastProgress) return;
+      if (now - lastWrite < 2000) return; // throttle
+      lastProgress = label;
+      lastWrite = now;
+      await this.prisma.issueTask
+        .update({ where: { id: issueId }, data: { progress: label } })
+        .catch(() => undefined); // RUNNING 아님/삭제 등은 무시
+    };
+
+    const onEvent = (e: AgentStreamEvent) => {
+      if (e.type === "session") sessionId = e.sessionId;
+      else if (e.type === "tool") void writeProgress(`도구: ${e.name}`);
+      else if (e.type === "text_end" && e.text) {
+        lastText = e.text;
+        void writeProgress("작성 중…");
+      } else if (e.type === "done") {
+        finalText = e.text || lastText;
+        done = true;
+      } else if (e.type === "error") {
+        errored = e.error;
+        if (e.sessionId) sessionId = e.sessionId;
+      }
+    };
+
+    try {
+      await this.agent.runStream(projectId, opts, onEvent);
+    } catch (err) {
+      return { status: "error", sessionId, text: finalText || lastText, error: String(err) };
+    } finally {
+      // 종료 시 진행 표시 제거(throttle 무시하고 즉시)
+      await this.prisma.issueTask
+        .update({ where: { id: issueId }, data: { progress: null } })
+        .catch(() => undefined);
+    }
+
+    if (errored !== undefined) {
+      // result 없이 스트림이 끝난 '중단'과 실제 오류를 구분(agent.execute와 동일 규약)
+      const interrupted = errored.includes("결과를 반환하기 전에 실행이 중단");
+      return {
+        status: "error",
+        sessionId,
+        text: finalText || lastText,
+        error: errored,
+        interrupted,
+      };
+    }
+    if (!done) {
+      return {
+        status: "error",
+        sessionId,
+        text: finalText || lastText,
+        error: "에이전트가 결과를 반환하기 전에 실행이 중단되었습니다.",
+        interrupted: true,
+      };
+    }
+    return { status: "ok", sessionId, text: finalText || lastText };
   }
 
   /** 실행 종료 상태 기록. 이슈가 이미 삭제됐어도 프로세스가 죽지 않도록 방어. */
@@ -676,6 +784,7 @@ export class IssuesService implements OnModuleInit {
           status,
           claimedAt: null,
           lockedBy: null,
+          progress: null,
           ...(data.sessionId !== undefined ? { sessionId: data.sessionId } : {}),
           ...(data.result !== undefined ? { result: data.result } : {}),
           ...(data.error !== undefined ? { error: data.error } : {}),

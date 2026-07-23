@@ -52,6 +52,11 @@ export class UpdateProjectDto {
   @IsString()
   gitToken?: string;
 
+  /** "" → 해제(null), 값 → 암호화 저장 */
+  @IsOptional()
+  @IsString()
+  notifyWebhook?: string;
+
   /** "" → 해제(null), 값 → 지정 */
   @IsOptional()
   @IsString()

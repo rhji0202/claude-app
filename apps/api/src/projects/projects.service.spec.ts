@@ -74,7 +74,7 @@ describe("ProjectsService", () => {
       expect(dto).not.toHaveProperty("model");
       expect(dto).not.toHaveProperty("allowedTools");
       expect(dto).not.toHaveProperty("anthropicBaseUrl");
-      expect(dto.secrets).toEqual({ hasGitToken: true });
+      expect(dto.secrets).toEqual({ hasGitToken: true, hasNotifyWebhook: false });
       expect(dto.secrets).not.toHaveProperty("hasAnthropicApiKey");
     });
   });

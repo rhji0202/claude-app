@@ -5,6 +5,7 @@ import { CryptoService } from "../crypto/crypto.service";
 import { AgentService } from "../agent/agent.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
 import { WorktreeService } from "../repo/worktree.service";
+import { NotifyService } from "../notify/notify.service";
 import { CronRegistryService } from "./cron-registry.service";
 
 describe("CronRegistryService.fire (실행 이력)", () => {
@@ -50,6 +51,7 @@ describe("CronRegistryService.fire (실행 이력)", () => {
       agent as unknown as AgentService,
       repos as unknown as RepoManagerService,
       worktrees as unknown as WorktreeService,
+      { notify: jest.fn().mockResolvedValue(undefined) } as unknown as NotifyService,
     );
   });
 

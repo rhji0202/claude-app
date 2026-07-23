@@ -8,6 +8,7 @@ import { AuthModule } from "./auth/auth.module";
 import { AdminModule } from "./admin/admin.module";
 import { ClaudeAccountModule } from "./claude-account/claude-account.module";
 import { UploadsModule } from "./uploads/uploads.module";
+import { NotifyModule } from "./notify/notify.module";
 import { AgentModule } from "./agent/agent.module";
 import { GithubModule } from "./github/github.module";
 import { ProjectsModule } from "./projects/projects.module";
@@ -29,6 +30,7 @@ import { HealthController } from "./health.controller";
     PrismaModule,
     CryptoModule,
     UploadsModule,
+    NotifyModule,
     AuthModule,
     AdminModule,
     ClaudeAccountModule,

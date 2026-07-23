@@ -47,6 +47,11 @@ export class CreateProjectDto {
   @IsString()
   gitToken?: string;
 
+  /** 알림 webhook URL(Slack/Discord/WeCom 등). 암호화 저장. */
+  @IsOptional()
+  @IsString()
+  notifyWebhook?: string;
+
   /** 이 프로젝트가 사용할 Claude 계정 id (미지정 시 활성 계정 폴백) */
   @IsOptional()
   @IsString()

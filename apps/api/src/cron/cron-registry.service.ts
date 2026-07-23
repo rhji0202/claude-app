@@ -7,6 +7,7 @@ import { CryptoService } from "../crypto/crypto.service";
 import { AgentService } from "../agent/agent.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
 import { WorktreeService } from "../repo/worktree.service";
+import { NotifyService } from "../notify/notify.service";
 
 /**
  * 사용자 정의 크론 작업을 런타임에 등록/해제한다.
@@ -24,6 +25,7 @@ export class CronRegistryService implements OnModuleInit {
     private readonly agent: AgentService,
     private readonly repos: RepoManagerService,
     private readonly worktrees: WorktreeService,
+    private readonly notify: NotifyService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -83,10 +85,12 @@ export class CronRegistryService implements OnModuleInit {
 
     // gitRepo 없으면 실행 불가(설계 12.5). 이력·요약에 오류 기록.
     if (!job.project.gitRepo) {
+      const msg = "프로젝트에 gitRepo가 설정되어 있지 않습니다.";
       await this.finishRunRecord(id, run?.id, startedAt, {
         status: CronStatus.ERROR,
-        error: "프로젝트에 gitRepo가 설정되어 있지 않습니다.",
+        error: msg,
       });
+      await this.notifyError(job.projectId, job.name, msg);
       return;
     }
 
@@ -109,6 +113,8 @@ export class CronRegistryService implements OnModuleInit {
           error: res.status === "ok" ? null : (res.error ?? null),
           sessionId: res.sessionId ?? null,
         });
+        if (res.status !== "ok")
+          await this.notifyError(job.projectId, job.name, res.error ?? null);
       } finally {
         await this.worktrees.remove(job.projectId, wtKey);
       }
@@ -118,7 +124,21 @@ export class CronRegistryService implements OnModuleInit {
         status: CronStatus.ERROR,
         error: String(err),
       });
+      await this.notifyError(job.projectId, job.name, String(err));
     }
+  }
+
+  /** 크론 실패 알림(설정된 webhook이 있으면). 실패해도 무시. */
+  private async notifyError(
+    projectId: string,
+    name: string,
+    detail: string | null,
+  ): Promise<void> {
+    await this.notify.notify(projectId, {
+      event: "cron.error",
+      title: `크론 "${name}" 실패`,
+      detail,
+    });
   }
 
   /** 실행 시작 시 진행 중(status=null) CronRun을 만든다. 실패해도 실행은 계속. */

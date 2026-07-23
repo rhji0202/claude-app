@@ -69,6 +69,7 @@ export class ProjectsService {
       visibility: toDtoVisibility(p.visibility),
       secrets: {
         hasGitToken: Boolean(p.gitTokenEnc),
+        hasNotifyWebhook: Boolean(p.notifyWebhookEnc),
       },
       createdAt: p.createdAt.toISOString(),
       updatedAt: p.updatedAt.toISOString(),
@@ -186,6 +187,7 @@ export class ProjectsService {
       autoMerge: dto.autoMerge,
       autoTriage: dto.autoTriage,
       gitTokenEnc: this.crypto.encryptOptional(dto.gitToken),
+      notifyWebhookEnc: this.crypto.encryptOptional(dto.notifyWebhook),
       claudeAccount: dto.claudeAccountId
         ? { connect: { id: dto.claudeAccountId } }
         : undefined,
@@ -212,6 +214,10 @@ export class ProjectsService {
     };
     if (dto.gitToken !== undefined) {
       data.gitTokenEnc = dto.gitToken === "" ? null : this.crypto.encrypt(dto.gitToken);
+    }
+    if (dto.notifyWebhook !== undefined) {
+      data.notifyWebhookEnc =
+        dto.notifyWebhook === "" ? null : this.crypto.encrypt(dto.notifyWebhook);
     }
     // "" → 해제(null), 값 → 소유 확인 후 지정
     if (dto.claudeAccountId !== undefined) {

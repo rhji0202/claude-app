@@ -9,6 +9,7 @@ import { ProjectsService } from "../projects/projects.service";
 import { UploadsService } from "../uploads/uploads.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
 import { WorktreeService } from "../repo/worktree.service";
+import { NotifyService } from "../notify/notify.service";
 
 /** ConfigService 스텁: 주어진 map에서 값 반환. */
 function makeConfig(map: Record<string, unknown> = {}): ConfigService {
@@ -37,10 +38,53 @@ describe("IssuesService (큐/워커)", () => {
   };
   let repos: { ensureRepo: jest.Mock };
   let worktrees: { create: jest.Mock; remove: jest.Mock; pruneOrphans: jest.Mock };
-  let agent: { run: jest.Mock };
+  let agent: { run: jest.Mock; runStream: jest.Mock };
   let crypto: { decryptOptional: jest.Mock };
   let github: { setLabels: jest.Mock; createComment: jest.Mock };
+  let notify: { notify: jest.Mock };
   let service: IssuesService;
+
+  /**
+   * executeClaimed는 runViaStream(→agent.runStream)으로 실행한다.
+   * 원하는 결과({status,text,sessionId})를 이벤트 시퀀스로 방출하도록 runStream을 구성.
+   */
+  /** finishRun의 상태 기록 update 인자(진행상황 write와 구분해 status가 있는 호출). */
+  function statusUpdate(): { status?: unknown; [k: string]: unknown } {
+    const call = [...prisma.issueTask.update.mock.calls]
+      .reverse()
+      .find((c) => c[0]?.data?.status !== undefined);
+    return call?.[0]?.data ?? {};
+  }
+
+  function mockAgentResult(r: {
+    status: "ok" | "error";
+    text?: string;
+    sessionId?: string;
+    error?: string;
+  }): void {
+    agent.runStream.mockImplementation(
+      async (
+        _pid: string,
+        _opts: unknown,
+        onEvent: (e: {
+          type: string;
+          sessionId?: string;
+          id?: string;
+          text?: string;
+          error?: string;
+          name?: string;
+        }) => void,
+      ) => {
+        if (r.sessionId) onEvent({ type: "session", sessionId: r.sessionId });
+        if (r.status === "ok") {
+          if (r.text) onEvent({ type: "text_end", id: "1:0", text: r.text });
+          onEvent({ type: "done", text: r.text ?? "", sessionId: r.sessionId });
+        } else {
+          onEvent({ type: "error", error: r.error ?? "실패", sessionId: r.sessionId });
+        }
+      },
+    );
+  }
 
   function makeService(cfg: Record<string, unknown> = {}): IssuesService {
     return new IssuesService(
@@ -53,6 +97,7 @@ describe("IssuesService (큐/워커)", () => {
       repos as unknown as RepoManagerService,
       worktrees as unknown as WorktreeService,
       makeConfig(cfg),
+      notify as unknown as NotifyService,
     );
   }
 
@@ -79,12 +124,13 @@ describe("IssuesService (큐/워커)", () => {
       remove: jest.fn().mockResolvedValue(undefined),
       pruneOrphans: jest.fn().mockResolvedValue(undefined),
     };
-    agent = { run: jest.fn() };
+    agent = { run: jest.fn(), runStream: jest.fn() };
     crypto = { decryptOptional: jest.fn().mockReturnValue("tok") };
     github = {
       setLabels: jest.fn().mockResolvedValue(["triage:auto-fix"]),
       createComment: jest.fn().mockResolvedValue({ html_url: "u" }),
     };
+    notify = { notify: jest.fn().mockResolvedValue(undefined) };
     service = makeService();
   });
 
@@ -137,9 +183,9 @@ describe("IssuesService (큐/워커)", () => {
         ownerId: "u1",
       });
       await service.executeClaimed(task);
-      expect(agent.run).not.toHaveBeenCalled();
-      const upd = prisma.issueTask.update.mock.calls[0][0];
-      expect(upd.data.status).toBe(IssueStatus.ERROR);
+      expect(agent.runStream).not.toHaveBeenCalled();
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.ERROR);
     });
 
     it("clone→worktree→run 후 worktree를 정리하고 DONE으로 기록한다", async () => {
@@ -150,18 +196,23 @@ describe("IssuesService (큐/워커)", () => {
         gitTokenEnc: "enc",
         ownerId: "u1",
       });
-      agent.run.mockResolvedValue({ status: "ok", sessionId: "s1", text: "done" });
+      mockAgentResult({ status: "ok", sessionId: "s1", text: "done" });
       // buildPrompt가 github 호출 없이 진행되도록 issueNumber 없음(task)
       await service.executeClaimed(task);
 
       expect(repos.ensureRepo).toHaveBeenCalledWith("p1", "o/r", "tok");
       expect(worktrees.create).toHaveBeenCalledWith("p1", "i1", "main");
       // 에이전트는 worktree 경로를 cwd로 받음
-      expect(agent.run.mock.calls[0][1]).toMatchObject({ cwd: "/wt/p1/i1" });
+      expect(agent.runStream.mock.calls[0][1]).toMatchObject({ cwd: "/wt/p1/i1" });
       // 정리는 반드시 호출
       expect(worktrees.remove).toHaveBeenCalledWith("p1", "i1");
-      const upd = prisma.issueTask.update.mock.calls[0][0];
-      expect(upd.data.status).toBe(IssueStatus.DONE);
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.DONE);
+      // 완료 알림 전송
+      expect(notify.notify).toHaveBeenCalledWith(
+        "p1",
+        expect.objectContaining({ event: "issue.done" }),
+      );
     });
 
     it("worktree 생성 실패해도 ERROR로 흡수하고 throw하지 않는다", async () => {
@@ -173,9 +224,9 @@ describe("IssuesService (큐/워커)", () => {
       });
       worktrees.create.mockRejectedValue(new Error("worktree fail"));
       await expect(service.executeClaimed(task)).resolves.toBeUndefined();
-      expect(agent.run).not.toHaveBeenCalled();
-      const upd = prisma.issueTask.update.mock.calls[0][0];
-      expect(upd.data.status).toBe(IssueStatus.ERROR);
+      expect(agent.runStream).not.toHaveBeenCalled();
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.ERROR);
     });
 
     it("autoPr이면 PR 지시를 프롬프트에 넣고 결과의 PR_URL을 파싱해 저장한다", async () => {
@@ -188,7 +239,7 @@ describe("IssuesService (큐/워커)", () => {
         autoPr: true,
         autoMerge: false,
       });
-      agent.run.mockResolvedValue({
+      mockAgentResult({
         status: "ok",
         sessionId: "s1",
         text: "수정 완료.\nPR_URL: https://github.com/o/r/pull/42",
@@ -196,13 +247,13 @@ describe("IssuesService (큐/워커)", () => {
       await service.executeClaimed(task);
 
       // 프롬프트에 PR 생성 지시 + base 브랜치 포함
-      const opts = agent.run.mock.calls[0][1];
+      const opts = agent.runStream.mock.calls[0][1];
       expect(opts.prompt).toContain("gh pr create");
       expect(opts.prompt).toContain("--base main");
       // 결과에서 PR URL 파싱 → prUrl 저장 + DONE
-      const upd = prisma.issueTask.update.mock.calls[0][0];
-      expect(upd.data.status).toBe(IssueStatus.DONE);
-      expect(upd.data.prUrl).toBe("https://github.com/o/r/pull/42");
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.DONE);
+      expect(upd.prUrl).toBe("https://github.com/o/r/pull/42");
     });
 
     it("autoPr인데 PR_URL이 none이면 prUrl은 null로 저장한다", async () => {
@@ -215,14 +266,14 @@ describe("IssuesService (큐/워커)", () => {
         autoPr: true,
         autoMerge: false,
       });
-      agent.run.mockResolvedValue({
+      mockAgentResult({
         status: "ok",
         sessionId: "s1",
         text: "변경할 것이 없습니다.\nPR_URL: none",
       });
       await service.executeClaimed(task);
-      const upd = prisma.issueTask.update.mock.calls[0][0];
-      expect(upd.data.prUrl).toBeNull();
+      const upd = statusUpdate();
+      expect(upd.prUrl).toBeNull();
     });
 
     it("autoTriage면 분류를 파싱해 category 저장 + triage 라벨을 적용한다", async () => {
@@ -244,7 +295,7 @@ describe("IssuesService (큐/워커)", () => {
         ownerId: "u1",
         autoTriage: true,
       });
-      agent.run.mockResolvedValue({
+      mockAgentResult({
         status: "ok",
         sessionId: "s1",
         text: "분석 결과…\nTRIAGE: auto-fix",
@@ -252,10 +303,10 @@ describe("IssuesService (큐/워커)", () => {
       await service.executeClaimed(ghTask);
 
       // 프롬프트에 triage 분류 지시 포함
-      expect(agent.run.mock.calls[0][1].prompt).toContain("TRIAGE:");
+      expect(agent.runStream.mock.calls[0][1].prompt).toContain("TRIAGE:");
       // category 저장
-      const upd = prisma.issueTask.update.mock.calls[0][0];
-      expect(upd.data.category).toBe("auto-fix");
+      const upd = statusUpdate();
+      expect(upd.category).toBe("auto-fix");
       // 기존 라벨 유지 + triage:auto-fix 추가로 setLabels 호출
       expect(github.setLabels).toHaveBeenCalledWith(
         "o/r",
@@ -284,10 +335,10 @@ describe("IssuesService (큐/워커)", () => {
         ownerId: "u1",
         autoTriage: true,
       });
-      agent.run.mockResolvedValue({ status: "ok", sessionId: "s1", text: "요약만" });
+      mockAgentResult({ status: "ok", sessionId: "s1", text: "요약만" });
       await service.executeClaimed(ghTask);
-      const upd = prisma.issueTask.update.mock.calls[0][0];
-      expect(upd.data.category).toBeNull();
+      const upd = statusUpdate();
+      expect(upd.category).toBeNull();
       expect(github.setLabels).not.toHaveBeenCalled();
     });
   });

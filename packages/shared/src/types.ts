@@ -11,6 +11,8 @@ export type ID = string;
 /** 시크릿 필드는 API 응답에서 절대 노출하지 않는다. 대신 보유 여부만 내려준다. */
 export interface SecretStatus {
   hasGitToken: boolean;
+  /** 알림 webhook URL 설정 여부(값은 내려주지 않음) */
+  hasNotifyWebhook: boolean;
 }
 
 export type ProjectVisibility = "private" | "shared" | "public";
@@ -89,6 +91,8 @@ export interface IssueTask {
   prUrl?: string | null;
   /** triage 분류 결과(미분류면 null) */
   category?: IssueCategory | null;
+  /** 실행 중 진행 상황 요약(RUNNING일 때만) */
+  progress?: string | null;
   createdAt: string;
   updatedAt: string;
 }

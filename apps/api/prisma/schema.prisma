@@ -153,6 +153,9 @@ model Project {
   // 프로젝트별 자격증명 (암호화 저장)
   gitTokenEnc String?
 
+  // 알림 webhook URL (Slack/Discord/WeCom 등). 키를 포함할 수 있어 암호화 저장.
+  notifyWebhookEnc String?
+
   // 프로젝트가 사용할 Claude 계정(선택). 미지정 시 실행 사용자 활성 계정 → .env 폴백.
   claudeAccountId String?
   claudeAccount   ClaudeAccount? @relation(fields: [claudeAccountId], references: [id], onDelete: SetNull)
@@ -198,6 +201,8 @@ model IssueTask {
   prUrl       String?
   // triage 분류 결과: auto-fix | needs-decision | needs-info | question (미분류면 null)
   category    String?
+  // 실행 중 진행 상황 요약(현재 도구/활동). RUNNING일 때만 의미, 종료 시 null.
+  progress    String?
   // 큐/워커: 재시도 횟수, 워커가 집은 시각(stale 회수용), 집은 워커 인스턴스 id(다중 워커 대비)
   attempts    Int         @default(0)
   claimedAt   DateTime?

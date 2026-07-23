@@ -69,6 +69,9 @@ export default function ProjectDetailPage() {
   const [autoMerge, setAutoMerge] = useState(false);
   const [autoTriage, setAutoTriage] = useState(false);
   const [savingPr, setSavingPr] = useState(false);
+  // 알림 webhook (시크릿: 값은 안 내려오고 보유 여부만) — 입력하면 저장, 비우고 저장하면 해제
+  const [webhookInput, setWebhookInput] = useState("");
+  const [savingHook, setSavingHook] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -151,6 +154,23 @@ export default function ProjectDetailPage() {
       toast.error((e as Error).message);
     } finally {
       setSavingPr(false);
+    }
+  }
+
+  async function saveWebhook(clear = false) {
+    setSavingHook(true);
+    try {
+      // clear면 ""로 보내 해제, 아니면 입력값 저장.
+      await api.patch(`/projects/${id}`, {
+        notifyWebhook: clear ? "" : webhookInput.trim(),
+      });
+      setWebhookInput("");
+      toast.success(clear ? "알림 webhook을 해제했습니다." : "알림 webhook을 저장했습니다.");
+      await load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSavingHook(false);
     }
   }
 
@@ -461,6 +481,50 @@ export default function ProjectDetailPage() {
               <Button onClick={saveAutomation} disabled={savingPr}>
                 {savingPr ? "저장 중..." : "저장"}
               </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* 알림 webhook */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">알림</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              크론 실패·이슈 완료/실패·PR 생성 시 webhook으로 알림을 보냅니다.
+              (Slack·Discord·WeCom 등 incoming webhook URL)
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">현재 상태:</span>
+              {project.secrets.hasNotifyWebhook ? (
+                <Badge variant="success">설정됨</Badge>
+              ) : (
+                <Badge variant="muted">미설정</Badge>
+              )}
+            </div>
+            <Input
+              type="url"
+              placeholder="https://hooks.slack.com/services/..."
+              value={webhookInput}
+              onChange={(e) => setWebhookInput(e.target.value)}
+            />
+            <div className="flex gap-2">
+              <Button
+                onClick={() => saveWebhook(false)}
+                disabled={savingHook || !webhookInput.trim()}
+              >
+                {savingHook ? "저장 중..." : "저장"}
+              </Button>
+              {project.secrets.hasNotifyWebhook && (
+                <Button
+                  variant="secondary"
+                  onClick={() => saveWebhook(true)}
+                  disabled={savingHook}
+                >
+                  해제
+                </Button>
+              )}
             </div>
           </CardContent>
         </Card>
