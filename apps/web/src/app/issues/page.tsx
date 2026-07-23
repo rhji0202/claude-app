@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Download, Play, Plus } from "lucide-react";
 import { Streamdown } from "streamdown";
-import type { IssueNote } from "@claude-app/shared";
+import type { IssueNote, IssueProgressEvent } from "@claude-app/shared";
 import CrudPanel from "@/components/CrudPanel";
 import { WorkerDashboard } from "./WorkerDashboard";
 import { PageHeader } from "@/components/PageHeader";
@@ -72,16 +72,9 @@ function IssueStatusCell({
     <StatusBadge status={status} label={STATUS_LABEL[status] ?? status} />
   );
 
-  // 실행 중이면 배지 + 진행 상황(현재 도구 등)을 함께 표시
+  // 실행 중이면 배지 + 진행 상황(현재 도구). 진행 이력이 있으면 클릭 시 타임라인.
   if (status === "running") {
-    return (
-      <div className="flex flex-col gap-1">
-        {badge}
-        {progress && (
-          <span className="text-xs text-muted-foreground">{progress}</span>
-        )}
-      </div>
-    );
+    return <RunningCell row={row} badge={badge} progress={progress} />;
   }
 
   // 결정 대기: 배지 클릭 → 에이전트 질문 + 이력 + 추가 지시 + 재개
@@ -150,6 +143,62 @@ const NOTE_LABEL: Record<string, string> = {
   agent: "에이전트",
   system: "시스템",
 };
+
+/**
+ * 실행 중 셀: 배지 + 현재 진행(도구) 한 줄. 진행 이력(progressLog)이 있으면
+ * 배지를 클릭해 도구 호출 타임라인을 볼 수 있다. 목록 4초 폴링으로 갱신됨.
+ */
+function RunningCell({
+  row,
+  badge,
+  progress,
+}: {
+  row: Record<string, unknown>;
+  badge: React.ReactNode;
+  progress: string | null;
+}) {
+  const log = (row.progressLog as IssueProgressEvent[] | null | undefined) ?? [];
+  const line = (
+    <div className="flex flex-col gap-1">
+      {badge}
+      {progress && (
+        <span className="text-xs text-muted-foreground">{progress}</span>
+      )}
+    </div>
+  );
+  if (log.length === 0) return line;
+
+  return (
+    <Dialog>
+      <DialogTrigger className="cursor-pointer text-left" title="진행 내역 보기">
+        {line}
+      </DialogTrigger>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>진행 내역</DialogTitle>
+          <DialogDescription>{String(row.title ?? "")}</DialogDescription>
+        </DialogHeader>
+        <div className="max-h-[60vh] space-y-1.5 overflow-y-auto">
+          {log.map((ev, i) => (
+            <div key={i} className="flex items-center gap-2 text-sm">
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {new Date(ev.at).toLocaleTimeString()}
+              </span>
+              {ev.t === "tool" ? (
+                <Mono>🔧 {ev.name}</Mono>
+              ) : (
+                <span className="text-muted-foreground">✍️ 텍스트 작성</span>
+              )}
+            </div>
+          ))}
+          <p className="pt-2 text-xs text-muted-foreground">
+            실행 중 · 4초마다 갱신됩니다.
+          </p>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 /**
  * 재실행 다이얼로그: 이력 타임라인 + 추가 지시 입력 + 재실행.

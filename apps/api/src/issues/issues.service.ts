@@ -8,6 +8,7 @@ import {
 import { ConfigService } from "@nestjs/config";
 import type { Project } from "@prisma/client";
 import {
+  Prisma,
   IssueSource as PrismaSource,
   IssueStatus,
   IssueNoteAuthor,
@@ -122,6 +123,7 @@ export class IssuesService implements OnModuleInit {
       prUrl: i.prUrl,
       category: (i.category as IssueDto["category"]) ?? null,
       progress: i.progress,
+      progressLog: (i.progressLog as IssueDto["progressLog"]) ?? null,
       createdAt: i.createdAt.toISOString(),
       updatedAt: i.updatedAt.toISOString(),
     };
@@ -774,25 +776,42 @@ export class IssuesService implements OnModuleInit {
     let errored: string | undefined;
     let done = false;
     let lastWrite = 0;
-    let lastProgress = "";
+    let dirty = false;
 
-    const writeProgress = async (label: string) => {
+    // 진행 이벤트 타임라인(최근 MAX_LOG개 유지). progress 한 줄과 함께 DB에 반영.
+    const MAX_LOG = 50;
+    const log: { t: "tool" | "text"; name?: string; at: string }[] = [];
+    let progress = "";
+
+    // throttle(2초): 마지막 flush 이후 2초 지났을 때만 DB에 진행상황을 기록한다.
+    const flush = async (force = false) => {
       const now = Date.now();
-      if (label === lastProgress) return;
-      if (now - lastWrite < 2000) return; // throttle
-      lastProgress = label;
+      if (!force && (!dirty || now - lastWrite < 2000)) return;
+      dirty = false;
       lastWrite = now;
       await this.prisma.issueTask
-        .update({ where: { id: issueId }, data: { progress: label } })
+        .update({
+          where: { id: issueId },
+          data: { progress, progressLog: log },
+        })
         .catch(() => undefined); // RUNNING 아님/삭제 등은 무시
     };
 
     const onEvent = (e: AgentStreamEvent) => {
       if (e.type === "session") sessionId = e.sessionId;
-      else if (e.type === "tool") void writeProgress(`도구: ${e.name}`);
-      else if (e.type === "text_end" && e.text) {
+      else if (e.type === "tool") {
+        progress = `도구: ${e.name}`;
+        log.push({ t: "tool", name: e.name, at: new Date().toISOString() });
+        if (log.length > MAX_LOG) log.shift();
+        dirty = true;
+        void flush();
+      } else if (e.type === "text_end" && e.text) {
         lastText = e.text;
-        void writeProgress("작성 중…");
+        progress = "작성 중…";
+        log.push({ t: "text", at: new Date().toISOString() });
+        if (log.length > MAX_LOG) log.shift();
+        dirty = true;
+        void flush();
       } else if (e.type === "done") {
         finalText = e.text || lastText;
         done = true;
@@ -807,7 +826,7 @@ export class IssuesService implements OnModuleInit {
     } catch (err) {
       return { status: "error", sessionId, text: finalText || lastText, error: String(err) };
     } finally {
-      // 종료 시 진행 표시 제거(throttle 무시하고 즉시)
+      // 종료 시 진행 표시 제거(throttle 무시하고 즉시). 로그는 finishRun이 정리.
       await this.prisma.issueTask
         .update({ where: { id: issueId }, data: { progress: null } })
         .catch(() => undefined);
@@ -856,6 +875,7 @@ export class IssuesService implements OnModuleInit {
           claimedAt: null,
           lockedBy: null,
           progress: null,
+          progressLog: Prisma.JsonNull,
           ...(data.sessionId !== undefined ? { sessionId: data.sessionId } : {}),
           ...(data.result !== undefined ? { result: data.result } : {}),
           ...(data.error !== undefined ? { error: data.error } : {}),

@@ -210,6 +210,8 @@ model IssueTask {
   category    String?
   // 실행 중 진행 상황 요약(현재 도구/활동). RUNNING일 때만 의미, 종료 시 null.
   progress    String?
+  // 실행 진행 이벤트 타임라인(도구 호출·텍스트 등). 최근 N개 누적. [{ t, name?, at }]
+  progressLog Json?
   // 큐/워커: 재시도 횟수, 워커가 집은 시각(stale 회수용), 집은 워커 인스턴스 id(다중 워커 대비)
   attempts    Int         @default(0)
   claimedAt   DateTime?

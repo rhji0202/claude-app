@@ -62,6 +62,16 @@ export type IssueTaskStatus =
 /** 이슈 메모 작성 주체 */
 export type IssueNoteAuthor = "human" | "agent" | "system";
 
+/** 실행 진행 이벤트 한 건(실행 중 타임라인). */
+export interface IssueProgressEvent {
+  /** tool = 도구 호출, text = 텍스트 작성 */
+  t: "tool" | "text";
+  /** 도구 이름(t=tool일 때) */
+  name?: string;
+  /** ISO 시각 */
+  at: string;
+}
+
 /** 이슈 메모/이력 한 건(결정 대기 흐름·진행 이력). */
 export interface IssueNote {
   id: ID;
@@ -106,6 +116,8 @@ export interface IssueTask {
   category?: IssueCategory | null;
   /** 실행 중 진행 상황 요약(RUNNING일 때만) */
   progress?: string | null;
+  /** 실행 진행 이벤트 타임라인(최근순 누적) */
+  progressLog?: IssueProgressEvent[] | null;
   createdAt: string;
   updatedAt: string;
 }
