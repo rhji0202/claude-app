@@ -455,7 +455,28 @@ function GithubImport({ onImported }: { onImported: () => void }) {
 
         {issues.length > 0 && (
           <>
-            <div className="mt-4 space-y-1">
+            <label className="mt-4 flex cursor-pointer items-center gap-3 border-b border-border px-3 py-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                className="size-4 accent-[var(--accent)]"
+                checked={selected.size === issues.length && issues.length > 0}
+                // 일부만 선택된 상태를 시각적으로 표시(부분 선택)
+                ref={(el) => {
+                  if (el)
+                    el.indeterminate =
+                      selected.size > 0 && selected.size < issues.length;
+                }}
+                onChange={(e) =>
+                  setSelected(
+                    e.target.checked
+                      ? new Set(issues.map((i) => i.number))
+                      : new Set(),
+                  )
+                }
+              />
+              전체 선택 ({selected.size}/{issues.length})
+            </label>
+            <div className="mt-1 space-y-1">
               {issues.map((i) => {
                 const checked = selected.has(i.number);
                 return (
