@@ -50,16 +50,17 @@ export class NotifyService {
       return;
     }
 
-    // Slack/Discord/WeCom 모두 최상위 text/content 필드를 이해하도록 함께 담고,
-    // 구조화 소비자를 위해 원본 payload도 포함한다.
+    // 대상별 payload 형식이 달라 함께 담는다.
+    // - Slack incoming webhook: { text }
+    // - Discord: { content }
+    // - WeCom(기업위챗): { msgtype: "text", text: { content } } ← text가 객체여야 함
+    // Slack의 최상위 text(문자열)와 WeCom의 text(객체)가 충돌하므로,
+    // WeCom URL이면 WeCom 전용 형식만 보낸다.
     const text = this.formatText(payload);
-    const body = JSON.stringify({
-      text, // Slack incoming webhook
-      content: text, // Discord
-      msgtype: "text", // WeCom
-      "text.content": text,
-      ...payload,
-    });
+    const isWeCom = /qyapi\.weixin\.qq\.com/i.test(url);
+    const body = isWeCom
+      ? JSON.stringify({ msgtype: "text", text: { content: text } })
+      : JSON.stringify({ text, content: text, ...payload });
 
     try {
       const res = await fetch(url, {
