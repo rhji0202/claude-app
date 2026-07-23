@@ -206,6 +206,47 @@ function RunningCell({
 }
 
 /**
+ * 이미지 셀: 목록에선 작은 썸네일 1개 + 개수 칩(폭 고정)으로만 표시하고,
+ * 클릭하면 다이얼로그에서 전체 이미지를 본다. 이미지가 많아도 열이 밀리지 않는다.
+ */
+function ImageCell({ imgs, title }: { imgs: string[]; title: string }) {
+  return (
+    <Dialog>
+      <DialogTrigger
+        className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-border px-1.5 py-1 hover:bg-muted/50"
+        title={`이미지 ${imgs.length}개 보기`}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={uploadUrl(imgs[0])}
+          alt=""
+          className="size-6 rounded object-cover"
+        />
+        <span className="text-xs text-muted-foreground">{imgs.length}</span>
+      </DialogTrigger>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>첨부 이미지 ({imgs.length})</DialogTitle>
+          <DialogDescription>{title}</DialogDescription>
+        </DialogHeader>
+        <div className="grid max-h-[65vh] grid-cols-2 gap-3 overflow-y-auto sm:grid-cols-3">
+          {imgs.map((rel) => (
+            <a key={rel} href={uploadUrl(rel)} target="_blank" rel="noreferrer">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={uploadUrl(rel)}
+                alt=""
+                className="aspect-square w-full rounded border border-border object-cover"
+              />
+            </a>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
  * 재실행 다이얼로그: 이력 타임라인 + 추가 지시 입력 + 재실행.
  * 어떤 상태의 이슈에도 쓸 수 있다. 열 때 GET /issues/:id/notes로 이력 지연 로드.
  *
@@ -800,31 +841,7 @@ export default function IssuesPage() {
             render: (r) => {
               const imgs = (r.images as string[] | undefined) ?? [];
               if (imgs.length === 0) return <Mono>—</Mono>;
-              return (
-                <div className="flex gap-1">
-                  {imgs.slice(0, 4).map((rel) => (
-                    <a
-                      key={rel}
-                      href={uploadUrl(rel)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="shrink-0"
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={uploadUrl(rel)}
-                        alt=""
-                        className="size-10 shrink-0 rounded border border-border object-cover"
-                      />
-                    </a>
-                  ))}
-                  {imgs.length > 4 && (
-                    <span className="text-xs text-muted-foreground">
-                      +{imgs.length - 4}
-                    </span>
-                  )}
-                </div>
-              );
+              return <ImageCell imgs={imgs} title={String(r.title ?? "")} />;
             },
           },
           {
@@ -839,9 +856,12 @@ export default function IssuesPage() {
                   row={r}
                   onChanged={() => setReload((n) => n + 1)}
                   trigger={
-                    <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-border px-2.5 py-1 text-xs hover:bg-muted/50">
-                      <Play className="size-3 shrink-0" />
-                      지시·재실행
+                    <span
+                      className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border hover:bg-muted/50"
+                      title="지시·재실행"
+                      aria-label="지시·재실행"
+                    >
+                      <Play className="size-4" />
                     </span>
                   }
                 />

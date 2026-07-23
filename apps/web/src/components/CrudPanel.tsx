@@ -623,12 +623,13 @@ function RowActions({
   onDelete: () => void;
 }) {
   return (
-    <div className="flex flex-wrap justify-end gap-2">
+    <div className="flex flex-nowrap items-center justify-end gap-1.5">
       {actions?.map((a) => (
         <Button
           key={a.label}
           variant={a.variant === "danger" ? "destructive" : "secondary"}
           size="sm"
+          className="shrink-0 whitespace-nowrap"
           disabled={busy}
           onClick={() => onRun(a, row)}
         >
@@ -636,11 +637,22 @@ function RowActions({
         </Button>
       ))}
       {onEdit && (
-        <Button variant="secondary" size="sm" disabled={busy} onClick={onEdit}>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="shrink-0"
+          disabled={busy}
+          onClick={onEdit}
+        >
           수정
         </Button>
       )}
-      <Button variant="destructive" size="sm" onClick={onDelete}>
+      <Button
+        variant="destructive"
+        size="sm"
+        className="shrink-0"
+        onClick={onDelete}
+      >
         <Trash2 className="size-4" />
         삭제
       </Button>
