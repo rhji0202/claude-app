@@ -747,7 +747,7 @@ export default function IssuesPage() {
             label: "제목",
             render: (r) => (
               <span
-                className="block max-w-[55vw] truncate sm:max-w-[22rem]"
+                className="block max-w-[55vw] truncate sm:max-w-[32rem]"
                 title={String(r.title ?? "")}
               >
                 {String(r.title ?? "")}

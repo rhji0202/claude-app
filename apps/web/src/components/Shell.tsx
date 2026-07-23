@@ -32,6 +32,9 @@ function AuthedShell({ children }: { children: React.ReactNode }) {
   const { user, loading, logout } = useAuth();
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
   const setSidebarOpen = useUiStore((s) => s.setSidebarOpen);
+  const pathname = usePathname();
+  // 이슈 목록은 컬럼이 많아 넓은 폭이 필요 → 이 페이지만 더 넓게.
+  const wide = pathname?.startsWith("/issues");
 
   if (loading) return <LoadingShell />;
   if (!user) return <LoginForm />;
@@ -68,7 +71,11 @@ function AuthedShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <main
+          className={`mx-auto w-full flex-1 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 ${
+            wide ? "max-w-screen-2xl" : "max-w-6xl"
+          }`}
+        >
           {children}
         </main>
       </div>
