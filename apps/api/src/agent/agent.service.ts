@@ -5,6 +5,13 @@ import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
 import { ClaudeAccountService } from "../claude-account/claude-account.service";
 
+export interface AgentImage {
+  /** base64 인코딩 이미지 데이터 */
+  data: string;
+  /** image/png | image/jpeg | image/gif | image/webp */
+  mediaType: string;
+}
+
 export interface RunAgentOptions {
   prompt: string;
   resume?: string;
@@ -12,6 +19,8 @@ export interface RunAgentOptions {
   maxTurns?: number;
   /** 실행 자격증명(활성 Claude 계정)을 소유한 사용자. 없으면 .env 폴백. */
   userId?: string;
+  /** 첨부 이미지 — 있으면 멀티모달 프롬프트(image content block)로 전달 */
+  images?: AgentImage[];
 }
 
 export interface RunResult {
@@ -19,6 +28,11 @@ export interface RunResult {
   sessionId?: string;
   text: string;
   error?: string;
+  /**
+   * 결과를 받기 전에 실행이 중단됨(프로세스 kill·서버 종료 등).
+   * 진짜 오류가 아니므로 호출측에서 '중단' 상태로 구분한다.
+   */
+  interrupted?: boolean;
 }
 
 /**
@@ -221,6 +235,7 @@ export class AgentService {
           session_id?: string;
           result?: string;
           error?: string;
+          num_turns?: number;
           event?: {
             type?: string;
             index?: number;
@@ -296,18 +311,43 @@ export class AgentService {
           } else {
             onEvent({
               type: "error",
-              error: m.error ?? "실행 중 오류가 발생했습니다.",
+              error: this.describeResultError(m),
               sessionId,
             });
           }
           return;
         }
       }
-      onEvent({ type: "done", text: finalText, sessionId });
+      // result 없이 스트림 종료 = 결과 전에 실행이 중단됨. 성공으로 오인 금지.
+      onEvent({
+        type: "error",
+        error: "에이전트가 결과를 반환하기 전에 실행이 중단되었습니다.",
+        sessionId,
+      });
     } catch (err) {
       this.logger.error(`스트리밍 실행 오류: ${String(err)}`);
       onEvent({ type: "error", error: String(err), sessionId });
     }
+  }
+
+  /**
+   * SDK result 메시지(비성공)에서 사람이 읽을 오류 문구를 만든다.
+   * SDK는 종료 사유를 subtype으로 준다(error_max_turns 등). 명시 error가 없을 때
+   * 무의미한 폴백 대신 subtype·턴 수를 남겨 원인 추적이 가능하게 한다.
+   */
+  private describeResultError(m: {
+    subtype?: string;
+    error?: string;
+    num_turns?: number;
+  }): string {
+    if (m.error) return m.error;
+    const reason =
+      m.subtype === "error_max_turns"
+        ? `최대 턴 수(${m.num_turns ?? "?"}턴)에 도달해 중단되었습니다.`
+        : m.subtype === "error_during_execution"
+          ? "실행 중 오류가 발생했습니다."
+          : `실행이 비정상 종료되었습니다 (${m.subtype ?? "unknown"}).`;
+    return reason;
   }
 
   private async execute(
@@ -349,9 +389,36 @@ export class AgentService {
     let sessionId: string | undefined;
     let text = "";
 
+    // 이미지가 있으면 멀티모달 프롬프트(AsyncIterable + image content block).
+    // AsyncIterable 프롬프트와 resume 병행은 불안정하므로 이미지 실행은 새 세션으로.
+    const hasImages = (opts.images?.length ?? 0) > 0;
+    const promptInput = hasImages
+      ? (async function* () {
+          yield {
+            type: "user" as const,
+            session_id: "",
+            parent_tool_use_id: null,
+            message: {
+              role: "user" as const,
+              content: [
+                { type: "text" as const, text: opts.prompt },
+                ...opts.images!.map((im) => ({
+                  type: "image" as const,
+                  source: {
+                    type: "base64" as const,
+                    media_type: im.mediaType,
+                    data: im.data,
+                  },
+                })),
+              ],
+            },
+          };
+        })()
+      : opts.prompt;
+
     try {
       const iterator = query({
-        prompt: opts.prompt,
+        prompt: promptInput as never,
         options: {
           cwd: project.cwd,
           maxTurns: opts.maxTurns ?? 20,
@@ -361,7 +428,7 @@ export class AgentService {
           allowDangerouslySkipPermissions: true,
           mcpServers: mcpServers as never,
           systemPrompt: systemPrompt || undefined,
-          resume: opts.resume,
+          resume: hasImages ? undefined : opts.resume,
           settingSources: [],
           env,
         },
@@ -375,6 +442,8 @@ export class AgentService {
           session_id?: string;
           result?: string;
           error?: string;
+          is_error?: boolean;
+          num_turns?: number;
           message?: { content?: Array<{ type: string; text?: string }> };
         };
         if (m.type === "system" && m.subtype === "init" && m.session_id) {
@@ -393,11 +462,19 @@ export class AgentService {
             status: "error",
             sessionId,
             text,
-            error: m.error ?? "실행 중 오류가 발생했습니다.",
+            error: this.describeResultError(m),
           };
         }
       }
-      return { status: "ok", sessionId, text };
+      // result 메시지 없이 스트림이 끝났다 = 서브프로세스가 결과 전에 종료됨
+      // (서버 종료·프로세스 kill 등). 진짜 오류가 아닌 '중단'으로 구분한다.
+      return {
+        status: "error",
+        sessionId,
+        text,
+        error: "에이전트가 결과를 반환하기 전에 실행이 중단되었습니다.",
+        interrupted: true,
+      };
     } catch (err) {
       this.logger.error(`에이전트 실행 오류: ${String(err)}`);
       return { status: "error", sessionId, text, error: String(err) };

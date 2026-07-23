@@ -75,6 +75,26 @@ export class GithubService {
     return { owner: parts[0], name: parts[1] };
   }
 
+  /**
+   * 이슈 body(마크다운/HTML)에서 이미지 URL을 추출한다.
+   * `![alt](url)` 와 `<img src="url">` 모두 대상. GitHub 첨부/콘텐츠 도메인만.
+   */
+  static extractImageUrls(body: string | null | undefined): string[] {
+    if (!body) return [];
+    const urls = new Set<string>();
+    const md = /!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g;
+    const html = /<img[^>]+src=["'](https?:\/\/[^"']+)["']/gi;
+    for (const re of [md, html]) {
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(body))) urls.add(m[1]);
+    }
+    return [...urls].filter((u) =>
+      /(user-attachments|githubusercontent\.com|github\.com\/.+\/assets\/)/.test(
+        u,
+      ),
+    );
+  }
+
   private normalize(raw: {
     number: number;
     title: string;

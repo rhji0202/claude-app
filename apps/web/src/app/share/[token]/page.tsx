@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { Bot } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, upload } from "@/lib/api";
 import { StatusBadge, Mono } from "@/components/StatusBadge";
 import {
   Card,
@@ -45,6 +45,7 @@ export default function SharePage() {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [reporter, setReporter] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -65,14 +66,25 @@ export default function SharePage() {
     e.preventDefault();
     setBusy(true);
     try {
-      await api.post(
+      const created = await api.post<{ id: string }>(
         `/public/share/${token}/issues`,
         { title, body, reporter },
         false,
       );
+      // 첨부 이미지 업로드 (있으면)
+      if (files.length > 0 && created?.id) {
+        const form = new FormData();
+        files.forEach((f) => form.append("files", f));
+        await upload(
+          `/public/share/${token}/issues/${created.id}/images`,
+          form,
+          false,
+        );
+      }
       toast.success("이슈가 등록되었습니다. 감사합니다!");
       setTitle("");
       setBody("");
+      setFiles([]);
       await load();
     } catch (err) {
       toast.error((err as Error).message);
@@ -150,6 +162,21 @@ export default function SharePage() {
                   value={body}
                   onChange={(e) => setBody(e.target.value)}
                 />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="s-images">이미지 첨부 (선택, 여러 개 가능)</Label>
+                <Input
+                  id="s-images"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
+                />
+                {files.length > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    {files.length}개 선택됨
+                  </p>
+                )}
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="s-reporter">작성자 (선택)</Label>

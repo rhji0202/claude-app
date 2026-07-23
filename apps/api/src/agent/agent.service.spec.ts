@@ -105,3 +105,47 @@ describe("AgentService.buildEnv (자격증명 라우팅)", () => {
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-ACTIVE");
   });
 });
+
+/**
+ * describeResultError: SDK 비성공 result 메시지 → 사람이 읽을 오류 문구.
+ * 무의미한 폴백 대신 종료 사유(subtype·턴 수)를 남기는 게 핵심.
+ */
+describe("AgentService.describeResultError (오류 사유 해석)", () => {
+  type Msg = { subtype?: string; error?: string; num_turns?: number };
+  let service: AgentService;
+
+  function describe_(m: Msg) {
+    return (
+      service as unknown as { describeResultError: (m: Msg) => string }
+    ).describeResultError(m);
+  }
+
+  beforeEach(() => {
+    service = new AgentService(
+      {} as unknown as PrismaService,
+      {} as unknown as CryptoService,
+      { get: jest.fn() } as unknown as ConfigService,
+      {} as unknown as ClaudeAccountService,
+    );
+  });
+
+  it("명시적 error가 있으면 그대로 사용", () => {
+    expect(describe_({ error: "권한 거부됨", subtype: "whatever" })).toBe(
+      "권한 거부됨",
+    );
+  });
+
+  it("error_max_turns는 턴 수를 포함", () => {
+    expect(describe_({ subtype: "error_max_turns", num_turns: 20 })).toContain(
+      "20턴",
+    );
+  });
+
+  it("알 수 없는 subtype은 문구에 그대로 노출", () => {
+    expect(describe_({ subtype: "error_weird" })).toContain("error_weird");
+  });
+
+  it("subtype·error 모두 없으면 unknown으로 표기", () => {
+    expect(describe_({})).toContain("unknown");
+  });
+});

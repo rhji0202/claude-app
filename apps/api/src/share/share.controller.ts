@@ -1,6 +1,17 @@
-import { Body, Controller, Delete, Get, Param, Post } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  UploadedFiles,
+  UseInterceptors,
+} from "@nestjs/common";
+import { FilesInterceptor } from "@nestjs/platform-express";
 import { ShareService } from "./share.service";
 import { AddShareDto, CreateShareLinkDto, ReportIssueDto } from "./share.dto";
+import { MAX_IMAGE_BYTES } from "../uploads/uploads.service";
 import { Public } from "../auth/public.decorator";
 import { CurrentUser, type AuthUser } from "../auth/current-user.decorator";
 
@@ -66,5 +77,19 @@ export class ShareController {
   @Post("public/share/:token/issues")
   reportIssue(@Param("token") token: string, @Body() dto: ReportIssueDto) {
     return this.share.reportIssue(token, dto);
+  }
+
+  /** 테스터: 등록한 이슈에 이미지 첨부 (multipart field: files) */
+  @Public()
+  @Post("public/share/:token/issues/:issueId/images")
+  @UseInterceptors(
+    FilesInterceptor("files", 10, { limits: { fileSize: MAX_IMAGE_BYTES } }),
+  )
+  reportImages(
+    @Param("token") token: string,
+    @Param("issueId") issueId: string,
+    @UploadedFiles() files: Array<{ buffer: Buffer; mimetype: string }>,
+  ) {
+    return this.share.addReportImages(token, issueId, files ?? []);
   }
 }

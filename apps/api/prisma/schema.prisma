@@ -21,6 +21,7 @@ enum IssueStatus {
   RUNNING
   DONE
   ERROR
+  INTERRUPTED
 }
 
 enum IssueSource {
@@ -177,6 +178,8 @@ model IssueTask {
   author      String?
   source      IssueSource @default(GITHUB)
   prompt      String?
+  // 첨부 이미지 저장 상대경로 목록 (UPLOADS_DIR 기준, 예 issue-images/<id>/a.png)
+  images      String[]
   status      IssueStatus @default(QUEUED)
   sessionId   String?
   result      String?

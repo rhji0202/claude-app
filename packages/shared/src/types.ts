@@ -40,7 +40,12 @@ export interface Project {
   updatedAt: string;
 }
 
-export type IssueTaskStatus = "queued" | "running" | "done" | "error";
+export type IssueTaskStatus =
+  | "queued"
+  | "running"
+  | "done"
+  | "error"
+  | "interrupted";
 
 /** 이슈 출처: GitHub 동기화 vs 공유 링크를 통한 테스터 수동 등록 */
 export type IssueSource = "github" | "manual";
@@ -57,6 +62,8 @@ export interface IssueTask {
   author?: string | null;
   source: IssueSource;
   prompt?: string | null;
+  /** 첨부 이미지 저장 상대경로 목록 (UPLOADS_DIR 기준) */
+  images: string[];
   status: IssueTaskStatus;
   sessionId?: string | null;
   result?: string | null;

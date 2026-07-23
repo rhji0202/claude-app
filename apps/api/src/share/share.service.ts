@@ -8,6 +8,7 @@ import { Role, ShareLinkScope as PrismaScope } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { ProjectsService } from "../projects/projects.service";
 import { IssuesService } from "../issues/issues.service";
+import { UploadsService } from "../uploads/uploads.service";
 import type { ShareLinkScope, UserRole } from "@claude-app/shared";
 import { AddShareDto, CreateShareLinkDto, ReportIssueDto } from "./share.dto";
 
@@ -30,6 +31,7 @@ export class ShareService {
     private readonly prisma: PrismaService,
     private readonly projects: ProjectsService,
     private readonly issues: IssuesService,
+    private readonly uploads: UploadsService,
   ) {}
 
   // ---- 팀 공유 ----
@@ -175,5 +177,31 @@ export class ShareService {
     });
     // 테스터에게는 최소 정보만 반환
     return { ok: true, id: issue.id, title: issue.title };
+  }
+
+  /** 테스터가 등록한 이슈에 이미지 첨부(공유 링크 경유). 토큰의 프로젝트 소속 이슈만. */
+  async addReportImages(
+    token: string,
+    issueId: string,
+    files: { buffer: Buffer; mimetype: string }[],
+  ) {
+    const link = await this.resolveToken(token);
+    if (link.scope !== PrismaScope.ISSUE_REPORT) {
+      throw new BadRequestException("이슈 등록 권한이 없는 링크입니다.");
+    }
+    const issue = await this.prisma.issueTask.findFirst({
+      where: { id: issueId, projectId: link.projectId },
+    });
+    if (!issue) throw new NotFoundException("이슈를 찾을 수 없습니다.");
+    const saved: string[] = [];
+    for (const f of files) {
+      const { relPath } = await this.uploads.save(issueId, f.buffer, f.mimetype);
+      saved.push(relPath);
+    }
+    await this.prisma.issueTask.update({
+      where: { id: issueId },
+      data: { images: { push: saved } },
+    });
+    return { ok: true, count: saved.length };
   }
 }

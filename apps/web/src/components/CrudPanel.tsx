@@ -87,12 +87,17 @@ export interface CrudPanelProps {
   fields: FieldDef[];
   rowActions?: RowAction[];
   reloadSignal?: number;
+  /** 생성 폼을 숨긴다 (등록을 다른 컴포넌트로 일원화한 경우). */
+  hideCreate?: boolean;
 }
 
 type Row = Record<string, unknown> & { id: string };
 
 export default function CrudPanel(props: CrudPanelProps) {
   const { endpoint, title, columns, fields, rowActions } = props;
+  // 목록 조회는 쿼리스트링 포함 endpoint를, 생성/삭제는 base 경로(?앞)를 쓴다.
+  // (예: endpoint="/issues?projectId=x" → 삭제는 "/issues/{id}")
+  const baseEndpoint = endpoint.split("?")[0];
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -156,7 +161,7 @@ export default function CrudPanel(props: CrudPanelProps) {
     e.preventDefault();
     setBusy(true);
     try {
-      await api.post(endpoint, serialize(form, fields));
+      await api.post(baseEndpoint, serialize(form, fields));
       setForm(initialForm(fields));
       toast.success(`${title}이(가) 추가되었습니다.`);
       await load();
@@ -172,7 +177,7 @@ export default function CrudPanel(props: CrudPanelProps) {
     const row = pendingDelete;
     setPendingDelete(null);
     try {
-      await api.del(`${endpoint}/${row.id}`);
+      await api.del(`${baseEndpoint}/${row.id}`);
       toast.success("삭제되었습니다.");
       await load();
     } catch (e) {
@@ -201,34 +206,36 @@ export default function CrudPanel(props: CrudPanelProps) {
   return (
     <>
       {/* 생성 폼 */}
-      <Card className="mb-5">
-        <CardHeader>
-          <CardTitle className="text-sm">
-            {props.createTitle ?? `${title} 추가`}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={submit}>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {fields.map((f) => (
-                <FieldInput
-                  key={f.name}
-                  field={f}
-                  value={form[f.name]}
-                  options={f.optionsFrom ? dynOptions[f.name] : f.options}
-                  onChange={(v) => setForm((s) => ({ ...s, [f.name]: v }))}
-                />
-              ))}
-            </div>
-            <div className="mt-4">
-              <Button type="submit" disabled={busy}>
-                <Plus className="size-4" />
-                {busy ? "처리 중..." : "추가"}
-              </Button>
-            </div>
-          </form>
-        </CardContent>
-      </Card>
+      {!props.hideCreate && (
+        <Card className="mb-5">
+          <CardHeader>
+            <CardTitle className="text-sm">
+              {props.createTitle ?? `${title} 추가`}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={submit}>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {fields.map((f) => (
+                  <FieldInput
+                    key={f.name}
+                    field={f}
+                    value={form[f.name]}
+                    options={f.optionsFrom ? dynOptions[f.name] : f.options}
+                    onChange={(v) => setForm((s) => ({ ...s, [f.name]: v }))}
+                  />
+                ))}
+              </div>
+              <div className="mt-4">
+                <Button type="submit" disabled={busy}>
+                  <Plus className="size-4" />
+                  {busy ? "처리 중..." : "추가"}
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      )}
 
       {/* 목록 */}
       <Card>

@@ -71,6 +71,47 @@ export const api = {
 };
 
 /**
+ * 멀티파트 업로드. FormData를 그대로 보낸다(Content-Type은 브라우저가 boundary와 함께 설정).
+ * auth=true면 Bearer 토큰 부착.
+ */
+export async function upload<T = unknown>(
+  path: string,
+  form: FormData,
+  auth = true,
+): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (auth) {
+    const token = getToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+  if (!res.ok) {
+    let message = `업로드 실패 (${res.status})`;
+    try {
+      const data = await res.json();
+      message = Array.isArray(data.message)
+        ? data.message.join(", ")
+        : data.message || data.error || message;
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, message);
+  }
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+/** 업로드된 이미지 상대경로 → 정적 서빙 절대 URL (API_BASE에서 /api 떼고 /uploads) */
+export function uploadUrl(relPath: string): string {
+  const origin = API_BASE.replace(/\/api\/?$/, "");
+  return `${origin}/uploads/${relPath}`;
+}
+
+/**
  * SSE 스트리밍 POST. 서버가 `data: <json>\n\n` 형식으로 흘려보내는 이벤트를
  * onEvent로 전달한다. EventSource는 Authorization 헤더를 못 실으므로 fetch+reader 사용.
  */

@@ -32,3 +32,6 @@ yarn-debug.log*
 yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
+
+# 업로드물(이슈 이미지)
+apps/api/uploads/

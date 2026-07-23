@@ -2,11 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Download } from "lucide-react";
+import { Download, Plus } from "lucide-react";
 import CrudPanel from "@/components/CrudPanel";
 import { PageHeader } from "@/components/PageHeader";
 import { StatusBadge, Mono } from "@/components/StatusBadge";
-import { api } from "@/lib/api";
+import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { api, upload, uploadUrl } from "@/lib/api";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Card,
   CardContent,
@@ -21,13 +25,88 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "대기",
   running: "실행 중",
   done: "완료",
   error: "오류",
+  interrupted: "중단됨",
 };
+
+/**
+ * 상태 배지를 클릭하면 오류 메시지·실행 결과 전문을 다이얼로그로 보여준다.
+ * error/result가 있는 상태(오류·완료)에서만 클릭 가능하게 한다.
+ */
+function IssueStatusCell({ row }: { row: Record<string, unknown> }) {
+  const status = String(row.status);
+  const error = (row.error as string | null | undefined) ?? null;
+  const result = (row.result as string | null | undefined) ?? null;
+  const badge = (
+    <StatusBadge status={status} label={STATUS_LABEL[status] ?? status} />
+  );
+
+  // 볼 내용이 없으면 배지만 (대기·실행 중 등)
+  if (!error && !result) return badge;
+
+  return (
+    <Dialog>
+      <DialogTrigger className="cursor-pointer" title="상세 보기">
+        {badge}
+      </DialogTrigger>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>
+            {status === "error"
+              ? "실행 오류"
+              : status === "interrupted"
+                ? "실행 중단됨"
+                : "실행 결과"}
+          </DialogTitle>
+          <DialogDescription>
+            {status === "interrupted"
+              ? "실행이 중간에 중단되었습니다. 다시 실행해 주세요."
+              : String(row.title ?? "")}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="max-h-[60vh] space-y-4 overflow-y-auto">
+          {error && (
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                {status === "interrupted" ? "중단 사유" : "오류 메시지"}
+              </div>
+              <pre
+                className={`whitespace-pre-wrap rounded-md bg-muted p-3 text-sm ${
+                  status === "error" ? "text-destructive" : ""
+                }`}
+              >
+                {error}
+              </pre>
+            </div>
+          )}
+          {result && (
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                실행 결과
+              </div>
+              <pre className="whitespace-pre-wrap rounded-md bg-muted p-3 text-sm">
+                {result}
+              </pre>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 interface Project {
   id: string;
@@ -179,8 +258,154 @@ function GithubImport({ onImported }: { onImported: () => void }) {
   );
 }
 
+interface ProjectRef {
+  id: string;
+  name: string;
+  gitRepo?: string | null;
+}
+
+/** 이미지 첨부가 가능한 수동 이슈 등록 (마크다운 에디터 + 붙여넣기 업로드) */
+function ManualIssueWithImages({ onCreated }: { onCreated: () => void }) {
+  const [projects, setProjects] = useState<ProjectRef[]>([]);
+  const [projectId, setProjectId] = useState("");
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [prompt, setPrompt] = useState("");
+  // 이미 생성된 이슈 id (이미지 업로드 대상). 첫 저장 시 생성.
+  const [issueId, setIssueId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api
+      .get<ProjectRef[]>("/projects")
+      .then(setProjects)
+      .catch(() => setProjects([]));
+  }, []);
+
+  /** 이슈가 아직 없으면 만들고 id 반환 (이미지 업로드 전제) */
+  async function ensureIssue(): Promise<string> {
+    if (issueId) return issueId;
+    if (!projectId) throw new Error("프로젝트를 선택하세요.");
+    if (!title.trim()) throw new Error("제목을 입력하세요.");
+    const proj = projects.find((p) => p.id === projectId);
+    const created = await api.post<{ id: string }>("/issues", {
+      projectId,
+      repo: proj?.gitRepo || "manual",
+      title: title.trim(),
+      body,
+      prompt: prompt.trim() || undefined,
+      source: "manual",
+    });
+    setIssueId(created.id);
+    return created.id;
+  }
+
+  async function uploadImage(file: File): Promise<string> {
+    const id = await ensureIssue();
+    const form = new FormData();
+    form.append("files", file);
+    const res = await upload<{ images: string[] }>(`/issues/${id}/images`, form);
+    const rel = res.images[res.images.length - 1];
+    return uploadUrl(rel);
+  }
+
+  async function submit() {
+    setBusy(true);
+    try {
+      const id = await ensureIssue();
+      // body 변경분 반영(이미지 삽입 등) + 추가 지시
+      await api.patch(`/issues/${id}`, {
+        title: title.trim(),
+        body,
+        prompt: prompt.trim() || undefined,
+      });
+      toast.success("이슈를 등록했습니다.");
+      setTitle("");
+      setBody("");
+      setPrompt("");
+      setIssueId(null);
+      onCreated();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="mb-5">
+      <CardHeader>
+        <CardTitle className="text-sm">이슈 수동 등록 (이미지 첨부 가능)</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label>프로젝트 *</Label>
+            <Select value={projectId} onValueChange={setProjectId}>
+              <SelectTrigger>
+                <SelectValue placeholder="프로젝트 선택" />
+              </SelectTrigger>
+              <SelectContent>
+                {projects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="mi-title">제목 *</Label>
+            <Input
+              id="mi-title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label>본문 (마크다운 · 이미지 붙여넣기/드래그 가능)</Label>
+          <MarkdownEditor
+            value={body}
+            onChange={setBody}
+            onUploadImage={uploadImage}
+            placeholder="이슈 내용. 이미지를 붙여넣거나 드래그하면 자동 업로드됩니다."
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label>추가 지시 (선택)</Label>
+          <Textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="에이전트에게 전달할 추가 지시 (선택)"
+          />
+        </div>
+        <Button onClick={submit} disabled={busy || !projectId || !title.trim()}>
+          <Plus className="size-4" />
+          {busy ? "등록 중..." : "이슈 등록"}
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function IssuesPage() {
   const [reload, setReload] = useState(0);
+  const [projects, setProjects] = useState<ProjectRef[]>([]);
+  // "" = 전체 프로젝트. 값이 있으면 해당 프로젝트로 필터.
+  const [filterProjectId, setFilterProjectId] = useState("");
+
+  useEffect(() => {
+    api
+      .get<ProjectRef[]>("/projects")
+      .then(setProjects)
+      .catch(() => setProjects([]));
+  }, []);
+
+  const endpoint = filterProjectId
+    ? `/issues?projectId=${filterProjectId}`
+    : "/issues";
+
   return (
     <div>
       <PageHeader title="GitHub 이슈">
@@ -189,10 +414,34 @@ export default function IssuesPage() {
 
       <GithubImport onImported={() => setReload((r) => r + 1)} />
 
+      <ManualIssueWithImages onCreated={() => setReload((r) => r + 1)} />
+
+      <div className="mb-3 flex items-center gap-2">
+        <Label className="shrink-0 text-xs text-muted-foreground">
+          프로젝트 필터
+        </Label>
+        <Select
+          value={filterProjectId || "all"}
+          onValueChange={(v) => setFilterProjectId(v === "all" ? "" : v)}
+        >
+          <SelectTrigger className="w-64">
+            <SelectValue placeholder="전체 프로젝트" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">전체 프로젝트</SelectItem>
+            {projects.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
       <CrudPanel
-        endpoint="/issues"
+        endpoint={endpoint}
         title="이슈 작업"
-        createTitle="이슈 수동 추가"
+        hideCreate
         reloadSignal={reload}
         columns={[
           { key: "repo", label: "저장소" },
@@ -210,36 +459,42 @@ export default function IssuesPage() {
           {
             key: "status",
             label: "상태",
-            render: (r) => (
-              <StatusBadge
-                status={String(r.status)}
-                label={STATUS_LABEL[String(r.status)] ?? String(r.status)}
-              />
-            ),
+            render: (r) => <IssueStatusCell row={r} />,
+          },
+          {
+            key: "images",
+            label: "이미지",
+            render: (r) => {
+              const imgs = (r.images as string[] | undefined) ?? [];
+              if (imgs.length === 0) return <Mono>—</Mono>;
+              return (
+                <div className="flex flex-wrap gap-1">
+                  {imgs.slice(0, 4).map((rel) => (
+                    <a
+                      key={rel}
+                      href={uploadUrl(rel)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={uploadUrl(rel)}
+                        alt=""
+                        className="size-10 rounded border border-border object-cover"
+                      />
+                    </a>
+                  ))}
+                  {imgs.length > 4 && (
+                    <span className="text-xs text-muted-foreground">
+                      +{imgs.length - 4}
+                    </span>
+                  )}
+                </div>
+              );
+            },
           },
         ]}
-        fields={[
-          {
-            name: "projectId",
-            label: "프로젝트",
-            type: "select",
-            required: true,
-            optionsFrom: { endpoint: "/projects", valueKey: "id", labelKey: "name" },
-          },
-          { name: "repo", label: "저장소", required: true, placeholder: "owner/repo" },
-          { name: "title", label: "제목", required: true, full: true },
-          {
-            name: "body",
-            label: "내용",
-            type: "textarea",
-            placeholder: "이슈 내용 (선택)",
-          },
-          {
-            name: "prompt",
-            label: "추가 지시 (선택)",
-            type: "textarea",
-          },
-        ]}
+        fields={[]}
         rowActions={[
           {
             label: "실행",

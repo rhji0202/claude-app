@@ -7,9 +7,13 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFiles,
+  UseInterceptors,
 } from "@nestjs/common";
+import { FilesInterceptor } from "@nestjs/platform-express";
 import { IssuesService } from "./issues.service";
 import { CreateIssueTaskDto, UpdateIssueTaskDto } from "./issues.dto";
+import { MAX_IMAGE_BYTES } from "../uploads/uploads.service";
 import { CurrentUser, type AuthUser } from "../auth/current-user.decorator";
 
 @Controller("issues")
@@ -61,6 +65,19 @@ export class IssuesController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.issues.importIssues(body.projectId, body.numbers ?? [], user.userId);
+  }
+
+  /** 이슈에 이미지 첨부(다중). multipart field name: files */
+  @Post(":id/images")
+  @UseInterceptors(
+    FilesInterceptor("files", 10, { limits: { fileSize: MAX_IMAGE_BYTES } }),
+  )
+  addImages(
+    @Param("id") id: string,
+    @UploadedFiles() files: Array<{ buffer: Buffer; mimetype: string }>,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.issues.addImages(id, files ?? [], user.userId);
   }
 
   @Post(":id/run")

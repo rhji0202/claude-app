@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleInit,
 } from "@nestjs/common";
 import type { Project } from "@prisma/client";
 import {
@@ -15,6 +16,7 @@ import { CryptoService } from "../crypto/crypto.service";
 import { AgentService } from "../agent/agent.service";
 import { GithubService } from "../github/github.service";
 import { ProjectsService } from "../projects/projects.service";
+import { UploadsService } from "../uploads/uploads.service";
 import type {
   IssueTask as IssueDto,
   IssueSource,
@@ -32,12 +34,31 @@ const STATUS_TO_DTO: Record<IssueStatus, IssueTaskStatus> = {
   RUNNING: "running",
   DONE: "done",
   ERROR: "error",
+  INTERRUPTED: "interrupted",
 };
 const fromStatus = (s: IssueStatus): IssueTaskStatus => STATUS_TO_DTO[s];
 
 @Injectable()
-export class IssuesService {
+export class IssuesService implements OnModuleInit {
   private readonly logger = new Logger(IssuesService.name);
+
+  /**
+   * 부팅 시 이전 프로세스가 실행 중(RUNNING)이던 이슈를 정리한다.
+   * 백그라운드 실행은 in-memory라 서버가 죽으면 상태를 갱신할 주체가 사라져
+   * RUNNING으로 영구히 남는다(고아 레코드). 진짜 오류가 아니므로 '중단'으로 되돌린다.
+   */
+  async onModuleInit(): Promise<void> {
+    const { count } = await this.prisma.issueTask.updateMany({
+      where: { status: IssueStatus.RUNNING },
+      data: {
+        status: IssueStatus.INTERRUPTED,
+        error: "서버 재시작으로 실행이 중단되었습니다. 다시 실행해 주세요.",
+      },
+    });
+    if (count > 0) {
+      this.logger.warn(`고아 RUNNING 이슈 ${count}건을 INTERRUPTED로 정리했습니다.`);
+    }
+  }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -45,6 +66,7 @@ export class IssuesService {
     private readonly agent: AgentService,
     private readonly github: GithubService,
     private readonly projects: ProjectsService,
+    private readonly uploads: UploadsService,
   ) {}
 
   private toDto(i: PrismaIssue): IssueDto {
@@ -60,6 +82,7 @@ export class IssuesService {
       author: i.author,
       source: fromSource(i.source),
       prompt: i.prompt,
+      images: i.images,
       status: fromStatus(i.status),
       sessionId: i.sessionId,
       result: i.result,
@@ -161,6 +184,27 @@ export class IssuesService {
     const task = await this.getRaw(id);
     await this.projects.assertCanEdit(task.projectId, userId);
     await this.prisma.issueTask.delete({ where: { id } });
+    await this.uploads.removeIssueDir(id);
+  }
+
+  /** 이슈에 이미지 첨부(대시보드 업로드). 저장 후 images[]에 추가. */
+  async addImages(
+    id: string,
+    files: { buffer: Buffer; mimetype: string }[],
+    userId: string,
+  ): Promise<IssueDto> {
+    const task = await this.getRaw(id);
+    await this.projects.assertCanEdit(task.projectId, userId);
+    const saved: string[] = [];
+    for (const f of files) {
+      const { relPath } = await this.uploads.save(id, f.buffer, f.mimetype);
+      saved.push(relPath);
+    }
+    const row = await this.prisma.issueTask.update({
+      where: { id },
+      data: { images: { push: saved } },
+    });
+    return this.toDto(row);
   }
 
   // ---- GitHub 연동 / 에이전트 실행 ----
@@ -222,6 +266,27 @@ export class IssuesService {
           status: IssueStatus.QUEUED,
         },
       });
+      // 이슈 body의 이미지들을 다운로드해 저장 (private repo는 git 토큰 인증)
+      const urls = GithubService.extractImageUrls(issue.body);
+      if (urls.length > 0) {
+        const headers: Record<string, string> = token
+          ? { Authorization: `Bearer ${token}` }
+          : {};
+        const saved: string[] = [];
+        for (const url of urls) {
+          const rel = await this.uploads.downloadAndSave(row.id, url, headers);
+          if (rel) saved.push(rel);
+          else this.logger.warn(`이슈 #${number} 이미지 다운로드 실패: ${url}`);
+        }
+        if (saved.length > 0) {
+          const updated = await this.prisma.issueTask.update({
+            where: { id: row.id },
+            data: { images: saved },
+          });
+          created.push(this.toDto(updated));
+          continue;
+        }
+      }
       created.push(this.toDto(row));
     }
     return created;
@@ -259,6 +324,13 @@ export class IssuesService {
     }
     if (task.labels.length > 0) lines.push(`라벨: ${task.labels.join(", ")}`, "");
     lines.push("## 이슈 본문", body || "(본문 없음)", "");
+    if (task.images.length > 0) {
+      lines.push(
+        `## 첨부 이미지 (${task.images.length}개)`,
+        "이 메시지에 첨부된 이미지를 함께 참고해 문제를 파악하세요.",
+        "",
+      );
+    }
     lines.push(
       "## 작업 지시",
       "1. 이슈 내용을 파악하고 관련 코드를 조사합니다.",
@@ -291,10 +363,15 @@ export class IssuesService {
     // 백그라운드 실행 (HTTP 응답을 막지 않음). 큐 동시성은 AgentService가 제한.
     void this.executeRun(task, project).catch(async (err) => {
       this.logger.error(`이슈 실행 실패 ${id}: ${String(err)}`);
-      await this.prisma.issueTask.update({
-        where: { id },
-        data: { status: IssueStatus.ERROR, error: String(err) },
-      });
+      // 실패 기록 자체가 또 실패해도(이슈 삭제됨 등) 프로세스가 죽지 않도록 방어.
+      await this.prisma.issueTask
+        .update({
+          where: { id },
+          data: { status: IssueStatus.ERROR, error: String(err) },
+        })
+        .catch((e) =>
+          this.logger.warn(`실패 상태 기록 불가 ${id}: ${String(e)}`),
+        );
     });
     return this.get(id, userId);
   }
@@ -302,17 +379,33 @@ export class IssuesService {
   private async executeRun(task: PrismaIssue, project: Project): Promise<void> {
     const token = this.tokenOf(project);
     const prompt = await this.buildPrompt(task, token);
+    // 첨부 이미지를 base64로 읽어 멀티모달로 전달 (실패한 이미지는 스킵)
+    const images: { data: string; mediaType: string }[] = [];
+    for (const rel of task.images) {
+      try {
+        images.push(await this.uploads.readAsBase64(rel));
+      } catch (err) {
+        this.logger.warn(`이미지 로드 실패 ${rel}: ${String(err)}`);
+      }
+    }
     const res = await this.agent.run(project.id, {
       prompt,
       resume: task.sessionId ?? undefined,
       userId: project.ownerId ?? undefined,
+      images: images.length > 0 ? images : undefined,
       systemPrompt:
         "당신은 GitHub 이슈를 해결하는 소프트웨어 엔지니어입니다. 신중하게 분석하고 최소한의 변경으로 해결하세요.",
     });
+    const status =
+      res.status === "ok"
+        ? IssueStatus.DONE
+        : res.interrupted
+          ? IssueStatus.INTERRUPTED
+          : IssueStatus.ERROR;
     await this.prisma.issueTask.update({
       where: { id: task.id },
       data: {
-        status: res.status === "ok" ? IssueStatus.DONE : IssueStatus.ERROR,
+        status,
         sessionId: res.sessionId ?? task.sessionId,
         result: res.text,
         error: res.error ?? null,

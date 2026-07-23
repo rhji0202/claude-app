@@ -18,6 +18,8 @@ export const envSchema = z.object({
   WEB_ORIGIN: z.string().optional(),
   // 부팅 시 admin으로 승격할 이메일(쉼표 구분). 첫 관리자 부트스트랩.
   ADMIN_EMAILS: z.string().optional(),
+  // 업로드(이슈 이미지) 저장 루트. 미설정 시 apps/api/uploads.
+  UPLOADS_DIR: z.string().optional(),
   // 동시에 실행할 에이전트 수 상한 (에이전트 1개 = CLI 서브프로세스 1개)
   AGENT_CONCURRENCY: z.coerce.number().int().positive().default(3),
 });
