@@ -1,4 +1,4 @@
-import { IsIn, IsOptional, IsString, MinLength } from "class-validator";
+import { IsBoolean, IsIn, IsOptional, IsString, MinLength } from "class-validator";
 import type { ProjectVisibility } from "@claude-app/shared";
 
 export class CreateProjectDto {
@@ -10,9 +10,13 @@ export class CreateProjectDto {
   @IsString()
   description?: string;
 
+  /**
+   * (레거시) 실행 작업 디렉터리. 더 이상 실행 근거가 아니다(설계 12.5).
+   * 실행은 gitRepo 기반 관리 clone→worktree에서만 이뤄진다. 선택 입력.
+   */
+  @IsOptional()
   @IsString()
-  @MinLength(1)
-  cwd!: string;
+  cwd?: string;
 
   // 프로젝트별 git 연결
   @IsOptional()
@@ -22,6 +26,16 @@ export class CreateProjectDto {
   @IsOptional()
   @IsString()
   gitBranch?: string;
+
+  /** 이슈 실행 결과를 브랜치 push + PR로 만들지(gh CLI) */
+  @IsOptional()
+  @IsBoolean()
+  autoPr?: boolean;
+
+  /** PR 생성 후 자동 머지까지(autoPr가 true일 때만 유효) */
+  @IsOptional()
+  @IsBoolean()
+  autoMerge?: boolean;
 
   /** 평문 입력 → 서버에서 암호화 저장 */
   @IsOptional()

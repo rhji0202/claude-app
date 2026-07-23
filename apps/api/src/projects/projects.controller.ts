@@ -9,6 +9,7 @@ import {
 } from "@nestjs/common";
 import { ProjectsService } from "./projects.service";
 import { AgentService } from "../agent/agent.service";
+import { RepoManagerService } from "../repo/repo-manager.service";
 import { CreateProjectDto } from "./dto/create-project.dto";
 import { UpdateProjectDto } from "./dto/update-project.dto";
 import { CurrentUser, type AuthUser } from "../auth/current-user.decorator";
@@ -18,6 +19,7 @@ export class ProjectsController {
   constructor(
     private readonly projects: ProjectsService,
     private readonly agent: AgentService,
+    private readonly repos: RepoManagerService,
   ) {}
 
   @Get()
@@ -112,10 +114,13 @@ export class ProjectsController {
     @CurrentUser() user: AuthUser,
   ) {
     await this.projects.assertCanEdit(id, user.userId);
+    // 실행 디렉터리: 관리 clone base(설계 12.5). gitRepo 없으면 BadRequest.
+    const cwd = await this.repos.prepareForProject(id);
     return this.agent.run(id, {
       prompt: body.prompt,
       resume: body.resume,
       userId: user.userId,
+      cwd,
     });
   }
 }

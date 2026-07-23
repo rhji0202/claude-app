@@ -21,6 +21,11 @@ export interface RunAgentOptions {
   userId?: string;
   /** 첨부 이미지 — 있으면 멀티모달 프롬프트(image content block)로 전달 */
   images?: AgentImage[];
+  /**
+   * 실행 작업 디렉터리(절대경로). 이슈/크론은 관리 clone→worktree 경로를 주입한다.
+   * (설계 12.5) project.cwd는 더 이상 실행 근거가 아니며, 반드시 이 값을 지정해야 한다.
+   */
+  cwd: string;
 }
 
 export interface RunResult {
@@ -215,7 +220,8 @@ export class AgentService {
       const iterator = query({
         prompt: opts.prompt,
         options: {
-          cwd: project.cwd,
+          // 실행 디렉터리는 항상 호출측이 주입한 worktree 경로(설계 12.5). project.cwd 미사용.
+          cwd: opts.cwd,
           maxTurns: opts.maxTurns ?? 20,
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
@@ -420,7 +426,8 @@ export class AgentService {
       const iterator = query({
         prompt: promptInput as never,
         options: {
-          cwd: project.cwd,
+          // 실행 디렉터리는 항상 호출측이 주입한 worktree 경로(설계 12.5). project.cwd 미사용.
+          cwd: opts.cwd,
           maxTurns: opts.maxTurns ?? 20,
           // 전체 bypass 실행. 헤드리스 서버 컨텍스트라 권한 프롬프트가 불가능하므로
           // 모든 도구(bash 포함)를 무프롬프트로 실행한다. bypass에는 이 플래그가 필요.

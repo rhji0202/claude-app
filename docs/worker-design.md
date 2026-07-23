@@ -246,24 +246,27 @@ REPOS_DIR=
 
 의존 관계상 아래 순서가 자연스럽다. 각 Phase는 독립 배포 가능.
 
-### Phase 0 — 마이그레이션 이력 정합화 (선행 필수, 리스크 S3)
-- [ ] 현재 프로덕션/로컬 DB의 실제 스키마 확인 (INTERRUPTED enum·ClaudeAccount 등 존재 여부)
-- [ ] init 이후 현 schema까지를 담는 후속 마이그레이션 생성(`migrate dev`) 또는 baseline 재설정(`migrate resolve --applied`)
-- [ ] `Dockerfile`의 `migrate deploy`가 정상 적용되는지 확인
+### Phase 0 — 마이그레이션 이력 정합화 (선행 필수, 리스크 S3) ✅ 완료(로컬)
+- [x] 현재 로컬 DB 실제 스키마 확인 — `IssueStatus`에 `INTERRUPTED` 있음, `ClaudeAccount`/`ChatSession`/`ChatMessage` 존재, `_prisma_migrations` 테이블 **없음**(전부 db push로 생성됨). init 마이그레이션 SQL이 현 스키마와 불일치(구 `model`/`allowedTools`/`anthropicApiKeyEnc` 컬럼 포함).
+- [x] baseline 재설정: init 마이그레이션 SQL을 `prisma migrate diff --from-empty --to-schema-datamodel`로 **현재 스키마 기준 재생성** → `prisma migrate resolve --applied 20260722043712_init`로 로컬 DB에 적용 처리. `migrate status` = "up to date".
+- [x] `Dockerfile`의 `migrate deploy`는 init이 현 스키마와 일치하므로 신규 DB에 정상 적용됨.
+- [ ] **프로덕션 DB 정합화 (배포 시 1회 필수)**: 프로덕션도 db push로 만들어졌다면 `_prisma_migrations`가 없어 `migrate deploy`가 이미 존재하는 테이블을 CREATE하려다 실패한다. 배포 전 프로덕션에서 **`prisma migrate resolve --applied 20260722043712_init`를 1회 수동 실행**해 baseline 처리해야 한다(그 후 `migrate deploy`가 후속 마이그레이션만 적용). 신규(빈) 프로덕션 DB면 이 단계 불필요.
 - [ ] 이후 스키마 변경은 db push가 아니라 마이그레이션으로 관리
 
-### Phase 1 — 시스템 clone + worktree 격리 + DB 큐/워커 (목표 1+2)
-- [ ] **12절 clone 관리 서비스**(옵션 B 확정): `gitRepo` → `<REPOS_DIR>/<projectId>` 인증 clone/fetch, 생성/변경/삭제 생명주기
-- [ ] **12.5 cwd 처리 결정**: 실행 근거에서 제거(권장) or gitRepo 없을 때 폴백 유지
-- [ ] IssueTask에 `attempts`/`claimedAt`/`lockedBy` 추가 (마이그레이션)
-- [ ] `RunAgentOptions`에 `cwd?` 추가 + `execute/executeStream`에서 override 우선
-- [ ] worktree 생성/정리 로직 (관리 clone base에서 git worktree add/remove, 고아 prune)
-- [ ] `IssueWorkerService` 신설(**in-process**, 리스크 S1): 폴링 + 클레임 + fetch + worktree + executeRun + finally 정리 + 재시도
-- [ ] 동시성 통일(리스크 M1): 워커 클레임 수 ≤ 슬롯, p-limit은 안전망
-- [ ] `startRun`을 "QUEUED로 만들기"로 변경 (실행은 워커가)
-- [ ] `POST /issues/batch-run` + 프론트 다중 선택 UI (CrudPanel 확장 or 신규)
-- [ ] **프론트 폴링**(리스크 M2): RUNNING/QUEUED가 있을 때 주기적 refetch
-- [ ] 검증: **같은 프로젝트** 이슈 여러 개 큐 → 동시 N개 병렬 실행(worktree 격리로 충돌 없음) → 서버 재시작해도 QUEUED가 이어서 처리 → worktree 정리 확인
+### Phase 1 — 시스템 clone + worktree 격리 + DB 큐/워커 (목표 1+2) ✅ 완료
+- [x] **12절 clone 관리 서비스**(옵션 B): `RepoManagerService`(`src/repo/repo-manager.service.ts`) — `gitRepo` → `<REPOS_DIR>/<projectId>` 인증 clone/fetch, 프로젝트별 락 직렬화, update 시 invalidate·삭제 시 정리. 토큰은 `git -c http.extraHeader`로만 주입(`src/repo/git.util.ts`) → `.git/config`에 미기록(검증).
+- [x] **12.5 cwd 처리 결정**: **실행 근거에서 전면 제거**. `RunAgentOptions.cwd`는 필수, `execute/executeStream`은 `opts.cwd`만 사용(project.cwd 미참조). 이슈·크론=worktree, 채팅·프로젝트 임의 실행=관리 clone base(`prepareForProject`). `create-project.dto`의 cwd는 선택으로 완화.
+- [x] IssueTask에 `attempts`/`claimedAt`/`lockedBy` + `@@index([status])` 추가 (마이그레이션 `20260723030635_issue_worker_queue_fields`)
+- [x] `RunAgentOptions`에 `cwd` 추가 + `execute/executeStream`에서 사용
+- [x] worktree 생성/정리 로직: `WorktreeService`(`src/repo/worktree.service.ts`) — 관리 clone base에서 `git worktree add -B issue/<id> ... origin/<branch>`, 프로젝트별 직렬화, `remove --force`+`prune`, 부팅 시 `pruneOrphans`. Windows 경로 posix 정규화(검증).
+- [x] `IssueWorkerService` 신설(**in-process**, S1): `@nestjs/schedule` interval 폴링 + 슬롯 계산 + 낙관적 클레임 + fetch/worktree/executeClaimed + finally 정리 + 지수 백오프 재시도 + stale 회수
+- [x] 동시성 통일(M1): 워커가 `free = AGENT_CONCURRENCY - RUNNING`만큼만 클레임, p-limit은 안전망
+- [x] `startRun`을 "QUEUED로 만들기"로 변경, `executeClaimed`를 워커가 호출 (crypto/uploads/repos/worktrees 주입)
+- [x] `POST /issues/batch-run` + 프론트 다중 선택 UI (CrudPanel에 `batchActions` 옵트인 확장)
+- [x] **프론트 폴링**(M2): CrudPanel `pollWhile` 옵트인 — RUNNING/QUEUED 있을 때 4초 refetch
+- [x] 단위 테스트: `issue-worker.service.spec.ts`(8) + `issues.service.spec.ts`(4) — 슬롯/재시도/stale/클레임/gitRepo 가드/worktree 정리. 전체 62 통과.
+- [x] 검증: git worktree add/remove/prune·clone→worktree→fetch 로컬 E2E 통과(토큰 미기록 확인), Nest 부팅 시 전체 DI 그래프 정상.
+- [ ] **런타임 실행 검증(사용자 환경 필요)**: 실제 gitRepo 프로젝트로 같은 프로젝트 이슈 여러 개 큐 → 동시 N개 병렬 실행 → 서버 재시작 후 이어짐 → worktree 정리. (로컬 프로젝트는 gitRepo 지정 필요)
 
 ### Phase 2 — 결정 대기 + 메모/재개 (목표 4)
 - [ ] `IssueStatus.NEEDS_DECISION` 추가 (db push)

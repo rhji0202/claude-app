@@ -35,6 +35,9 @@ export class CronController {
     await this.cron.remove(id, user.userId);
     return { ok: true };
   }
+  @Get(":id/runs") runs(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.cron.listRuns(id, user.userId);
+  }
   @Post(":id/run") runNow(@Param("id") id: string, @CurrentUser() user: AuthUser) {
     return this.cron.runNow(id, user.userId);
   }

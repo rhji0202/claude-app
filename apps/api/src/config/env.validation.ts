@@ -22,6 +22,17 @@ export const envSchema = z.object({
   UPLOADS_DIR: z.string().optional(),
   // 동시에 실행할 에이전트 수 상한 (에이전트 1개 = CLI 서브프로세스 1개)
   AGENT_CONCURRENCY: z.coerce.number().int().positive().default(3),
+  // ---- 이슈 큐/워커 ----
+  // 워커 폴링 주기(ms). 0 이하면 폴링 비활성.
+  ISSUE_WORKER_POLL_MS: z.coerce.number().int().nonnegative().default(5000),
+  // 실패/중단 이슈 자동 재시도 최대 횟수
+  ISSUE_MAX_RETRY: z.coerce.number().int().nonnegative().default(2),
+  // stale 클레임 회수 임계(ms). RUNNING인데 이 시간 넘게 갱신 없으면 회수(INTERRUPTED).
+  ISSUE_STALE_MS: z.coerce.number().int().positive().default(600000),
+  // per-run worktree 루트. 미설정 시 apps/api/worktrees.
+  ISSUE_WORKTREE_ROOT: z.string().optional(),
+  // 시스템 관리 clone 루트. 미설정 시 apps/api/repos. UPLOADS_DIR와 분리 필수(정적 노출 방지).
+  REPOS_DIR: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

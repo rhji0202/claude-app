@@ -11,6 +11,8 @@ import {
 } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
+import { RepoManagerService } from "../repo/repo-manager.service";
+import { WorktreeService } from "../repo/worktree.service";
 import type {
   Project as ProjectDto,
   ProjectVisibility,
@@ -47,6 +49,8 @@ export class ProjectsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
+    private readonly repos: RepoManagerService,
+    private readonly worktrees: WorktreeService,
   ) {}
 
   private toDto(p: PrismaProject): ProjectDto {
@@ -57,6 +61,8 @@ export class ProjectsService {
       cwd: p.cwd,
       gitRepo: p.gitRepo,
       gitBranch: p.gitBranch,
+      autoPr: p.autoPr,
+      autoMerge: p.autoMerge,
       claudeAccountId: p.claudeAccountId,
       ownerId: p.ownerId,
       visibility: toDtoVisibility(p.visibility),
@@ -171,9 +177,12 @@ export class ProjectsService {
     const data: Prisma.ProjectCreateInput = {
       name: dto.name,
       description: dto.description,
-      cwd: dto.cwd,
+      // cwd는 레거시(실행 근거 아님). 미입력 시 빈 문자열(컬럼은 non-null 유지).
+      cwd: dto.cwd ?? "",
       gitRepo: dto.gitRepo,
       gitBranch: dto.gitBranch,
+      autoPr: dto.autoPr,
+      autoMerge: dto.autoMerge,
       gitTokenEnc: this.crypto.encryptOptional(dto.gitToken),
       claudeAccount: dto.claudeAccountId
         ? { connect: { id: dto.claudeAccountId } }
@@ -186,6 +195,7 @@ export class ProjectsService {
 
   async update(id: string, dto: UpdateProjectDto, userId: string): Promise<ProjectDto> {
     await this.assertCanEdit(id, userId);
+    const before = await this.getRaw(id);
 
     const data: Prisma.ProjectUpdateInput = {
       name: dto.name,
@@ -193,6 +203,8 @@ export class ProjectsService {
       cwd: dto.cwd,
       gitRepo: dto.gitRepo,
       gitBranch: dto.gitBranch,
+      autoPr: dto.autoPr,
+      autoMerge: dto.autoMerge,
       visibility: toPrismaVisibility(dto.visibility),
     };
     if (dto.gitToken !== undefined) {
@@ -207,12 +219,23 @@ export class ProjectsService {
         data.claudeAccount = { connect: { id: dto.claudeAccountId } };
       }
     }
-    return this.toDto(await this.prisma.project.update({ where: { id }, data }));
+    const updated = await this.prisma.project.update({ where: { id }, data });
+    // gitRepo/gitBranch 변경 시 관리 clone 무효화(설계 12.2) → 다음 실행에서 재clone.
+    if (
+      (dto.gitRepo !== undefined && dto.gitRepo !== before.gitRepo) ||
+      (dto.gitBranch !== undefined && dto.gitBranch !== before.gitBranch)
+    ) {
+      await this.repos.invalidate(id);
+    }
+    return this.toDto(updated);
   }
 
   async remove(id: string, userId: string): Promise<void> {
     await this.assertOwner(id, userId);
     await this.prisma.project.delete({ where: { id } });
+    // 관리 clone·worktree 디렉터리 정리(설계 12.2 프로젝트 삭제)
+    await this.repos.invalidate(id);
+    await this.worktrees.removeProjectDir(id);
   }
 
   // ---- 스킬 / MCP 연결 (M:N) ----

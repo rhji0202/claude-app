@@ -1,8 +1,11 @@
+-- CreateSchema
+CREATE SCHEMA IF NOT EXISTS "public";
+
 -- CreateEnum
 CREATE TYPE "Visibility" AS ENUM ('PRIVATE', 'SHARED', 'PUBLIC');
 
 -- CreateEnum
-CREATE TYPE "IssueStatus" AS ENUM ('QUEUED', 'RUNNING', 'DONE', 'ERROR');
+CREATE TYPE "IssueStatus" AS ENUM ('QUEUED', 'RUNNING', 'DONE', 'ERROR', 'INTERRUPTED');
 
 -- CreateEnum
 CREATE TYPE "IssueSource" AS ENUM ('GITHUB', 'MANUAL');
@@ -20,7 +23,13 @@ CREATE TYPE "McpType" AS ENUM ('STDIO', 'HTTP', 'SSE');
 CREATE TYPE "Role" AS ENUM ('OWNER', 'EDITOR', 'VIEWER');
 
 -- CreateEnum
+CREATE TYPE "GlobalRole" AS ENUM ('ADMIN', 'MEMBER');
+
+-- CreateEnum
 CREATE TYPE "ShareLinkScope" AS ENUM ('READ', 'ISSUE_REPORT');
+
+-- CreateEnum
+CREATE TYPE "ChatRole" AS ENUM ('USER', 'ASSISTANT');
 
 -- CreateTable
 CREATE TABLE "User" (
@@ -28,10 +37,55 @@ CREATE TABLE "User" (
     "email" TEXT NOT NULL,
     "name" TEXT,
     "passwordHash" TEXT NOT NULL,
+    "role" "GlobalRole" NOT NULL DEFAULT 'MEMBER',
+    "disabled" BOOLEAN NOT NULL DEFAULT false,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "User_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "ClaudeAccount" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "accessTokenEnc" TEXT NOT NULL,
+    "refreshTokenEnc" TEXT,
+    "expiresAt" TIMESTAMP(3),
+    "scopes" TEXT[],
+    "accountEmail" TEXT,
+    "subscriptionType" TEXT,
+    "isActive" BOOLEAN NOT NULL DEFAULT false,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "ClaudeAccount_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "ChatSession" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "projectId" TEXT NOT NULL,
+    "title" TEXT,
+    "sdkSessionId" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "ChatSession_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "ChatMessage" (
+    "id" TEXT NOT NULL,
+    "sessionId" TEXT NOT NULL,
+    "role" "ChatRole" NOT NULL,
+    "content" TEXT NOT NULL,
+    "parts" JSONB,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "ChatMessage_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -40,13 +94,10 @@ CREATE TABLE "Project" (
     "name" TEXT NOT NULL,
     "description" TEXT,
     "cwd" TEXT NOT NULL,
-    "model" TEXT,
-    "allowedTools" TEXT[],
     "gitRepo" TEXT,
     "gitBranch" TEXT,
     "gitTokenEnc" TEXT,
-    "anthropicApiKeyEnc" TEXT,
-    "anthropicBaseUrl" TEXT,
+    "claudeAccountId" TEXT,
     "ownerId" TEXT,
     "visibility" "Visibility" NOT NULL DEFAULT 'PRIVATE',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -68,6 +119,7 @@ CREATE TABLE "IssueTask" (
     "author" TEXT,
     "source" "IssueSource" NOT NULL DEFAULT 'GITHUB',
     "prompt" TEXT,
+    "images" TEXT[],
     "status" "IssueStatus" NOT NULL DEFAULT 'QUEUED',
     "sessionId" TEXT,
     "result" TEXT,
@@ -167,6 +219,18 @@ CREATE TABLE "ShareLink" (
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
 
 -- CreateIndex
+CREATE INDEX "ClaudeAccount_userId_idx" ON "ClaudeAccount"("userId");
+
+-- CreateIndex
+CREATE INDEX "ChatSession_userId_idx" ON "ChatSession"("userId");
+
+-- CreateIndex
+CREATE INDEX "ChatSession_projectId_idx" ON "ChatSession"("projectId");
+
+-- CreateIndex
+CREATE INDEX "ChatMessage_sessionId_idx" ON "ChatMessage"("sessionId");
+
+-- CreateIndex
 CREATE INDEX "IssueTask_projectId_idx" ON "IssueTask"("projectId");
 
 -- CreateIndex
@@ -177,6 +241,21 @@ CREATE UNIQUE INDEX "ShareLink_token_key" ON "ShareLink"("token");
 
 -- CreateIndex
 CREATE INDEX "ShareLink_projectId_idx" ON "ShareLink"("projectId");
+
+-- AddForeignKey
+ALTER TABLE "ClaudeAccount" ADD CONSTRAINT "ClaudeAccount_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "ChatSession" ADD CONSTRAINT "ChatSession_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "ChatSession" ADD CONSTRAINT "ChatSession_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "ChatMessage" ADD CONSTRAINT "ChatMessage_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ChatSession"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Project" ADD CONSTRAINT "Project_claudeAccountId_fkey" FOREIGN KEY ("claudeAccountId") REFERENCES "ClaudeAccount"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Project" ADD CONSTRAINT "Project_ownerId_fkey" FOREIGN KEY ("ownerId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
@@ -207,3 +286,4 @@ ALTER TABLE "ProjectShare" ADD CONSTRAINT "ProjectShare_userId_fkey" FOREIGN KEY
 
 -- AddForeignKey
 ALTER TABLE "ShareLink" ADD CONSTRAINT "ShareLink_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+

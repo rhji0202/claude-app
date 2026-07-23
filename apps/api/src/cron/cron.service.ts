@@ -3,13 +3,24 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { CronJob as PrismaCronJob, CronStatus } from "@prisma/client";
+import {
+  CronJob as PrismaCronJob,
+  CronRun as PrismaCronRun,
+  CronStatus,
+} from "@prisma/client";
 import { CronTime } from "cron";
 import { PrismaService } from "../prisma/prisma.service";
 import { CronRegistryService } from "./cron-registry.service";
 import { ProjectsService } from "../projects/projects.service";
-import type { CronJob as CronDto, CronStatus as CronStatusDto } from "@claude-app/shared";
+import type {
+  CronJob as CronDto,
+  CronRun as CronRunDto,
+  CronStatus as CronStatusDto,
+} from "@claude-app/shared";
 import { CreateCronJobDto, UpdateCronJobDto } from "./cron.dto";
+
+const toStatusDto = (s: CronStatus | null): CronStatusDto | null =>
+  s === CronStatus.OK ? "ok" : s === CronStatus.ERROR ? "error" : null;
 
 @Injectable()
 export class CronService {
@@ -31,13 +42,17 @@ export class CronService {
     }
   }
 
+  /** 스케줄에서 다음 실행 예정 시각 계산(enabled일 때만). 계산 실패 시 null. */
+  private nextRunAt(schedule: string, enabled: boolean): string | null {
+    if (!enabled) return null;
+    try {
+      return new CronTime(schedule).sendAt().toISO();
+    } catch {
+      return null;
+    }
+  }
+
   private toDto(c: PrismaCronJob): CronDto {
-    const status: CronStatusDto | null =
-      c.lastStatus === CronStatus.OK
-        ? "ok"
-        : c.lastStatus === CronStatus.ERROR
-          ? "error"
-          : null;
     return {
       id: c.id,
       name: c.name,
@@ -47,9 +62,24 @@ export class CronService {
       enabled: c.enabled,
       lastRunAt: c.lastRunAt ? c.lastRunAt.toISOString() : null,
       lastResult: c.lastResult,
-      lastStatus: status,
+      lastStatus: toStatusDto(c.lastStatus),
+      nextRunAt: this.nextRunAt(c.schedule, c.enabled),
       createdAt: c.createdAt.toISOString(),
       updatedAt: c.updatedAt.toISOString(),
+    };
+  }
+
+  private runToDto(r: PrismaCronRun): CronRunDto {
+    return {
+      id: r.id,
+      cronJobId: r.cronJobId,
+      status: toStatusDto(r.status),
+      result: r.result,
+      error: r.error,
+      sessionId: r.sessionId,
+      durationMs: r.durationMs,
+      startedAt: r.startedAt.toISOString(),
+      finishedAt: r.finishedAt ? r.finishedAt.toISOString() : null,
     };
   }
 
@@ -123,5 +153,17 @@ export class CronService {
     await this.projects.assertCanEdit(existing.projectId, userId);
     await this.registry.fire(id);
     return this.get(id, userId);
+  }
+
+  /** 크론 실행 이력(최근순). 접근 권한 확인 후 반환. */
+  async listRuns(id: string, userId: string): Promise<CronRunDto[]> {
+    const existing = await this.getRaw(id);
+    await this.projects.assertAccess(existing.projectId, userId);
+    const rows = await this.prisma.cronRun.findMany({
+      where: { cronJobId: id },
+      orderBy: { startedAt: "desc" },
+      take: 50,
+    });
+    return rows.map((r) => this.runToDto(r));
   }
 }

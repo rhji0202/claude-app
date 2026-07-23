@@ -26,6 +26,12 @@ export interface Project {
   gitRepo?: string | null;
   gitBranch?: string | null;
 
+  /** 이슈 실행 결과를 브랜치 push + PR로 만들지 여부(gh CLI) */
+  autoPr?: boolean;
+
+  /** PR 생성 후 자동 머지까지 진행할지(autoPr가 true일 때만 유효) */
+  autoMerge?: boolean;
+
   /** 이 프로젝트가 사용할 Claude 계정 id (미지정 시 활성 계정 폴백) */
   claudeAccountId?: string | null;
 
@@ -69,8 +75,24 @@ export interface IssueTask {
   result?: string | null;
   error?: string | null;
   resultCommentUrl?: string | null;
+  /** autoPr 실행으로 생성된 PR URL (있으면 링크 표시) */
+  prUrl?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 워커 현황 대시보드 요약(GET /issues/stats). */
+export interface IssueWorkerStats {
+  /** 실행 슬롯: 동시 실행 상한·현재 실행 수·여유 슬롯. */
+  slots: { concurrency: number; running: number; free: number };
+  /** 상태별 이슈 개수(접근 가능한 프로젝트 한정). */
+  counts: Record<IssueTaskStatus, number>;
+  /** 재시도 대기 건수(ERROR/INTERRUPTED 이면서 재시도 여지 있음). */
+  retrying: number;
+  /** 가장 오래된 QUEUED 이슈의 생성 시각(큐 적체 신호, 없으면 null). */
+  oldestQueuedAt: string | null;
+  /** 워커 런타임 상태. */
+  worker: { workerId: string; paused: boolean };
 }
 
 export type CronStatus = "ok" | "error";
@@ -86,8 +108,24 @@ export interface CronJob {
   lastRunAt?: string | null;
   lastResult?: string | null;
   lastStatus?: CronStatus | null;
+  /** 다음 실행 예정 시각(스케줄에서 계산, enabled일 때만) */
+  nextRunAt?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 크론 1회 실행 이력. */
+export interface CronRun {
+  id: ID;
+  cronJobId: ID;
+  /** 진행 중이면 null, 종료 시 ok/error */
+  status?: CronStatus | null;
+  result?: string | null;
+  error?: string | null;
+  sessionId?: string | null;
+  durationMs?: number | null;
+  startedAt: string;
+  finishedAt?: string | null;
 }
 
 export type SkillScope = "global" | "project";

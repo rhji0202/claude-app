@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Download, Plus } from "lucide-react";
+import { Streamdown } from "streamdown";
 import CrudPanel from "@/components/CrudPanel";
+import { WorkerDashboard } from "./WorkerDashboard";
 import { PageHeader } from "@/components/PageHeader";
 import { StatusBadge, Mono } from "@/components/StatusBadge";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
@@ -97,9 +99,11 @@ function IssueStatusCell({ row }: { row: Record<string, unknown> }) {
               <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 실행 결과
               </div>
-              <pre className="whitespace-pre-wrap rounded-md bg-muted p-3 text-sm">
-                {result}
-              </pre>
+              <div className="rounded-md bg-muted p-3">
+                <Streamdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
+                  {result}
+                </Streamdown>
+              </div>
             </div>
           )}
         </div>
@@ -412,6 +416,8 @@ export default function IssuesPage() {
         GitHub에서 이슈를 가져오거나 수동 등록해 에이전트로 실행하고, 결과를 이슈 코멘트로 되돌립니다.
       </PageHeader>
 
+      <WorkerDashboard />
+
       <GithubImport onImported={() => setReload((r) => r + 1)} />
 
       <ManualIssueWithImages onCreated={() => setReload((r) => r + 1)} />
@@ -443,6 +449,22 @@ export default function IssuesPage() {
         title="이슈 작업"
         hideCreate
         reloadSignal={reload}
+        batchActions={[
+          {
+            label: "선택 실행",
+            confirm: (ids) =>
+              `선택한 ${ids.length}개 이슈를 큐에 넣어 실행합니다. 진행할까요?`,
+            run: async (ids) => {
+              await api.post("/issues/batch-run", { ids });
+            },
+          },
+        ]}
+        pollWhile={(rows) =>
+          rows.some(
+            (r) => r.status === "queued" || r.status === "running",
+          )
+        }
+        pollMs={4000}
         columns={[
           { key: "repo", label: "저장소" },
           {
@@ -460,6 +482,25 @@ export default function IssuesPage() {
             key: "status",
             label: "상태",
             render: (r) => <IssueStatusCell row={r} />,
+          },
+          {
+            key: "prUrl",
+            label: "PR",
+            render: (r) => {
+              const pr = (r.prUrl as string | null | undefined) ?? null;
+              if (!pr) return <Mono>—</Mono>;
+              const num = pr.match(/\/pull\/(\d+)/)?.[1];
+              return (
+                <a
+                  href={pr}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[var(--accent)] underline underline-offset-2"
+                >
+                  <Mono>{num ? `#${num}` : "PR"}</Mono>
+                </a>
+              );
+            },
           },
           {
             key: "images",
@@ -500,6 +541,11 @@ export default function IssuesPage() {
             label: "실행",
             href: (r) => `/issues/${r.id}/run`,
             confirm: "이 이슈를 에이전트로 실행하시겠습니까?",
+          },
+          {
+            label: "재큐",
+            href: (r) => `/issues/${r.id}/requeue`,
+            confirm: "이 이슈를 다시 큐에 넣어 재실행합니다. 진행할까요?",
           },
           {
             label: "결과 코멘트",

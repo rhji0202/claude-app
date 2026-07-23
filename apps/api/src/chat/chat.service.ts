@@ -3,6 +3,7 @@ import { ChatRole } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { ProjectsService } from "../projects/projects.service";
 import { AgentService, type AgentStreamEvent } from "../agent/agent.service";
+import { RepoManagerService } from "../repo/repo-manager.service";
 
 export interface ChatSessionDto {
   id: string;
@@ -47,6 +48,7 @@ export class ChatService {
     private readonly prisma: PrismaService,
     private readonly projects: ProjectsService,
     private readonly agent: AgentService,
+    private readonly repos: RepoManagerService,
   ) {}
 
   async listSessions(userId: string): Promise<ChatSessionDto[]> {
@@ -122,12 +124,16 @@ export class ChatService {
     let newSdkSessionId: string | undefined;
     let parts: ChatPart[] = [];
 
+    // 실행 디렉터리: 관리 clone base(설계 12.5). gitRepo 없으면 BadRequest.
+    const cwd = await this.repos.prepareForProject(session.projectId);
+
     await this.agent.runStream(
       session.projectId,
       {
         prompt,
         resume: session.sdkSessionId ?? undefined,
         userId,
+        cwd,
         systemPrompt:
           "당신은 이 프로젝트 컨텍스트에서 사용자를 돕는 코딩 에이전트입니다.",
       },

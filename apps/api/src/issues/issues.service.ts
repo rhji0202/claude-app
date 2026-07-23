@@ -5,6 +5,7 @@ import {
   NotFoundException,
   OnModuleInit,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import type { Project } from "@prisma/client";
 import {
   IssueSource as PrismaSource,
@@ -17,10 +18,13 @@ import { AgentService } from "../agent/agent.service";
 import { GithubService } from "../github/github.service";
 import { ProjectsService } from "../projects/projects.service";
 import { UploadsService } from "../uploads/uploads.service";
+import { RepoManagerService } from "../repo/repo-manager.service";
+import { WorktreeService } from "../repo/worktree.service";
 import type {
   IssueTask as IssueDto,
   IssueSource,
   IssueTaskStatus,
+  IssueWorkerStats,
   ManualIssueReport,
 } from "@claude-app/shared";
 import { CreateIssueTaskDto, UpdateIssueTaskDto } from "./issues.dto";
@@ -53,11 +57,17 @@ export class IssuesService implements OnModuleInit {
       data: {
         status: IssueStatus.INTERRUPTED,
         error: "서버 재시작으로 실행이 중단되었습니다. 다시 실행해 주세요.",
+        claimedAt: null,
+        lockedBy: null,
       },
     });
     if (count > 0) {
       this.logger.warn(`고아 RUNNING 이슈 ${count}건을 INTERRUPTED로 정리했습니다.`);
     }
+    // 프로세스가 죽어 finally가 안 돈 고아 worktree 정리(설계 11.4)
+    await this.worktrees.pruneOrphans().catch((e) =>
+      this.logger.warn(`worktree prune 실패: ${String(e)}`),
+    );
   }
 
   constructor(
@@ -67,6 +77,9 @@ export class IssuesService implements OnModuleInit {
     private readonly github: GithubService,
     private readonly projects: ProjectsService,
     private readonly uploads: UploadsService,
+    private readonly repos: RepoManagerService,
+    private readonly worktrees: WorktreeService,
+    private readonly config: ConfigService,
   ) {}
 
   private toDto(i: PrismaIssue): IssueDto {
@@ -88,6 +101,7 @@ export class IssuesService implements OnModuleInit {
       result: i.result,
       error: i.error,
       resultCommentUrl: i.resultCommentUrl,
+      prUrl: i.prUrl,
       createdAt: i.createdAt.toISOString(),
       updatedAt: i.updatedAt.toISOString(),
     };
@@ -111,6 +125,83 @@ export class IssuesService implements OnModuleInit {
     const task = await this.getRaw(id);
     await this.projects.assertAccess(task.projectId, userId);
     return this.toDto(task);
+  }
+
+  /**
+   * 워커 현황 대시보드 요약(설계 7절). 접근 가능한 프로젝트의 이슈만 집계한다.
+   * 워커 런타임 상태(paused/workerId)는 컨트롤러가 IssueWorkerService에서 주입한다.
+   */
+  async stats(
+    userId: string,
+    worker: { workerId: string; paused: boolean },
+  ): Promise<IssueWorkerStats> {
+    const ids = await this.projects.accessibleProjectIds(userId);
+    const scope = { projectId: { in: ids } };
+
+    const concurrency = this.config.get<number>("AGENT_CONCURRENCY") ?? 3;
+    const maxRetry = this.config.get<number>("ISSUE_MAX_RETRY") ?? 2;
+
+    // 상태별 카운트(모든 상태를 0으로 초기화 후 채움)
+    const grouped = await this.prisma.issueTask.groupBy({
+      by: ["status"],
+      where: scope,
+      _count: { _all: true },
+    });
+    const counts: Record<IssueTaskStatus, number> = {
+      queued: 0,
+      running: 0,
+      done: 0,
+      error: 0,
+      interrupted: 0,
+    };
+    for (const g of grouped) counts[fromStatus(g.status)] = g._count._all;
+
+    // 재시도 대기: ERROR/INTERRUPTED 이면서 attempts <= maxRetry(워커가 다시 집을 대상)
+    const retrying =
+      maxRetry <= 0
+        ? 0
+        : await this.prisma.issueTask.count({
+            where: {
+              ...scope,
+              status: { in: [IssueStatus.ERROR, IssueStatus.INTERRUPTED] },
+              attempts: { lte: maxRetry },
+            },
+          });
+
+    // 가장 오래된 QUEUED(큐 적체 신호)
+    const oldestQueued = await this.prisma.issueTask.findFirst({
+      where: { ...scope, status: IssueStatus.QUEUED },
+      orderBy: { createdAt: "asc" },
+      select: { createdAt: true },
+    });
+
+    return {
+      slots: {
+        concurrency,
+        running: counts.running,
+        free: Math.max(0, concurrency - counts.running),
+      },
+      counts,
+      retrying,
+      oldestQueuedAt: oldestQueued?.createdAt.toISOString() ?? null,
+      worker,
+    };
+  }
+
+  /** 개별 이슈 즉시 재큐(대시보드 운영 제어). attempts 초기화 없이 바로 QUEUED로. */
+  async requeue(id: string, userId: string): Promise<IssueDto> {
+    const task = await this.getRaw(id);
+    await this.projects.assertCanEdit(task.projectId, userId);
+    await this.prisma.issueTask.update({
+      where: { id },
+      data: {
+        status: IssueStatus.QUEUED,
+        error: null,
+        claimedAt: null,
+        lockedBy: null,
+      },
+    });
+    return this.get(id, userId);
   }
 
   async getRaw(id: string): Promise<PrismaIssue> {
@@ -296,6 +387,7 @@ export class IssuesService implements OnModuleInit {
   private async buildPrompt(
     task: PrismaIssue,
     token: string | null,
+    pr?: { branch: string; base: string; autoMerge: boolean },
   ): Promise<string> {
     const lines: string[] = [
       `GitHub 저장소 ${task.repo}의 이슈 ${task.issueNumber ? `#${task.issueNumber}` : ""} "${task.title}"를 해결해 주세요.`,
@@ -337,80 +429,236 @@ export class IssuesService implements OnModuleInit {
       "2. 최소한의 변경으로 문제를 해결합니다.",
       "3. 변경한 파일과 이유를 요약합니다.",
     );
+    if (pr) {
+      // autoPr: 현재 작업 디렉터리는 issue/<id> 브랜치로 체크아웃된 git worktree다.
+      // 에이전트가 직접 커밋→push→gh pr create까지 수행하도록 지시하고, 결과 URL을 규약된 형식으로 출력하게 한다.
+      lines.push(
+        "",
+        "## PR 생성 (필수)",
+        `현재 작업 디렉터리는 \`${pr.branch}\` 브랜치로 체크아웃된 git 저장소입니다. GITHUB_TOKEN이 환경에 있어 \`gh\` CLI가 인증됩니다.`,
+        "수정을 마친 뒤 반드시 다음을 수행하세요:",
+        "1. 변경사항을 의미 있는 메시지로 커밋합니다. (`git add -A && git commit`)",
+        `2. 브랜치를 origin에 push합니다. (\`git push -u origin ${pr.branch}\`)`,
+        `3. \`gh pr create --base ${pr.base} --head ${pr.branch} --fill\`로 Pull Request를 만듭니다.` +
+          (task.issueNumber
+            ? ` 본문에 \`Closes #${task.issueNumber}\`를 포함하세요.`
+            : ""),
+        ...(pr.autoMerge
+          ? [
+              `4. \`gh pr merge --auto --squash\`로 자동 머지를 활성화합니다. (체크 통과 시 자동 머지)`,
+            ]
+          : []),
+        "",
+        "작업이 끝나면 **응답의 마지막 줄**에 생성한 PR의 URL을 정확히 다음 형식으로 출력하세요(다른 텍스트 없이):",
+        "`PR_URL: https://github.com/<owner>/<repo>/pull/<number>`",
+        "변경할 것이 없어 PR을 만들지 않았다면 대신 `PR_URL: none`을 출력하세요.",
+      );
+    }
     if (task.prompt) lines.push("", "## 추가 지시", task.prompt);
     return lines.join("\n");
   }
 
-  /** 이슈 작업을 에이전트로 실행한다. (백그라운드 처리, 즉시 running 상태 반환) */
+  /** 에이전트 결과 텍스트 끝의 `PR_URL: <url>` 규약을 파싱한다. 없거나 none이면 null. */
+  private parsePrUrl(text: string | null | undefined): string | null {
+    if (!text) return null;
+    const m = text.match(/PR_URL:\s*(\S+)/i);
+    if (!m) return null;
+    const url = m[1].trim();
+    if (!url || url.toLowerCase() === "none") return null;
+    return /^https?:\/\/\S+\/pull\/\d+/.test(url) ? url : null;
+  }
+
+  /**
+   * 이슈를 큐에 넣는다(설계 6절: 실행은 워커가 담당).
+   * 즉시 실행하지 않고 QUEUED로만 만들며, IssueWorkerService가 폴링해 집어간다.
+   */
   async startRun(id: string, userId: string): Promise<IssueDto> {
     const task = await this.getRaw(id);
     await this.projects.assertCanEdit(task.projectId, userId);
+    return this.enqueue([id]).then(() => this.get(id, userId));
+  }
+
+  /** 여러 이슈를 일괄 큐잉한다(설계 6절 batch-run). 접근 가능한 것만. */
+  async batchRun(ids: string[], userId: string): Promise<IssueDto[]> {
+    const tasks = await this.prisma.issueTask.findMany({
+      where: { id: { in: ids } },
+    });
+    const allowed: string[] = [];
+    for (const t of tasks) {
+      try {
+        await this.projects.assertCanEdit(t.projectId, userId);
+        allowed.push(t.id);
+      } catch {
+        // 편집 권한 없는 이슈는 조용히 스킵
+      }
+    }
+    await this.enqueue(allowed);
+    return this.list(userId).then((all) =>
+      all.filter((i) => allowed.includes(i.id)),
+    );
+  }
+
+  /** 큐잉 공통: QUEUED로 되돌리고 재시도 카운트·이전 오류를 초기화. */
+  private async enqueue(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await this.prisma.issueTask.updateMany({
+      where: { id: { in: ids } },
+      data: {
+        status: IssueStatus.QUEUED,
+        error: null,
+        attempts: 0,
+        claimedAt: null,
+        lockedBy: null,
+      },
+    });
+  }
+
+  /**
+   * 워커가 클레임한 이슈를 실제 실행한다.
+   * 관리 clone→per-run worktree 격리(설계 11·12) 후 executeRun, finally에서 worktree 정리.
+   * 상태(DONE/ERROR/INTERRUPTED)를 기록한다. throw하지 않음(워커 루프 보호).
+   */
+  async executeClaimed(task: PrismaIssue): Promise<void> {
     const project = await this.prisma.project.findUnique({
       where: { id: task.projectId },
     });
     if (!project) {
-      return this.toDto(
-        await this.prisma.issueTask.update({
-          where: { id },
-          data: { status: IssueStatus.ERROR, error: "프로젝트를 찾을 수 없습니다." },
-        }),
-      );
+      await this.finishRun(task.id, IssueStatus.ERROR, {
+        error: "프로젝트를 찾을 수 없습니다.",
+      });
+      return;
     }
-    await this.prisma.issueTask.update({
-      where: { id },
-      data: { status: IssueStatus.RUNNING, error: null },
-    });
-    // 백그라운드 실행 (HTTP 응답을 막지 않음). 큐 동시성은 AgentService가 제한.
-    void this.executeRun(task, project).catch(async (err) => {
-      this.logger.error(`이슈 실행 실패 ${id}: ${String(err)}`);
-      // 실패 기록 자체가 또 실패해도(이슈 삭제됨 등) 프로세스가 죽지 않도록 방어.
-      await this.prisma.issueTask
-        .update({
-          where: { id },
-          data: { status: IssueStatus.ERROR, error: String(err) },
-        })
-        .catch((e) =>
-          this.logger.warn(`실패 상태 기록 불가 ${id}: ${String(e)}`),
-        );
-    });
-    return this.get(id, userId);
+    if (!project.gitRepo) {
+      await this.finishRun(task.id, IssueStatus.ERROR, {
+        error: "실행하려면 프로젝트에 gitRepo가 설정되어야 합니다.",
+      });
+      return;
+    }
+
+    const token = this.tokenOf(project);
+    try {
+      // 1. 관리 clone 준비(없으면 clone, 있으면 fetch)
+      await this.repos.ensureRepo(project.id, project.gitRepo, token);
+      // 2. per-run worktree 생성(같은 프로젝트 병렬 실행 격리)
+      const wt = await this.worktrees.create(
+        project.id,
+        task.id,
+        project.gitBranch,
+      );
+      try {
+        // autoPr이면 브랜치 push + PR 생성을 프롬프트로 지시(에이전트가 gh CLI로 수행).
+        // base 브랜치는 프로젝트 gitBranch, 없으면 관리 clone의 기본 브랜치.
+        const prOpts = project.autoPr
+          ? {
+              branch: wt.branch,
+              base:
+                project.gitBranch ??
+                (await this.repos.defaultBranch(project.id)) ??
+                "main",
+              autoMerge: project.autoMerge,
+            }
+          : undefined;
+        // 3. 프롬프트·이미지 구성 후 에이전트 실행(cwd=worktree)
+        const prompt = await this.buildPrompt(task, token, prOpts);
+        const images: { data: string; mediaType: string }[] = [];
+        for (const rel of task.images) {
+          try {
+            images.push(await this.uploads.readAsBase64(rel));
+          } catch (err) {
+            this.logger.warn(`이미지 로드 실패 ${rel}: ${String(err)}`);
+          }
+        }
+        const res = await this.agent.run(project.id, {
+          prompt,
+          resume: task.sessionId ?? undefined,
+          userId: project.ownerId ?? undefined,
+          images: images.length > 0 ? images : undefined,
+          cwd: wt.path,
+          // PR 생성은 push·gh 왕복이 있어 기본 20턴을 넘길 수 있음 → autoPr이면 상향.
+          maxTurns: prOpts ? 40 : undefined,
+          systemPrompt: prOpts
+            ? "당신은 GitHub 이슈를 해결하는 소프트웨어 엔지니어입니다. 신중하게 분석하고 최소한의 변경으로 해결한 뒤, 지시에 따라 브랜치를 push하고 Pull Request를 만드세요."
+            : "당신은 GitHub 이슈를 해결하는 소프트웨어 엔지니어입니다. 신중하게 분석하고 최소한의 변경으로 해결하세요.",
+        });
+        const status =
+          res.status === "ok"
+            ? IssueStatus.DONE
+            : res.interrupted
+              ? IssueStatus.INTERRUPTED
+              : IssueStatus.ERROR;
+        // autoPr + 성공이면 결과에서 PR URL을 파싱해 저장하고 이슈에 코멘트.
+        const prUrl =
+          prOpts && status === IssueStatus.DONE
+            ? this.parsePrUrl(res.text)
+            : null;
+        await this.finishRun(task.id, status, {
+          sessionId: res.sessionId ?? task.sessionId,
+          result: res.text,
+          error: res.error ?? null,
+          ...(prOpts ? { prUrl } : {}),
+        });
+        if (prUrl) await this.postPrComment(task, token, prUrl);
+      } finally {
+        // 4. worktree 정리(중단·오류 무관)
+        await this.worktrees.remove(project.id, task.id);
+      }
+    } catch (err) {
+      // clone/worktree/실행 준비 단계 실패 → ERROR로 흡수
+      this.logger.error(`이슈 실행 실패 ${task.id}: ${String(err)}`);
+      await this.finishRun(task.id, IssueStatus.ERROR, { error: String(err) });
+    }
   }
 
-  private async executeRun(task: PrismaIssue, project: Project): Promise<void> {
-    const token = this.tokenOf(project);
-    const prompt = await this.buildPrompt(task, token);
-    // 첨부 이미지를 base64로 읽어 멀티모달로 전달 (실패한 이미지는 스킵)
-    const images: { data: string; mediaType: string }[] = [];
-    for (const rel of task.images) {
-      try {
-        images.push(await this.uploads.readAsBase64(rel));
-      } catch (err) {
-        this.logger.warn(`이미지 로드 실패 ${rel}: ${String(err)}`);
-      }
+  /** 실행 종료 상태 기록. 이슈가 이미 삭제됐어도 프로세스가 죽지 않도록 방어. */
+  private async finishRun(
+    id: string,
+    status: IssueStatus,
+    data: {
+      sessionId?: string | null;
+      result?: string | null;
+      error?: string | null;
+      prUrl?: string | null;
+    },
+  ): Promise<void> {
+    await this.prisma.issueTask
+      .update({
+        where: { id },
+        data: {
+          status,
+          claimedAt: null,
+          lockedBy: null,
+          ...(data.sessionId !== undefined ? { sessionId: data.sessionId } : {}),
+          ...(data.result !== undefined ? { result: data.result } : {}),
+          ...(data.error !== undefined ? { error: data.error } : {}),
+          ...(data.prUrl !== undefined ? { prUrl: data.prUrl } : {}),
+        },
+      })
+      .catch((e) => this.logger.warn(`이슈 상태 기록 실패 ${id}: ${String(e)}`));
+  }
+
+  /** autoPr로 만든 PR 링크를 원본 GitHub 이슈에 코멘트로 남긴다(실패해도 무시). */
+  private async postPrComment(
+    task: PrismaIssue,
+    token: string | null,
+    prUrl: string,
+  ): Promise<void> {
+    if (!task.issueNumber || !task.repo || !token) return;
+    try {
+      const comment = await this.github.createComment(
+        task.repo,
+        task.issueNumber,
+        `🤖 이 이슈를 해결하는 Pull Request를 생성했습니다: ${prUrl}`,
+        token,
+      );
+      await this.prisma.issueTask
+        .update({
+          where: { id: task.id },
+          data: { resultCommentUrl: comment.html_url },
+        })
+        .catch(() => undefined);
+    } catch (err) {
+      this.logger.warn(`PR 코멘트 게시 실패 ${task.id}: ${String(err)}`);
     }
-    const res = await this.agent.run(project.id, {
-      prompt,
-      resume: task.sessionId ?? undefined,
-      userId: project.ownerId ?? undefined,
-      images: images.length > 0 ? images : undefined,
-      systemPrompt:
-        "당신은 GitHub 이슈를 해결하는 소프트웨어 엔지니어입니다. 신중하게 분석하고 최소한의 변경으로 해결하세요.",
-    });
-    const status =
-      res.status === "ok"
-        ? IssueStatus.DONE
-        : res.interrupted
-          ? IssueStatus.INTERRUPTED
-          : IssueStatus.ERROR;
-    await this.prisma.issueTask.update({
-      where: { id: task.id },
-      data: {
-        status,
-        sessionId: res.sessionId ?? task.sessionId,
-        result: res.text,
-        error: res.error ?? null,
-      },
-    });
   }
 
   /** 실행 결과를 GitHub 이슈에 코멘트로 게시 (외부 쓰기) */

@@ -72,11 +72,21 @@ export interface ColumnDef {
   render?: (row: Record<string, unknown>) => React.ReactNode;
 }
 
+type Row = Record<string, unknown> & { id: string };
+
 export interface RowAction {
   label: string;
   href: (row: Record<string, unknown>) => string;
   variant?: "secondary" | "danger";
   confirm?: string;
+}
+
+/** 선택된 행에 대한 일괄 작업(체크박스 다중 선택). */
+export interface BatchAction {
+  label: string;
+  /** 선택된 id 목록을 받아 실행. 완료 후 목록이 자동 새로고침된다. */
+  run: (ids: string[]) => Promise<void>;
+  confirm?: (ids: string[]) => string;
 }
 
 export interface CrudPanelProps {
@@ -89,9 +99,20 @@ export interface CrudPanelProps {
   reloadSignal?: number;
   /** 생성 폼을 숨긴다 (등록을 다른 컴포넌트로 일원화한 경우). */
   hideCreate?: boolean;
+  /** 체크박스 다중 선택 + 일괄 작업 활성화(옵트인). */
+  batchActions?: BatchAction[];
+  /**
+   * 폴링 조건(옵트인). rows를 받아 true면 pollMs 간격으로 자동 새로고침한다.
+   * 예: RUNNING/QUEUED 행이 있을 때만 폴링.
+   */
+  pollWhile?: (rows: Row[]) => boolean;
+  pollMs?: number;
+  /**
+   * 행 수정 활성화(옵트인). 행별 '수정' 버튼 → 다이얼로그 폼 → PATCH.
+   * 어떤 필드를 수정 가능하게 할지 이름 목록으로 지정한다(fields 중 해당 필드만 폼에 표시).
+   */
+  editableFields?: string[];
 }
-
-type Row = Record<string, unknown> & { id: string };
 
 export default function CrudPanel(props: CrudPanelProps) {
   const { endpoint, title, columns, fields, rowActions } = props;
@@ -112,6 +133,12 @@ export default function CrudPanel(props: CrudPanelProps) {
   const [form, setForm] = useState<Record<string, unknown>>(() =>
     initialForm(fields),
   );
+  // 다중 선택(batchActions 활성 시)
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [pendingBatch, setPendingBatch] = useState<BatchAction | null>(null);
+  // 행 수정(editableFields 활성 시): 편집 중인 행 + 편집 폼 상태
+  const [editRow, setEditRow] = useState<Row | null>(null);
+  const [editForm, setEditForm] = useState<Record<string, unknown>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -125,9 +152,28 @@ export default function CrudPanel(props: CrudPanelProps) {
     }
   }, [endpoint]);
 
+  // 폴링 없이 조용히 갱신(로딩 스켈레톤·에러토스트 없이). 폴링·일괄작업 후 사용.
+  const refresh = useCallback(async () => {
+    try {
+      const data = await api.get<Row[]>(endpoint);
+      setRows(Array.isArray(data) ? data : []);
+    } catch {
+      /* 폴링 실패는 조용히 무시 */
+    }
+  }, [endpoint]);
+
   useEffect(() => {
     load();
   }, [load, props.reloadSignal]);
+
+  // 폴링(옵트인): pollWhile(rows)이 true인 동안 pollMs 간격으로 조용히 refresh.
+  const { pollWhile, pollMs } = props;
+  const shouldPoll = pollWhile ? pollWhile(rows) : false;
+  useEffect(() => {
+    if (!shouldPoll) return;
+    const t = setInterval(() => void refresh(), pollMs ?? 5000);
+    return () => clearInterval(t);
+  }, [shouldPoll, pollMs, refresh]);
 
   useEffect(() => {
     let cancelled = false;
@@ -203,6 +249,66 @@ export default function CrudPanel(props: CrudPanelProps) {
     }
   }
 
+  async function runBatch(action: BatchAction) {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    setBusy(true);
+    try {
+      await action.run(ids);
+      toast.success(`${action.label}: ${ids.length}건`);
+      setSelected(new Set());
+      await refresh();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleSelect(id: string) {
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+
+  const selectable = (props.batchActions?.length ?? 0) > 0;
+  const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  function toggleSelectAll() {
+    setSelected(allSelected ? new Set() : new Set(rows.map((r) => r.id)));
+  }
+
+  // ---- 행 수정(editableFields) ----
+  const editable = (props.editableFields?.length ?? 0) > 0;
+  const editFieldDefs = editable
+    ? fields.filter((f) => props.editableFields!.includes(f.name))
+    : [];
+
+  function openEdit(row: Row) {
+    // 현재 행 값으로 편집 폼 초기화(수정 대상 필드만).
+    const init: Record<string, unknown> = {};
+    for (const f of editFieldDefs) init[f.name] = row[f.name];
+    setEditForm(init);
+    setEditRow(row);
+  }
+
+  async function submitEdit() {
+    if (!editRow) return;
+    setBusy(true);
+    try {
+      await api.patch(`${baseEndpoint}/${editRow.id}`, serialize(editForm, editFieldDefs));
+      setEditRow(null);
+      toast.success("수정되었습니다.");
+      await load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <>
       {/* 생성 폼 */}
@@ -239,8 +345,27 @@ export default function CrudPanel(props: CrudPanelProps) {
 
       {/* 목록 */}
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between gap-3">
           <CardTitle className="text-sm">{title} 목록</CardTitle>
+          {selectable && selected.size > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">
+                {selected.size}개 선택
+              </span>
+              {props.batchActions?.map((a) => (
+                <Button
+                  key={a.label}
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    a.confirm ? setPendingBatch(a) : void runBatch(a)
+                  }
+                >
+                  {a.label}
+                </Button>
+              ))}
+            </div>
+          )}
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -260,6 +385,17 @@ export default function CrudPanel(props: CrudPanelProps) {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      {selectable && (
+                        <TableHead className="w-8">
+                          <input
+                            type="checkbox"
+                            className="size-4 accent-[var(--accent)]"
+                            checked={allSelected}
+                            onChange={toggleSelectAll}
+                            aria-label="전체 선택"
+                          />
+                        </TableHead>
+                      )}
                       {columns.map((c) => (
                         <TableHead key={c.key}>{c.label}</TableHead>
                       ))}
@@ -269,6 +405,17 @@ export default function CrudPanel(props: CrudPanelProps) {
                   <TableBody>
                     {rows.map((row) => (
                       <TableRow key={row.id}>
+                        {selectable && (
+                          <TableCell className="w-8">
+                            <input
+                              type="checkbox"
+                              className="size-4 accent-[var(--accent)]"
+                              checked={selected.has(row.id)}
+                              onChange={() => toggleSelect(row.id)}
+                              aria-label="행 선택"
+                            />
+                          </TableCell>
+                        )}
                         {columns.map((c) => (
                           <TableCell key={c.key}>
                             {c.render
@@ -282,6 +429,7 @@ export default function CrudPanel(props: CrudPanelProps) {
                             actions={rowActions}
                             busy={busy}
                             onRun={triggerAction}
+                            onEdit={editable ? () => openEdit(row) : undefined}
                             onDelete={() => setPendingDelete(row)}
                           />
                         </TableCell>
@@ -298,6 +446,17 @@ export default function CrudPanel(props: CrudPanelProps) {
                     key={row.id}
                     className="rounded-lg border border-border p-3"
                   >
+                    {selectable && (
+                      <label className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          className="size-4 accent-[var(--accent)]"
+                          checked={selected.has(row.id)}
+                          onChange={() => toggleSelect(row.id)}
+                        />
+                        선택
+                      </label>
+                    )}
                     <dl className="space-y-1.5">
                       {columns.map((c) => (
                         <div
@@ -321,6 +480,7 @@ export default function CrudPanel(props: CrudPanelProps) {
                         actions={rowActions}
                         busy={busy}
                         onRun={runAction}
+                        onEdit={editable ? () => openEdit(row) : undefined}
                         onDelete={() => setPendingDelete(row)}
                       />
                     </div>
@@ -387,6 +547,62 @@ export default function CrudPanel(props: CrudPanelProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 일괄 작업 확인 다이얼로그 (batchAction.confirm) */}
+      <Dialog
+        open={!!pendingBatch}
+        onOpenChange={(o) => !o && setPendingBatch(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{pendingBatch?.label} 확인</DialogTitle>
+            <DialogDescription>
+              {pendingBatch?.confirm?.([...selected])}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setPendingBatch(null)}>
+              취소
+            </Button>
+            <Button
+              onClick={() => {
+                if (pendingBatch) void runBatch(pendingBatch);
+                setPendingBatch(null);
+              }}
+            >
+              확인
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 행 수정 다이얼로그 (editableFields) */}
+      <Dialog open={!!editRow} onOpenChange={(o) => !o && setEditRow(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{title} 수정</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {editFieldDefs.map((f) => (
+              <FieldInput
+                key={f.name}
+                field={f}
+                value={editForm[f.name]}
+                options={f.optionsFrom ? dynOptions[f.name] : f.options}
+                onChange={(v) => setEditForm((s) => ({ ...s, [f.name]: v }))}
+              />
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setEditRow(null)}>
+              취소
+            </Button>
+            <Button disabled={busy} onClick={() => void submitEdit()}>
+              {busy ? "저장 중..." : "저장"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
@@ -396,12 +612,14 @@ function RowActions({
   actions,
   busy,
   onRun,
+  onEdit,
   onDelete,
 }: {
   row: Row;
   actions?: RowAction[];
   busy: boolean;
   onRun: (action: RowAction, row: Row) => void;
+  onEdit?: () => void;
   onDelete: () => void;
 }) {
   return (
@@ -417,6 +635,11 @@ function RowActions({
           {a.label}
         </Button>
       ))}
+      {onEdit && (
+        <Button variant="secondary" size="sm" disabled={busy} onClick={onEdit}>
+          수정
+        </Button>
+      )}
       <Button variant="destructive" size="sm" onClick={onDelete}>
         <Trash2 className="size-4" />
         삭제

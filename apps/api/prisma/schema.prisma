@@ -141,6 +141,12 @@ model Project {
   gitRepo   String?
   gitBranch String?
 
+  // 이슈 실행 시 에이전트가 변경을 브랜치 push + PR로 만들지 여부(gh CLI 사용).
+  // false면 기존처럼 텍스트 요약만 남긴다.
+  autoPr    Boolean @default(false)
+  // PR 생성 후 자동 머지까지 진행할지(gh pr merge --auto). autoPr가 true일 때만 의미 있음.
+  autoMerge Boolean @default(false)
+
   // 프로젝트별 자격증명 (암호화 저장)
   gitTokenEnc String?
 
@@ -185,10 +191,17 @@ model IssueTask {
   result      String?
   error       String?
   resultCommentUrl String?
+  // autoPr 실행 시 에이전트가 만든 PR URL (있으면 프론트에 링크 표시)
+  prUrl       String?
+  // 큐/워커: 재시도 횟수, 워커가 집은 시각(stale 회수용), 집은 워커 인스턴스 id(다중 워커 대비)
+  attempts    Int         @default(0)
+  claimedAt   DateTime?
+  lockedBy    String?
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
   @@index([projectId])
+  @@index([status])
 }
 
 model CronJob {
@@ -202,10 +215,27 @@ model CronJob {
   lastRunAt  DateTime?
   lastResult String?
   lastStatus CronStatus?
+  runs       CronRun[]
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
 
   @@index([projectId])
+}
+
+// 크론 실행 이력(누적). 최근 N건만 보관하고 오래된 것은 워커가 자동 정리한다.
+model CronRun {
+  id         String      @id @default(uuid())
+  cronJobId  String
+  cronJob    CronJob     @relation(fields: [cronJobId], references: [id], onDelete: Cascade)
+  status     CronStatus? // 진행 중이면 null, 종료 시 OK/ERROR
+  result     String?     // 성공 결과 텍스트
+  error      String?     // 실패 사유
+  sessionId  String?     // 에이전트 세션 id(추후 추적·재개용)
+  durationMs Int?        // 실행 소요(ms)
+  startedAt  DateTime    @default(now())
+  finishedAt DateTime?
+
+  @@index([cronJobId, startedAt])
 }
 
 model Skill {

@@ -35,3 +35,7 @@ next-env.d.ts
 
 # 업로드물(이슈 이미지)
 apps/api/uploads/
+
+# 이슈 워커: 시스템 관리 clone · per-run worktree (런타임 생성물)
+apps/api/repos/
+apps/api/worktrees/

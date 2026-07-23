@@ -64,6 +64,10 @@ export default function ProjectDetailPage() {
   const [prompt, setPrompt] = useState("");
   const [runResult, setRunResult] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  // 이슈 자동화(autoPr/autoMerge) 설정 로컬 편집 상태
+  const [autoPr, setAutoPr] = useState(false);
+  const [autoMerge, setAutoMerge] = useState(false);
+  const [savingPr, setSavingPr] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -77,6 +81,8 @@ export default function ProjectDetailPage() {
         api.get<NamedRef[]>(`/projects/${id}/mcp`),
       ]);
       setProject(p);
+      setAutoPr(Boolean(p.autoPr));
+      setAutoMerge(Boolean(p.autoMerge));
       setShares(sh);
       setLinks(lk);
       setAllSkills(sk);
@@ -123,6 +129,22 @@ export default function ProjectDetailPage() {
       toast.error((e as Error).message);
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function saveAutomation() {
+    setSavingPr(true);
+    try {
+      // autoMerge는 autoPr가 켜져 있을 때만 의미 있음 → 함께 정리해 저장.
+      const nextMerge = autoPr ? autoMerge : false;
+      await api.patch(`/projects/${id}`, { autoPr, autoMerge: nextMerge });
+      setAutoMerge(nextMerge);
+      toast.success("이슈 자동화 설정을 저장했습니다.");
+      await load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSavingPr(false);
     }
   }
 
@@ -359,6 +381,65 @@ export default function ProjectDetailPage() {
                 wrap(() => api.del(`/projects/${id}/mcp/${mid}`), "해제했습니다.")()
               }
             />
+          </CardContent>
+        </Card>
+
+        {/* 이슈 자동화 (PR) */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">이슈 자동화</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              이슈 실행 시 에이전트가 변경사항을 브랜치로 push하고 Pull Request를
+              만듭니다. (<Mono>gh</Mono> CLI 사용 · <Mono>gitRepo</Mono> 필요)
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {!project.gitRepo && (
+              <p className="rounded-md border border-border bg-muted/40 p-2.5 text-xs text-muted-foreground">
+                이 프로젝트에 <Mono>gitRepo</Mono>가 설정되어 있지 않아 자동 PR이
+                동작하지 않습니다. 먼저 저장소를 연결하세요.
+              </p>
+            )}
+            <label className="flex items-center gap-2.5 text-sm">
+              <input
+                type="checkbox"
+                className="size-4 accent-[var(--accent)]"
+                checked={autoPr}
+                onChange={(e) => setAutoPr(e.target.checked)}
+              />
+              <span>
+                <strong className="font-medium">자동 PR 생성</strong>
+                <span className="text-muted-foreground">
+                  {" "}
+                  — 이슈 해결 후 <Mono>issue/&lt;id&gt;</Mono> 브랜치로 PR 생성
+                </span>
+              </span>
+            </label>
+            <label
+              className={`flex items-center gap-2.5 text-sm ${
+                autoPr ? "" : "pointer-events-none opacity-50"
+              }`}
+            >
+              <input
+                type="checkbox"
+                className="size-4 accent-[var(--accent)]"
+                checked={autoMerge}
+                disabled={!autoPr}
+                onChange={(e) => setAutoMerge(e.target.checked)}
+              />
+              <span>
+                <strong className="font-medium">자동 머지</strong>
+                <span className="text-muted-foreground">
+                  {" "}
+                  — PR의 체크가 통과하면 자동 머지(<Mono>--auto --squash</Mono>)
+                </span>
+              </span>
+            </label>
+            <div>
+              <Button onClick={saveAutomation} disabled={savingPr}>
+                {savingPr ? "저장 중..." : "저장"}
+              </Button>
+            </div>
           </CardContent>
         </Card>
 

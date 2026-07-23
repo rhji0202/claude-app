@@ -1,4 +1,10 @@
-import { IsIn, IsOptional, IsString, MinLength } from "class-validator";
+import {
+  IsBoolean,
+  IsIn,
+  IsOptional,
+  IsString,
+  MinLength,
+} from "class-validator";
 import type { ProjectVisibility } from "@claude-app/shared";
 
 /**
@@ -29,6 +35,14 @@ export class UpdateProjectDto {
   @IsOptional()
   @IsString()
   gitBranch?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  autoPr?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  autoMerge?: boolean;
 
   @IsOptional()
   @IsString()

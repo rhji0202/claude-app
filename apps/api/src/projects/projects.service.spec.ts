@@ -4,6 +4,8 @@ import { Visibility, Role } from "@prisma/client";
 import { ProjectsService } from "./projects.service";
 import { CryptoService } from "../crypto/crypto.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { RepoManagerService } from "../repo/repo-manager.service";
+import { WorktreeService } from "../repo/worktree.service";
 
 const TEST_KEY = "dGVzdC1lbmNyeXB0aW9uLWtleS0zMmJ5dGVzLWxlbiE=";
 const makeCrypto = () =>
@@ -51,7 +53,18 @@ describe("ProjectsService", () => {
       // 기본: 비-admin (admin 우회 테스트에서만 ADMIN 반환)
       user: { findUnique: jest.fn().mockResolvedValue({ role: "MEMBER" }) },
     };
-    service = new ProjectsService(db as unknown as PrismaService, crypto);
+    const repos = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    } as unknown as RepoManagerService;
+    const worktrees = {
+      removeProjectDir: jest.fn().mockResolvedValue(undefined),
+    } as unknown as WorktreeService;
+    service = new ProjectsService(
+      db as unknown as PrismaService,
+      crypto,
+      repos,
+      worktrees,
+    );
   });
 
   describe("toDto (필드 제거 회귀 방지)", () => {
