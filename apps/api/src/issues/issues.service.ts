@@ -770,9 +770,14 @@ export class IssuesService implements OnModuleInit {
       : null;
   }
 
-  /** 결과 블록의 `DECISION_NEEDED: <질문>` 규약을 파싱한다. 없거나 none/플레이스홀더면 null. */
+  /**
+   * 결과 블록의 `DECISION_NEEDED: <질문>` 규약을 파싱한다. 없거나 none/플레이스홀더면 null.
+   * 질문 뒤에 `A) … B) … C) …` 선택지가 여러 줄로 이어지므로, 다음 규약 필드(대문자 KEY:)
+   * 직전까지 취한다(parseSummary와 동일).
+   */
   private parseDecision(text: string | null | undefined): string | null {
-    const m = this.extractResultBlock(text).match(/DECISION_NEEDED:\s*(.+)/i);
+    const block = this.extractResultBlock(text);
+    const m = block.match(/DECISION_NEEDED:\s*([\s\S]*?)(?=\n[A-Z_]+:|$)/i);
     if (this.isPlaceholderOrNone(m?.[1])) return null;
     return m![1].trim();
   }

@@ -634,6 +634,38 @@ describe("IssuesService (큐/워커)", () => {
       );
     });
 
+    it("DECISION_NEEDED 질문 뒤 여러 줄 선택지(A/B/C)를 잘리지 않고 메모로 저장한다", async () => {
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      const question =
+        "이슈는 세 가지 요청을 담고 있으며, 코드 조사 결과 대응 방향이 나뉩니다.\n" +
+        "A) 전체를 한 번에 처리 — 범위 넓음\n" +
+        "B) 우선순위 높은 것만 처리 — 안전\n" +
+        "C) 사람이 순서를 지정";
+      mockAgentResult({
+        status: "ok",
+        sessionId: "s1",
+        text: `분석함.\n<<<RESULT\nDECISION_NEEDED: ${question}\n>>>`,
+      });
+      await service.executeClaimed(task);
+
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.NEEDS_DECISION);
+      expect(prisma.issueNote.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            author: "AGENT",
+            content: question,
+          }),
+        }),
+      );
+    });
+
     it("RESULT 블록의 DECISION_NEEDED가 none이면 결정 대기로 가지 않는다", async () => {
       prisma.project.findUnique.mockResolvedValue({
         id: "p1",
