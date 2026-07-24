@@ -40,7 +40,7 @@ export default function LoginForm() {
         <CardHeader>
           <div className="flex items-center gap-2">
             <Bot className="size-6 text-accent" />
-            <CardTitle className="text-lg">Claude 관리</CardTitle>
+            <CardTitle className="text-lg">더원 에이전트</CardTitle>
           </div>
           <CardDescription>로그인</CardDescription>
         </CardHeader>

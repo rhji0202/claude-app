@@ -54,7 +54,7 @@ export default function Dashboard() {
   return (
     <div>
       <PageHeader title="대시보드">
-        Claude Agent SDK 기반 관리 시스템 — 이슈 처리, 크론, 프로젝트, 스킬, MCP를 한 곳에서.
+더원 에이전트 — Claude Agent SDK 기반 관리 시스템. 이슈 처리, 크론, 프로젝트, 스킬, MCP를 한 곳에서.
       </PageHeader>
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">

@@ -20,8 +20,8 @@ const firaCode = Fira_Code({
 });
 
 export const metadata: Metadata = {
-  title: "Claude 관리 시스템",
-  description: "Agent SDK 기반 Claude 관리 대시보드",
+  title: "더원 에이전트 (TheOne Agent)",
+  description: "Agent SDK 기반 더원 에이전트(TheOne Agent) 관리 대시보드",
 };
 
 // FOUC 방지: JS 번들 로드 전에 저장된 테마를 <html>에 반영

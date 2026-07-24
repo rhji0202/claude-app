@@ -53,7 +53,7 @@ export default function Sidebar({
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
       <div className="flex items-center gap-2 px-5 py-5 text-base font-bold">
         <Bot className="size-5 text-accent" />
-        Claude 관리
+        더원 에이전트
       </div>
 
       <nav className="flex-1 space-y-1 px-3">

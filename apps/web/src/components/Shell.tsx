@@ -67,7 +67,7 @@ function AuthedShell({ children }: { children: React.ReactNode }) {
           </Button>
           <div className="flex items-center gap-2 font-bold">
             <Bot className="size-5 text-accent" />
-            Claude 관리
+            더원 에이전트
           </div>
         </header>
 

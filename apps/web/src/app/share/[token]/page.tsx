@@ -122,7 +122,7 @@ export default function SharePage() {
     <div className="mx-auto max-w-2xl px-4 py-10">
       <div className="mb-2 flex items-center gap-2 text-sm text-muted-foreground">
         <Bot className="size-4 text-accent" />
-        Claude 관리 · 공유 링크
+        더원 에이전트 · 공유 링크
       </div>
       <h1 className="text-2xl font-bold tracking-tight">{view.project.name}</h1>
       {view.project.description && (
