@@ -143,6 +143,8 @@ export interface IssueProgressEvent {
   name?: string;
   /** 내용 요약: 도구 입력 요약 또는 텍스트 앞부분(길이 제한) */
   detail?: string;
+  /** 도구 원본 입력(JSON 문자열, t=tool일 때). 편집 diff·명령어 펼침용(길이 상한 적용). */
+  input?: string;
   /** ISO 시각 */
   at: string;
 }

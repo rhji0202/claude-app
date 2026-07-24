@@ -127,6 +127,8 @@ export class ChatService {
     let newSdkSessionId: string | undefined;
     let parts: ChatPart[] = [];
     let usage: AgentUsage | undefined;
+    // 실행에 실제 사용된 계정 id(활성 계정 폴백 반영). 사용량 귀속에 사용.
+    let accountId: string | null | undefined;
 
     // 실행 디렉터리: 관리 clone base(설계 12.5). gitRepo 없으면 BadRequest.
     const cwd = await this.repos.prepareForProject(session.projectId);
@@ -146,8 +148,10 @@ export class ChatService {
         else if (e.type === "done") {
           finalText = e.text || finalText;
           if (e.usage) usage = e.usage;
+          if (e.accountId !== undefined) accountId = e.accountId;
         } else if (e.type === "error") {
           if (e.usage) usage = e.usage;
+          if (e.accountId !== undefined) accountId = e.accountId;
         } else parts = reduceParts(parts, e);
         onEvent(e);
       },
@@ -177,15 +181,21 @@ export class ChatService {
     });
 
     // 사용량 원장 기록(있을 때만). refId=chatSessionId.
+    // 계정은 실행이 실제 사용한 것(activeId 폴백 포함)을 우선하고,
+    // 잡히지 않았으면(undefined) 프로젝트 지정 계정으로 폴백한다.
     if (usage) {
-      const project = await this.prisma.project.findUnique({
-        where: { id: session.projectId },
-        select: { claudeAccountId: true },
-      });
+      let recordAccountId = accountId ?? null;
+      if (accountId === undefined) {
+        const project = await this.prisma.project.findUnique({
+          where: { id: session.projectId },
+          select: { claudeAccountId: true },
+        });
+        recordAccountId = project?.claudeAccountId ?? null;
+      }
       await this.usage.record({
         kind: UsageKind.CHAT,
         projectId: session.projectId,
-        claudeAccountId: project?.claudeAccountId ?? null,
+        claudeAccountId: recordAccountId,
         userId,
         refId: sessionId,
         usage,

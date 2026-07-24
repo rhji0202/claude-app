@@ -1,4 +1,11 @@
-import { IsIn, IsOptional, IsString, MinLength } from "class-validator";
+import {
+  IsIn,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Min,
+  MinLength,
+} from "class-validator";
 
 export class AddAccountDto {
   /** claude setup-token으로 발급받은 sk-ant-oat01-... 토큰 */
@@ -19,4 +26,9 @@ export class UpdateAccountDto {
   @IsOptional()
   @IsIn(["", "low", "medium", "high", "xhigh", "max"])
   effort?: string;
+  /** 이 계정의 월 예산(USD). null → 무제한. 0 이상. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  monthlyBudgetUsd?: number | null;
 }

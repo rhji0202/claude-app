@@ -82,14 +82,15 @@ describe("UsageService", () => {
     });
   });
 
-  describe("isOverBudget", () => {
+  describe("budgetStatus", () => {
     it("프로젝트 예산 미설정이면 초과 아님", async () => {
       prisma.project.findUnique.mockResolvedValue({
         monthlyBudgetUsd: null,
         name: "P",
       });
-      const r = await service.isOverBudget("p1", null);
+      const r = await service.budgetStatus("p1", null);
       expect(r.over).toBe(false);
+      expect(r.nearLimit).toBe(false);
     });
 
     it("프로젝트 이번 달 비용이 예산 이상이면 초과", async () => {
@@ -100,9 +101,23 @@ describe("UsageService", () => {
       prisma.usageRecord.aggregate.mockResolvedValue({
         _sum: { costUsd: 12 },
       });
-      const r = await service.isOverBudget("p1", null);
+      const r = await service.budgetStatus("p1", null);
       expect(r.over).toBe(true);
       expect(r.reason).toContain("예산 초과");
+    });
+
+    it("경고 임계 이상·예산 미만이면 nearLimit(초과 아님)", async () => {
+      prisma.project.findUnique.mockResolvedValue({
+        monthlyBudgetUsd: 10,
+        name: "P",
+      });
+      prisma.usageRecord.aggregate.mockResolvedValue({
+        _sum: { costUsd: 9 },
+      });
+      const r = await service.budgetStatus("p1", null, 0.8);
+      expect(r.over).toBe(false);
+      expect(r.nearLimit).toBe(true);
+      expect(r.reason).toContain("소진");
     });
 
     it("계정 예산 초과면 초과(프로젝트는 여유 있어도)", async () => {
@@ -115,15 +130,16 @@ describe("UsageService", () => {
         label: "A",
       });
       prisma.usageRecord.aggregate.mockResolvedValue({ _sum: { costUsd: 6 } });
-      const r = await service.isOverBudget("p1", "a1");
+      const r = await service.budgetStatus("p1", "a1");
       expect(r.over).toBe(true);
       expect(r.reason).toContain("계정");
     });
 
     it("조회 실패 시 실행을 막지 않는다(over=false)", async () => {
       prisma.project.findUnique.mockRejectedValue(new Error("boom"));
-      const r = await service.isOverBudget("p1", null);
+      const r = await service.budgetStatus("p1", null);
       expect(r.over).toBe(false);
+      expect(r.nearLimit).toBe(false);
     });
   });
 

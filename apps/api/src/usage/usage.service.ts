@@ -82,13 +82,21 @@ export class UsageService {
   }
 
   /**
-   * 예산 초과 여부. 프로젝트 또는 계정 중 하나라도 월 예산을 넘으면 true.
-   * 예산 미설정(null)이면 무제한으로 간주. 조회 실패 시 false(실행을 막지 않음).
+   * 예산 판정 결과.
+   * - over: 프로젝트 또는 계정 중 하나라도 월 예산을 넘음(실행 차단 대상).
+   * - nearLimit: 아직 초과는 아니지만 경고 임계(warnRatio) 이상 소진(넘기 전 1회 경고용).
+   * - ratio: 초과·임박에 걸린 스코프의 소진 비율(0~). 예산 미설정이면 undefined.
    */
-  async isOverBudget(
+  async budgetStatus(
     projectId: string,
     claudeAccountId?: string | null,
-  ): Promise<{ over: boolean; reason?: string }> {
+    warnRatio = 0.8,
+  ): Promise<{
+    over: boolean;
+    nearLimit: boolean;
+    ratio?: number;
+    reason?: string;
+  }> {
     try {
       const [project, account] = await Promise.all([
         this.prisma.project.findUnique({
@@ -103,26 +111,53 @@ export class UsageService {
           : Promise.resolve(null),
       ]);
 
-      if (project?.monthlyBudgetUsd != null) {
+      // 프로젝트·계정 각각 판정 후, 초과 우선(둘 다 넘으면 먼저 걸린 쪽 사유).
+      // 초과가 없으면 가장 소진율 높은 임박을 보고한다.
+      let near: { ratio: number; reason: string } | null = null;
+
+      if (project?.monthlyBudgetUsd != null && project.monthlyBudgetUsd > 0) {
         const spent = await this.monthlyCost({ projectId });
-        if (spent >= project.monthlyBudgetUsd)
+        const ratio = spent / project.monthlyBudgetUsd;
+        if (ratio >= 1)
           return {
             over: true,
+            nearLimit: false,
+            ratio,
             reason: `프로젝트 "${project.name}" 월 예산 초과 ($${spent.toFixed(2)} / $${project.monthlyBudgetUsd})`,
           };
-      }
-      if (account?.monthlyBudgetUsd != null && claudeAccountId) {
-        const spent = await this.monthlyCost({ claudeAccountId });
-        if (spent >= account.monthlyBudgetUsd)
-          return {
-            over: true,
-            reason: `계정 "${account.label}" 월 예산 초과 ($${spent.toFixed(2)} / $${account.monthlyBudgetUsd})`,
+        if (ratio >= warnRatio)
+          near = {
+            ratio,
+            reason: `프로젝트 "${project.name}" 월 예산 ${Math.round(ratio * 100)}% 소진 ($${spent.toFixed(2)} / $${project.monthlyBudgetUsd})`,
           };
       }
-      return { over: false };
+      if (
+        account?.monthlyBudgetUsd != null &&
+        account.monthlyBudgetUsd > 0 &&
+        claudeAccountId
+      ) {
+        const spent = await this.monthlyCost({ claudeAccountId });
+        const ratio = spent / account.monthlyBudgetUsd;
+        if (ratio >= 1)
+          return {
+            over: true,
+            nearLimit: false,
+            ratio,
+            reason: `계정 "${account.label}" 월 예산 초과 ($${spent.toFixed(2)} / $${account.monthlyBudgetUsd})`,
+          };
+        if (ratio >= warnRatio && (!near || ratio > near.ratio))
+          near = {
+            ratio,
+            reason: `계정 "${account.label}" 월 예산 ${Math.round(ratio * 100)}% 소진 ($${spent.toFixed(2)} / $${account.monthlyBudgetUsd})`,
+          };
+      }
+
+      if (near)
+        return { over: false, nearLimit: true, ratio: near.ratio, reason: near.reason };
+      return { over: false, nearLimit: false };
     } catch (e) {
       this.logger.warn(`예산 판정 실패 ${projectId}: ${String(e)}`);
-      return { over: false };
+      return { over: false, nearLimit: false };
     }
   }
 

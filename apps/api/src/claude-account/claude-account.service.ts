@@ -16,6 +16,8 @@ export interface ClaudeAccountDto {
   /** 이 계정으로 실행 시 모델·effort(미지정 시 null → 전역 기본) */
   model: string | null;
   effort: string | null;
+  /** 이 계정의 월 예산(USD). null → 무제한. */
+  monthlyBudgetUsd: number | null;
   createdAt: string;
 }
 
@@ -119,6 +121,17 @@ export class ClaudeAccountService {
     return this.crypto.decryptOptional(acc.accessTokenEnc);
   }
 
+  /**
+   * 사용자의 활성 계정 id(복호화 없이). 사용량 귀속용 — 활성 계정이 없으면 null.
+   */
+  async getActiveAccountId(userId: string): Promise<string | null> {
+    const acc = await this.prisma.claudeAccount.findFirst({
+      where: { userId, isActive: true },
+      select: { id: true },
+    });
+    return acc?.id ?? null;
+  }
+
   /** 특정 계정 id의 액세스 토큰(복호화). 프로젝트 지정 계정 실행용. 없으면 null. */
   async getTokenById(accountId: string): Promise<string | null> {
     const acc = await this.prisma.claudeAccount.findUnique({
@@ -137,6 +150,7 @@ export class ClaudeAccountService {
     isActive: boolean;
     model: string | null;
     effort: string | null;
+    monthlyBudgetUsd: number | null;
     createdAt: Date;
   }): ClaudeAccountDto {
     // 토큰 프리뷰: 앞 12자 + …(값은 절대 전체 노출 안 함). 복호화 실패 시 표시만 생략.
@@ -152,6 +166,7 @@ export class ClaudeAccountService {
       tokenPreview: preview,
       model: a.model,
       effort: a.effort,
+      monthlyBudgetUsd: a.monthlyBudgetUsd,
       createdAt: a.createdAt.toISOString(),
     };
   }
@@ -160,7 +175,12 @@ export class ClaudeAccountService {
   async update(
     id: string,
     userId: string,
-    data: { label?: string; model?: string | null; effort?: string | null },
+    data: {
+      label?: string;
+      model?: string | null;
+      effort?: string | null;
+      monthlyBudgetUsd?: number | null;
+    },
   ): Promise<ClaudeAccountDto> {
     const acc = await this.prisma.claudeAccount.findFirst({
       where: { id, userId },
@@ -173,6 +193,10 @@ export class ClaudeAccountService {
         // "" → null(전역 기본), 값 → 지정
         ...(data.model !== undefined ? { model: data.model || null } : {}),
         ...(data.effort !== undefined ? { effort: data.effort || null } : {}),
+        // 0/null → 무제한(null), 양수 → 예산
+        ...(data.monthlyBudgetUsd !== undefined
+          ? { monthlyBudgetUsd: data.monthlyBudgetUsd || null }
+          : {}),
       },
     });
     return this.toDto(updated);

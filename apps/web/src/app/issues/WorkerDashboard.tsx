@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Pause, Play, RotateCw } from "lucide-react";
 import type { IssueWorkerStats } from "@claude-app/shared";
-import { api } from "@/lib/api";
+import { api, streamGet } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -34,7 +34,7 @@ function since(iso: string): string {
 /**
  * 워커 현황 대시보드(설계 7절). 이슈 페이지 상단 요약.
  * 상태별 카운트·슬롯 사용률·큐 적체/재시도 경고 + 운영 제어(일시정지·회수).
- * RUNNING/QUEUED가 남아 있는 동안 4초 폴링(이슈 목록과 동일 정책).
+ * 이슈 실행 SSE(/issues/stream) 이벤트마다 갱신(이슈 목록과 동일 정책).
  */
 export function WorkerDashboard() {
   const [stats, setStats] = useState<IssueWorkerStats | null>(null);
@@ -52,13 +52,43 @@ export function WorkerDashboard() {
     void refetch();
   }, [refetch]);
 
-  // RUNNING/QUEUED가 있을 때만 폴링(불필요한 요청 방지)
-  const active = !!stats && (stats.counts.running > 0 || stats.counts.queued > 0);
+  // 이슈 실행 SSE 구독: 상태/진행 이벤트마다 stats 갱신(디바운스 500ms).
+  // 연결이 끊기면 지수 백오프로 재연결.
+  const refetchRef = useRef(refetch);
+  refetchRef.current = refetch;
   useEffect(() => {
-    if (!active) return;
-    const t = setInterval(() => void refetch(), 4000);
-    return () => clearInterval(t);
-  }, [active, refetch]);
+    const ctrl = new AbortController();
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    let retry = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleRefetch = () => {
+      if (debounce) return;
+      debounce = setTimeout(() => {
+        debounce = null;
+        void refetchRef.current();
+      }, 500);
+    };
+
+    const connect = () => {
+      streamGet("/issues/stream", scheduleRefetch, ctrl.signal)
+        .then(() => {
+          if (!ctrl.signal.aborted) reconnectTimer = setTimeout(connect, 1000);
+        })
+        .catch(() => {
+          if (ctrl.signal.aborted) return;
+          retry = Math.min(retry + 1, 5);
+          reconnectTimer = setTimeout(connect, 1000 * 2 ** (retry - 1));
+        });
+    };
+    connect();
+
+    return () => {
+      ctrl.abort();
+      if (debounce) clearTimeout(debounce);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
+  }, []);
 
   async function control(
     path: string,

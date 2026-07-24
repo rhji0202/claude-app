@@ -7,12 +7,15 @@ import {
   Patch,
   Post,
   Query,
+  Res,
   UploadedFiles,
   UseInterceptors,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { FilesInterceptor } from "@nestjs/platform-express";
 import { IssuesService } from "./issues.service";
 import { IssueWorkerService } from "./issue-worker.service";
+import { IssueEventsService } from "./issue-events.service";
 import { CreateIssueTaskDto, UpdateIssueTaskDto } from "./issues.dto";
 import { MAX_IMAGE_BYTES } from "../uploads/uploads.service";
 import { CurrentUser, type AuthUser } from "../auth/current-user.decorator";
@@ -22,6 +25,7 @@ export class IssuesController {
   constructor(
     private readonly issues: IssuesService,
     private readonly worker: IssueWorkerService,
+    private readonly events: IssueEventsService,
   ) {}
 
   @Get() list(
@@ -55,6 +59,42 @@ export class IssuesController {
   async reclaimStale() {
     const reclaimed = await this.worker.forceReclaimStale();
     return { reclaimed };
+  }
+
+  /**
+   * 이슈 실행 진행/상태 변화 SSE 스트림(폴링 대체).
+   * 접근 가능한 프로젝트의 이벤트만 흘려보낸다. 각 이벤트는 `data: <json>\n\n`.
+   * (라우트 순서상 :id보다 위에 둔다.)
+   */
+  @Get("stream")
+  async stream(
+    @CurrentUser() user: AuthUser,
+    @Res() res: Response,
+  ): Promise<void> {
+    // 연결 시점의 접근 가능 프로젝트로 이벤트를 필터(권한 스코프).
+    const allowed = new Set(await this.issues.accessibleProjectIds(user.userId));
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+    res.write(": connected\n\n");
+
+    // 하트비트(연결 유휴로 끊김 방지). 채팅 SSE와 동일.
+    const heartbeat = setInterval(() => res.write(": ping\n\n"), 15000);
+
+    const unsubscribe = this.events.subscribe((e) => {
+      if (!allowed.has(e.projectId)) return;
+      res.write(`data: ${JSON.stringify(e)}\n\n`);
+    });
+
+    // 클라이언트 연결 종료 시 정리.
+    res.on("close", () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+      res.end();
+    });
   }
 
   @Post() create(@Body() dto: CreateIssueTaskDto, @CurrentUser() user: AuthUser) {

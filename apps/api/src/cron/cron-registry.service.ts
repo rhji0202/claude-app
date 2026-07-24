@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { SchedulerRegistry } from "@nestjs/schedule";
 import { CronJob } from "cron";
 import { CronStatus, CronType, UsageKind } from "@prisma/client";
@@ -21,6 +22,7 @@ export class CronRegistryService implements OnModuleInit {
   private readonly logger = new Logger(CronRegistryService.name);
 
   constructor(
+    private readonly config: ConfigService,
     private readonly registry: SchedulerRegistry,
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
@@ -124,6 +126,32 @@ export class CronRegistryService implements OnModuleInit {
       return;
     }
 
+    // 예산 가드레일: 프로젝트/계정이 월 예산 초과면 에이전트를 실행하지 않고 SKIPPED로 마감.
+    // (크론은 무인·주기 실행이라 폭주 리스크가 크다. IMPORT는 비용이 없어 위에서 이미 처리됨.)
+    const budget = await this.usage.budgetStatus(
+      job.projectId,
+      job.project.claudeAccountId,
+      this.config.get<number>("BUDGET_WARN_RATIO") ?? 0.8,
+    );
+    if (budget.over) {
+      this.logger.warn(`예산 초과로 크론 건너뜀 ${id}: ${budget.reason ?? ""}`);
+      await this.finishRunRecord(id, run?.id, startedAt, {
+        status: CronStatus.SKIPPED,
+        result: budget.reason ?? "월 예산 초과 — 실행 건너뜀",
+      });
+      await this.notify.notify(job.projectId, {
+        event: "budget.exceeded",
+        title: `크론 "${job.name}" — ${budget.reason ?? "월 예산 초과로 실행 보류"}`,
+      });
+      return;
+    }
+    if (budget.nearLimit) {
+      await this.notify.notify(job.projectId, {
+        event: "budget.warning",
+        title: `크론 "${job.name}" — ${budget.reason ?? "월 예산 소진 임박"}`,
+      });
+    }
+
     // 크론은 잡 id 기준 worktree로 격리(같은 프로젝트 이슈·다른 크론과 충돌 방지).
     const wtKey = `cron-${id}`;
     try {
@@ -144,7 +172,7 @@ export class CronRegistryService implements OnModuleInit {
           sessionId: res.sessionId ?? null,
           usage: res.usage,
           projectId: job.projectId,
-          claudeAccountId: job.project.claudeAccountId,
+          claudeAccountId: res.accountId ?? job.project.claudeAccountId,
           userId: job.project.ownerId,
         });
         if (res.status !== "ok")

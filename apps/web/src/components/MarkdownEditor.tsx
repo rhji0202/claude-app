@@ -2,8 +2,8 @@
 
 import { useRef, useState } from "react";
 import { Eye, Pencil, ImagePlus } from "lucide-react";
-import { Streamdown } from "streamdown";
 import { toast } from "sonner";
+import { Markdown } from "@/components/Markdown";
 import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -118,9 +118,9 @@ export function MarkdownEditor({
       ) : (
         <div className="min-h-[120px] px-3 py-2 text-sm">
           {value ? (
-            <Streamdown className="prose prose-sm max-w-none dark:prose-invert">
+            <Markdown className="prose prose-sm max-w-none dark:prose-invert">
               {value}
-            </Streamdown>
+            </Markdown>
           ) : (
             <span className="text-muted-foreground">
               미리볼 내용이 없습니다.

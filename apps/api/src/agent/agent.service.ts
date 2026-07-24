@@ -41,6 +41,8 @@ export interface RunResult {
   interrupted?: boolean;
   /** 토큰·비용 사용량(SDK result 메시지에서 추출, 없으면 undefined). */
   usage?: AgentUsage;
+  /** 실행에 실제 사용된 Claude 계정 id(활성 계정 폴백 반영). .env 폴백이면 null. */
+  accountId?: string | null;
 }
 
 /**
@@ -53,8 +55,20 @@ export type AgentStreamEvent =
   | { type: "text_delta"; id: string; delta: string }
   | { type: "text_end"; id: string; text: string }
   | { type: "tool"; id: string; name: string; input?: string }
-  | { type: "done"; text: string; sessionId?: string; usage?: AgentUsage }
-  | { type: "error"; error: string; sessionId?: string; usage?: AgentUsage };
+  | {
+      type: "done";
+      text: string;
+      sessionId?: string;
+      usage?: AgentUsage;
+      accountId?: string | null;
+    }
+  | {
+      type: "error";
+      error: string;
+      sessionId?: string;
+      usage?: AgentUsage;
+      accountId?: string | null;
+    };
 
 export interface RunStreamOptions extends RunAgentOptions {}
 
@@ -89,16 +103,29 @@ export class AgentService {
     userId: string | undefined,
     gitToken: string | null,
     claudeAccountId?: string | null,
-  ): Promise<Record<string, string | undefined>> {
+  ): Promise<{
+    env: Record<string, string | undefined>;
+    /** 실제 자격증명을 제공한 계정 id. 사용자 활성 계정 폴백도 반영. .env 폴백이면 null. */
+    accountId: string | null;
+  }> {
     const env: Record<string, string | undefined> = { ...process.env };
 
-    const token =
-      (claudeAccountId
-        ? await this.claudeAccounts.getTokenById(claudeAccountId)
-        : null) ??
-      (userId ? await this.claudeAccounts.getActiveToken(userId) : null) ??
-      this.config.get<string>("ANTHROPIC_OAUTH_TOKEN") ??
-      null;
+    // 실행 자격증명 우선순위: 프로젝트 지정 계정 → 사용자 활성 계정 → .env 폴백.
+    // 사용량 귀속을 위해 토큰뿐 아니라 실제로 쓰인 계정 id도 함께 확정한다.
+    let token: string | null = null;
+    let accountId: string | null = null;
+    if (claudeAccountId) {
+      token = await this.claudeAccounts.getTokenById(claudeAccountId);
+      if (token) accountId = claudeAccountId;
+    }
+    if (!token && userId) {
+      token = await this.claudeAccounts.getActiveToken(userId);
+      if (token) accountId = await this.claudeAccounts.getActiveAccountId(userId);
+    }
+    if (!token) {
+      token = this.config.get<string>("ANTHROPIC_OAUTH_TOKEN") ?? null;
+      // .env 폴백은 특정 계정에 귀속되지 않으므로 accountId는 null로 둔다.
+    }
 
     // 값이 없거나 어느 쪽이든, 두 자격증명이 동시에 있으면 CLI가 혼동하므로 정리한다.
     delete env.ANTHROPIC_API_KEY;
@@ -113,7 +140,7 @@ export class AgentService {
       env.GITHUB_TOKEN = gitToken;
       env.GH_TOKEN = gitToken;
     }
-    return env;
+    return { env, accountId };
   }
 
   /**
@@ -223,7 +250,7 @@ export class AgentService {
     const systemPrompt = [opts.systemPrompt, skillPrompt]
       .filter(Boolean)
       .join("\n");
-    const env = await this.buildEnv(
+    const { env, accountId } = await this.buildEnv(
       opts.userId,
       gitToken,
       project.claudeAccountId,
@@ -362,6 +389,7 @@ export class AgentService {
               text: m.result ?? finalText,
               sessionId,
               usage,
+              accountId,
             });
           } else {
             onEvent({
@@ -369,6 +397,7 @@ export class AgentService {
               error: this.describeResultError(m),
               sessionId,
               usage,
+              accountId,
             });
           }
           return true;
@@ -509,7 +538,7 @@ export class AgentService {
       .filter(Boolean)
       .join("\n");
 
-    const env = await this.buildEnv(
+    const { env, accountId } = await this.buildEnv(
       opts.userId,
       gitToken,
       project.claudeAccountId,
@@ -605,7 +634,13 @@ export class AgentService {
         if (m.type === "result") {
           const usage = this.parseUsage(m);
           if (m.subtype === "success") {
-            return { status: "ok", sessionId, text: m.result ?? text, usage };
+            return {
+              status: "ok",
+              sessionId,
+              text: m.result ?? text,
+              usage,
+              accountId,
+            };
           }
           return {
             status: "error",
@@ -613,6 +648,7 @@ export class AgentService {
             text,
             error: this.describeResultError(m),
             usage,
+            accountId,
           };
         }
       }

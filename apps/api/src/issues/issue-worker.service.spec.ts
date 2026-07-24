@@ -23,7 +23,7 @@ describe("IssueWorkerService", () => {
   };
   let issues: { executeClaimed: jest.Mock };
   let scheduler: { addInterval: jest.Mock };
-  let usage: { isOverBudget: jest.Mock };
+  let usage: { budgetStatus: jest.Mock };
   let notify: { notify: jest.Mock };
 
   function makeWorker(cfg: Record<string, unknown> = {}): IssueWorkerService {
@@ -57,7 +57,11 @@ describe("IssueWorkerService", () => {
     issues = { executeClaimed: jest.fn().mockResolvedValue(undefined) };
     scheduler = { addInterval: jest.fn() };
     // 기본: 예산 미초과(가드레일이 클레임을 막지 않음).
-    usage = { isOverBudget: jest.fn().mockResolvedValue({ over: false }) };
+    usage = {
+      budgetStatus: jest
+        .fn()
+        .mockResolvedValue({ over: false, nearLimit: false }),
+    };
     notify = { notify: jest.fn().mockResolvedValue(undefined) };
   });
 
@@ -105,8 +109,9 @@ describe("IssueWorkerService", () => {
             : [],
       );
       prisma.issueTask.updateMany.mockResolvedValue({ count: 1 });
-      usage.isOverBudget.mockResolvedValue({
+      usage.budgetStatus.mockResolvedValue({
         over: true,
+        nearLimit: false,
         reason: "프로젝트 예산 초과",
       });
 

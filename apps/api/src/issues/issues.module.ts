@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { IssuesService } from "./issues.service";
 import { IssueWorkerService } from "./issue-worker.service";
+import { IssueEventsService } from "./issue-events.service";
 import { IssuesController } from "./issues.controller";
 import { AgentModule } from "../agent/agent.module";
 import { GithubModule } from "../github/github.module";
@@ -9,7 +10,7 @@ import { RepoModule } from "../repo/repo.module";
 
 @Module({
   imports: [AgentModule, GithubModule, ProjectsModule, RepoModule],
-  providers: [IssuesService, IssueWorkerService],
+  providers: [IssuesService, IssueWorkerService, IssueEventsService],
   controllers: [IssuesController],
   exports: [IssuesService],
 })
