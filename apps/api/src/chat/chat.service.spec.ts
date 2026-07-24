@@ -7,6 +7,7 @@ import {
   type AgentStreamEvent,
 } from "../agent/agent.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
+import { UsageService } from "../usage/usage.service";
 
 describe("ChatService", () => {
   let service: ChatService;
@@ -19,10 +20,12 @@ describe("ChatService", () => {
       delete: jest.Mock;
     };
     chatMessage: { create: jest.Mock };
+    project: { findUnique: jest.Mock };
   };
   let projects: { assertAccess: jest.Mock };
   let agent: { runStream: jest.Mock };
   let repos: { prepareForProject: jest.Mock };
+  let usage: { record: jest.Mock };
 
   beforeEach(() => {
     db = {
@@ -34,15 +37,20 @@ describe("ChatService", () => {
         delete: jest.fn(),
       },
       chatMessage: { create: jest.fn().mockResolvedValue({}) },
+      project: {
+        findUnique: jest.fn().mockResolvedValue({ claudeAccountId: null }),
+      },
     };
     projects = { assertAccess: jest.fn().mockResolvedValue("owner") };
     agent = { runStream: jest.fn() };
     repos = { prepareForProject: jest.fn().mockResolvedValue("/repos/p1") };
+    usage = { record: jest.fn().mockResolvedValue(undefined) };
     service = new ChatService(
       db as unknown as PrismaService,
       projects as unknown as ProjectsService,
       agent as unknown as AgentService,
       repos as unknown as RepoManagerService,
+      usage as unknown as UsageService,
     );
   });
 
@@ -120,6 +128,71 @@ describe("ChatService", () => {
         "text_end",
         "done",
       ]);
+    });
+
+    it("done의 accountId(실사용 계정)로 사용량을 기록한다", async () => {
+      agent.runStream.mockImplementation(
+        async (
+          _pid: string,
+          _opts: unknown,
+          onEvent: (e: AgentStreamEvent) => void,
+        ) => {
+          onEvent({ type: "session", sessionId: "sdk-123" });
+          onEvent({ type: "text_end", id: "1:0", text: "답변" });
+          onEvent({
+            type: "done",
+            text: "답변",
+            sessionId: "sdk-123",
+            usage: {
+              costUsd: 0.01,
+              inputTokens: 10,
+              outputTokens: 20,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+            },
+            accountId: "acc-active",
+          });
+        },
+      );
+
+      await service.streamMessage("u1", "s1", "hi", () => {});
+
+      expect(usage.record).toHaveBeenCalledWith(
+        expect.objectContaining({ claudeAccountId: "acc-active" }),
+      );
+      // 실사용 계정이 잡혔으므로 프로젝트 계정 조회로 폴백하지 않는다.
+      expect(db.project.findUnique).not.toHaveBeenCalled();
+    });
+
+    it("accountId 미확인 시 프로젝트 지정 계정으로 폴백해 기록한다", async () => {
+      db.project.findUnique.mockResolvedValue({ claudeAccountId: "acc-proj" });
+      agent.runStream.mockImplementation(
+        async (
+          _pid: string,
+          _opts: unknown,
+          onEvent: (e: AgentStreamEvent) => void,
+        ) => {
+          // accountId 없는 done(구 경로 호환)
+          onEvent({
+            type: "done",
+            text: "답변",
+            sessionId: "sdk-1",
+            usage: {
+              costUsd: 0.01,
+              inputTokens: 1,
+              outputTokens: 1,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+            },
+          });
+        },
+      );
+
+      await service.streamMessage("u1", "s1", "hi", () => {});
+
+      expect(usage.record).toHaveBeenCalledWith(
+        expect.objectContaining({ claudeAccountId: "acc-proj" }),
+      );
     });
   });
 });

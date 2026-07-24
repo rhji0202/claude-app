@@ -3,6 +3,8 @@ import { ConfigService } from "@nestjs/config";
 import { SchedulerRegistry } from "@nestjs/schedule";
 import { PrismaService } from "../prisma/prisma.service";
 import { IssuesService } from "./issues.service";
+import { UsageService } from "../usage/usage.service";
+import { NotifyService } from "../notify/notify.service";
 import { IssueWorkerService } from "./issue-worker.service";
 
 /** ConfigService 스텁: 주어진 map에서 값 반환. */
@@ -17,9 +19,12 @@ describe("IssueWorkerService", () => {
       findMany: jest.Mock;
       updateMany: jest.Mock;
     };
+    project: { findUnique: jest.Mock };
   };
   let issues: { executeClaimed: jest.Mock };
   let scheduler: { addInterval: jest.Mock };
+  let usage: { budgetStatus: jest.Mock };
+  let notify: { notify: jest.Mock };
 
   function makeWorker(cfg: Record<string, unknown> = {}): IssueWorkerService {
     return new IssueWorkerService(
@@ -33,6 +38,8 @@ describe("IssueWorkerService", () => {
       scheduler as unknown as SchedulerRegistry,
       prisma as unknown as PrismaService,
       issues as unknown as IssuesService,
+      usage as unknown as UsageService,
+      notify as unknown as NotifyService,
     );
   }
 
@@ -43,9 +50,19 @@ describe("IssueWorkerService", () => {
         findMany: jest.fn().mockResolvedValue([]),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
+      project: {
+        findUnique: jest.fn().mockResolvedValue({ claudeAccountId: null }),
+      },
     };
     issues = { executeClaimed: jest.fn().mockResolvedValue(undefined) };
     scheduler = { addInterval: jest.fn() };
+    // 기본: 예산 미초과(가드레일이 클레임을 막지 않음).
+    usage = {
+      budgetStatus: jest
+        .fn()
+        .mockResolvedValue({ over: false, nearLimit: false }),
+    };
+    notify = { notify: jest.fn().mockResolvedValue(undefined) };
   });
 
   describe("claimAndRun (동시성 슬롯)", () => {
@@ -80,6 +97,37 @@ describe("IssueWorkerService", () => {
       prisma.issueTask.count.mockResolvedValue(2); // free=0
       await worker.tick();
       expect(issues.executeClaimed).not.toHaveBeenCalled();
+    });
+
+    it("예산 초과 프로젝트의 이슈는 클레임하지 않고 알림한다", async () => {
+      const worker = makeWorker({ AGENT_CONCURRENCY: 3 });
+      prisma.issueTask.count.mockResolvedValue(0);
+      prisma.issueTask.findMany.mockImplementation(
+        (arg: any) =>
+          arg?.where?.status === IssueStatus.QUEUED
+            ? [{ id: "a", projectId: "p1", sessionId: null }]
+            : [],
+      );
+      prisma.issueTask.updateMany.mockResolvedValue({ count: 1 });
+      usage.budgetStatus.mockResolvedValue({
+        over: true,
+        nearLimit: false,
+        reason: "프로젝트 예산 초과",
+      });
+
+      await worker.tick();
+
+      expect(issues.executeClaimed).not.toHaveBeenCalled();
+      // 클레임(RUNNING 전환) updateMany는 호출되지 않아야 함
+      // (reclaimStale의 updateMany와 구분: data.status === RUNNING인 호출이 없어야 함)
+      const claimCall = prisma.issueTask.updateMany.mock.calls.find(
+        (c) => c[0]?.data?.status === IssueStatus.RUNNING,
+      );
+      expect(claimCall).toBeUndefined();
+      expect(notify.notify).toHaveBeenCalledWith(
+        "p1",
+        expect.objectContaining({ event: "budget.exceeded" }),
+      );
     });
 
     it("낙관적 클레임 실패(count=0)면 실행하지 않는다", async () => {

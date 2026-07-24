@@ -65,6 +65,7 @@ export class ProjectsService {
       autoMerge: p.autoMerge,
       autoTriage: p.autoTriage,
       claudeAccountId: p.claudeAccountId,
+      monthlyBudgetUsd: p.monthlyBudgetUsd,
       ownerId: p.ownerId,
       visibility: toDtoVisibility(p.visibility),
       secrets: {
@@ -191,6 +192,7 @@ export class ProjectsService {
       claudeAccount: dto.claudeAccountId
         ? { connect: { id: dto.claudeAccountId } }
         : undefined,
+      monthlyBudgetUsd: dto.monthlyBudgetUsd,
       visibility: toPrismaVisibility(dto.visibility) ?? Visibility.PRIVATE,
       owner: { connect: { id: ownerId } },
     };
@@ -212,6 +214,10 @@ export class ProjectsService {
       autoTriage: dto.autoTriage,
       visibility: toPrismaVisibility(dto.visibility),
     };
+    // null → 무제한 해제, 숫자 → 설정, undefined → 유지
+    if (dto.monthlyBudgetUsd !== undefined) {
+      data.monthlyBudgetUsd = dto.monthlyBudgetUsd;
+    }
     if (dto.gitToken !== undefined) {
       data.gitTokenEnc = dto.gitToken === "" ? null : this.crypto.encrypt(dto.gitToken);
     }

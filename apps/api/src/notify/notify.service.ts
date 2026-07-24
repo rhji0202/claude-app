@@ -6,7 +6,9 @@ export type NotifyEvent =
   | "issue.done"
   | "issue.error"
   | "issue.pr"
-  | "cron.error";
+  | "cron.error"
+  | "budget.exceeded"
+  | "budget.warning";
 
 export interface NotifyPayload {
   event: NotifyEvent;
@@ -83,11 +85,31 @@ export class NotifyService {
       "issue.error": "❌",
       "issue.pr": "🔀",
       "cron.error": "⏰❌",
+      "budget.exceeded": "💸",
+      "budget.warning": "⚠️",
     };
     const proj = p.projectName ? `[${p.projectName}] ` : "";
     const lines = [`${icon[p.event]} ${proj}${p.title}`];
     if (p.url) lines.push(p.url);
-    if (p.detail) lines.push("", p.detail.slice(0, 500));
+    if (p.detail) lines.push("", this.truncate(p.detail, 1000));
     return lines.join("\n");
+  }
+
+  /**
+   * 알림 상세를 길이 제한하되 말이 중간에 끊기지 않게 다듬는다.
+   * 한도를 넘으면 마지막 줄바꿈·문장/공백 경계에서 잘라 "…"을 붙인다.
+   */
+  private truncate(text: string, max: number): string {
+    const t = text.trim();
+    if (t.length <= max) return t;
+    const head = t.slice(0, max);
+    // 경계 우선순위: 줄바꿈 > 문장부호 > 공백. 너무 앞이면(절반 미만) 무시하고 하드 컷.
+    const cut = Math.max(
+      head.lastIndexOf("\n"),
+      head.lastIndexOf(". "),
+      head.lastIndexOf("다. "),
+      head.lastIndexOf(" "),
+    );
+    return (cut > max / 2 ? head.slice(0, cut) : head).trimEnd() + "…";
   }
 }

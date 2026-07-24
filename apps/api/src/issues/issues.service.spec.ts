@@ -10,6 +10,8 @@ import { UploadsService } from "../uploads/uploads.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
 import { WorktreeService } from "../repo/worktree.service";
 import { NotifyService } from "../notify/notify.service";
+import { UsageService } from "../usage/usage.service";
+import { IssueEventsService } from "./issue-events.service";
 
 /** ConfigService 스텁: 주어진 map에서 값 반환. */
 function makeConfig(map: Record<string, unknown> = {}): ConfigService {
@@ -30,6 +32,7 @@ describe("IssuesService (큐/워커)", () => {
     };
     issueNote: { findMany: jest.Mock; create: jest.Mock };
     project: { findUnique: jest.Mock };
+    usageRecord: { aggregate: jest.Mock };
   };
   let projects: {
     assertCanEdit: jest.Mock;
@@ -41,7 +44,12 @@ describe("IssuesService (큐/워커)", () => {
   let worktrees: { create: jest.Mock; remove: jest.Mock; pruneOrphans: jest.Mock };
   let agent: { run: jest.Mock; runStream: jest.Mock };
   let crypto: { decryptOptional: jest.Mock };
-  let github: { setLabels: jest.Mock; createComment: jest.Mock };
+  let github: {
+    setLabels: jest.Mock;
+    createComment: jest.Mock;
+    getIssue: jest.Mock;
+    listComments: jest.Mock;
+  };
   let notify: { notify: jest.Mock };
   let service: IssuesService;
 
@@ -99,6 +107,8 @@ describe("IssuesService (큐/워커)", () => {
       worktrees as unknown as WorktreeService,
       makeConfig(cfg),
       notify as unknown as NotifyService,
+      { record: jest.fn().mockResolvedValue(undefined) } as unknown as UsageService,
+      { publish: jest.fn() } as unknown as IssueEventsService,
     );
   }
 
@@ -118,6 +128,9 @@ describe("IssuesService (큐/워커)", () => {
         create: jest.fn().mockResolvedValue({}),
       },
       project: { findUnique: jest.fn() },
+      usageRecord: {
+        aggregate: jest.fn().mockResolvedValue({ _sum: { costUsd: 0 } }),
+      },
     };
     projects = {
       assertCanEdit: jest.fn().mockResolvedValue(undefined),
@@ -134,6 +147,8 @@ describe("IssuesService (큐/워커)", () => {
     github = {
       setLabels: jest.fn().mockResolvedValue(["triage:auto-fix"]),
       createComment: jest.fn().mockResolvedValue({ html_url: "u" }),
+      getIssue: jest.fn().mockResolvedValue({ body: "본문", title: "t" }),
+      listComments: jest.fn().mockResolvedValue([]),
     };
     notify = { notify: jest.fn().mockResolvedValue(undefined) };
     service = makeService();
@@ -220,6 +235,32 @@ describe("IssuesService (큐/워커)", () => {
       );
     });
 
+    it("완료 알림 detail은 결과 전문이 아니라 SUMMARY를 쓴다", async () => {
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      mockAgentResult({
+        status: "ok",
+        sessionId: "s1",
+        text:
+          "장문의 조사·수정 서술...\n<<<RESULT\nSUMMARY: 결제대기 전환 게이트를 제거해 부분 결제건도 확인되도록 고쳤습니다.\nDECISION_NEEDED: none\n>>>",
+      });
+      await service.executeClaimed(task);
+
+      expect(notify.notify).toHaveBeenCalledWith(
+        "p1",
+        expect.objectContaining({
+          event: "issue.done",
+          detail:
+            "결제대기 전환 게이트를 제거해 부분 결제건도 확인되도록 고쳤습니다.",
+        }),
+      );
+    });
+
     it("worktree 생성 실패해도 ERROR로 흡수하고 throw하지 않는다", async () => {
       prisma.project.findUnique.mockResolvedValue({
         id: "p1",
@@ -259,6 +300,75 @@ describe("IssuesService (큐/워커)", () => {
       const upd = statusUpdate();
       expect(upd.status).toBe(IssueStatus.DONE);
       expect(upd.prUrl).toBe("https://github.com/o/r/pull/42");
+    });
+
+    it("ISSUE_COMMENT가 있으면 그 문구로 이슈 코멘트를 게시한다", async () => {
+      const ghTask = {
+        id: "i1",
+        projectId: "p1",
+        images: [],
+        sessionId: null,
+        repo: "o/r",
+        issueNumber: 7,
+        title: "t",
+        labels: [],
+      } as never;
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+        autoPr: true,
+        autoMerge: false,
+      });
+      mockAgentResult({
+        status: "ok",
+        sessionId: "s1",
+        text:
+          "완료.\n<<<RESULT\nPR_URL: https://github.com/o/r/pull/42\nISSUE_COMMENT: 로그인 리다이렉트 버그를 고쳐서 PR 올렸어요: https://github.com/o/r/pull/42\nDECISION_NEEDED: none\n>>>",
+      });
+      await service.executeClaimed(ghTask);
+
+      // 에이전트가 쓴 사람 말투 문구로 게시(기본 봇 문구/이모지 아님)
+      const [, , body] = github.createComment.mock.calls[0];
+      expect(body).toBe(
+        "로그인 리다이렉트 버그를 고쳐서 PR 올렸어요: https://github.com/o/r/pull/42",
+      );
+      expect(body).not.toContain("🤖");
+    });
+
+    it("ISSUE_COMMENT가 없으면 기본 문구로 폴백해 게시한다", async () => {
+      const ghTask = {
+        id: "i1",
+        projectId: "p1",
+        images: [],
+        sessionId: null,
+        repo: "o/r",
+        issueNumber: 7,
+        title: "t",
+        labels: [],
+      } as never;
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+        autoPr: true,
+        autoMerge: false,
+      });
+      mockAgentResult({
+        status: "ok",
+        sessionId: "s1",
+        text:
+          "완료.\n<<<RESULT\nPR_URL: https://github.com/o/r/pull/42\nISSUE_COMMENT: none\nDECISION_NEEDED: none\n>>>",
+      });
+      await service.executeClaimed(ghTask);
+
+      const [, , body] = github.createComment.mock.calls[0];
+      expect(body).toContain("https://github.com/o/r/pull/42");
+      expect(body).not.toContain("🤖");
     });
 
     it("autoPr인데 PR_URL이 none이면 prUrl은 null로 저장한다", async () => {
@@ -345,6 +455,201 @@ describe("IssuesService (큐/워커)", () => {
       const upd = statusUpdate();
       expect(upd.category).toBeNull();
       expect(github.setLabels).not.toHaveBeenCalled();
+    });
+
+    it("코멘트가 10개를 초과하면 생략 안내를 프롬프트에 넣는다", async () => {
+      const ghTask = {
+        id: "i1",
+        projectId: "p1",
+        images: [],
+        sessionId: null,
+        repo: "o/r",
+        issueNumber: 7,
+        title: "t",
+        labels: [],
+      } as never;
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      github.listComments.mockResolvedValue(
+        Array.from({ length: 13 }, (_, i) => ({ author: "u", body: `c${i}` })),
+      );
+      mockAgentResult({ status: "ok", sessionId: "s1", text: "완료" });
+      await service.executeClaimed(ghTask);
+
+      const prompt = agent.runStream.mock.calls[0][1].prompt;
+      expect(prompt).toContain("코멘트 (13개)");
+      expect(prompt).toContain("코멘트 3개 생략");
+    });
+
+    it("DECISION_NEEDED 플레이스홀더를 그대로 에코해도 결정 대기로 가지 않는다", async () => {
+      const ghTask = {
+        id: "i1",
+        projectId: "p1",
+        images: [],
+        sessionId: null,
+        repo: "o/r",
+        issueNumber: 7,
+        title: "t",
+        labels: ["bug"],
+      } as never;
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+        autoPr: true,
+        autoMerge: false,
+        autoTriage: true,
+      });
+      // 모델이 템플릿 플레이스홀더를 채우지 않고 그대로 출력한 경우
+      mockAgentResult({
+        status: "ok",
+        sessionId: "s1",
+        text:
+          "수정 완료.\n<<<RESULT\nTRIAGE: auto-fix\nPR_URL: https://github.com/o/r/pull/42\nDECISION_NEEDED: <사람에게 묻는 구체적 질문 또는 none>\n>>>",
+      });
+      await service.executeClaimed(ghTask);
+
+      const upd = statusUpdate();
+      // 플레이스홀더는 무시되어야 하며, 성공 결과(PR/triage)가 보존되어야 한다
+      expect(upd.status).toBe(IssueStatus.DONE);
+      expect(upd.prUrl).toBe("https://github.com/o/r/pull/42");
+      expect(upd.category).toBe("auto-fix");
+    });
+
+    it("DECISION_NEEDED 값이 'none.'이면 결정 대기로 가지 않는다", async () => {
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      mockAgentResult({
+        status: "ok",
+        sessionId: "s1",
+        text: "완료.\n<<<RESULT\nDECISION_NEEDED: none.\n>>>",
+      });
+      await service.executeClaimed(task);
+      expect(statusUpdate().status).toBe(IssueStatus.DONE);
+    });
+
+    it("이슈 본문의 백틱 펜스가 구획을 깨지 않도록 더 긴 펜스로 감싼다", async () => {
+      const ghTask = {
+        id: "i1",
+        projectId: "p1",
+        images: [],
+        sessionId: null,
+        repo: "o/r",
+        issueNumber: 7,
+        title: "t",
+        labels: [],
+      } as never;
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      // 본문에 코드펜스가 포함된 경우(버그 리포트에 흔함)
+      github.getIssue.mockResolvedValue({
+        body: "재현:\n```\ncode\n```\n끝",
+        title: "t",
+      });
+      mockAgentResult({ status: "ok", sessionId: "s1", text: "완료" });
+      await service.executeClaimed(ghTask);
+
+      const prompt = agent.runStream.mock.calls[0][1].prompt as string;
+      // 본문 속 ``` 보다 긴 ```` 펜스로 감싸져야 한다
+      expect(prompt).toContain("````");
+    });
+
+    it("RESULT 블록으로 PR_URL·TRIAGE를 함께 파싱한다", async () => {
+      const ghTask = {
+        id: "i1",
+        projectId: "p1",
+        images: [],
+        sessionId: null,
+        repo: "o/r",
+        issueNumber: 7,
+        title: "t",
+        labels: ["bug"],
+      } as never;
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+        autoPr: true,
+        autoMerge: false,
+        autoTriage: true,
+      });
+      mockAgentResult({
+        status: "ok",
+        sessionId: "s1",
+        text:
+          "수정 완료.\n\n<<<RESULT\nTRIAGE: auto-fix\nPR_URL: https://github.com/o/r/pull/42\nDECISION_NEEDED: none\n>>>",
+      });
+      await service.executeClaimed(ghTask);
+
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.DONE);
+      expect(upd.category).toBe("auto-fix");
+      expect(upd.prUrl).toBe("https://github.com/o/r/pull/42");
+    });
+
+    it("RESULT 블록의 DECISION_NEEDED가 채워지면 NEEDS_DECISION 전이", async () => {
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      mockAgentResult({
+        status: "ok",
+        sessionId: "s1",
+        text:
+          "분석함.\n<<<RESULT\nDECISION_NEEDED: A안과 B안 중 무엇으로 진행할까요?\n>>>",
+      });
+      await service.executeClaimed(task);
+
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.NEEDS_DECISION);
+      expect(prisma.issueNote.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            author: "AGENT",
+            content: "A안과 B안 중 무엇으로 진행할까요?",
+          }),
+        }),
+      );
+    });
+
+    it("RESULT 블록의 DECISION_NEEDED가 none이면 결정 대기로 가지 않는다", async () => {
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      mockAgentResult({
+        status: "ok",
+        sessionId: "s1",
+        text: "완료.\n<<<RESULT\nDECISION_NEEDED: none\n>>>",
+      });
+      await service.executeClaimed(task);
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.DONE);
     });
 
     it("DECISION_NEEDED가 있으면 NEEDS_DECISION 전이 + AGENT 메모 저장", async () => {
@@ -477,6 +782,79 @@ describe("IssuesService (큐/워커)", () => {
         claimedAt: null,
         lockedBy: null,
       });
+    });
+  });
+
+  describe("commentResult (결과 코멘트 수동 게시)", () => {
+    const raw = {
+      id: "i1",
+      projectId: "p1",
+      repo: "o/r",
+      issueNumber: 7,
+      images: [],
+      labels: [],
+    };
+
+    beforeEach(() => {
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      // commentResult 종료 시 toDto(update 결과)를 부르므로 날짜 있는 행을 돌려준다.
+      prisma.issueTask.update.mockResolvedValue({
+        ...raw,
+        status: IssueStatus.DONE,
+        source: "GITHUB",
+        title: "t",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    });
+
+    it("에이전트가 쓴 사람 말투 ISSUE_COMMENT로 게시한다(봇 머리말·이모지 없이)", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        ...raw,
+        result:
+          "완료.\n<<<RESULT\nPR_URL: none\nISSUE_COMMENT: 세션 만료 처리에 있던 널 참조를 고쳤습니다.\nDECISION_NEEDED: none\n>>>",
+      });
+
+      await service.commentResult("i1", "u1");
+
+      const [, , body] = github.createComment.mock.calls[0];
+      expect(body).toBe("세션 만료 처리에 있던 널 참조를 고쳤습니다.");
+      expect(body).not.toContain("🤖");
+      expect(body).not.toContain("<<<RESULT");
+    });
+
+    it("ISSUE_COMMENT가 없으면 기계 규약 블록을 걷어낸 본문으로 게시한다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        ...raw,
+        result:
+          "로그인 리다이렉트 버그를 수정했습니다.\n<<<RESULT\nPR_URL: none\nISSUE_COMMENT: none\nDECISION_NEEDED: none\n>>>",
+      });
+
+      await service.commentResult("i1", "u1");
+
+      const [, , body] = github.createComment.mock.calls[0];
+      expect(body).toBe("로그인 리다이렉트 버그를 수정했습니다.");
+      expect(body).not.toContain("🤖");
+      expect(body).not.toContain("<<<RESULT");
+    });
+
+    it("ISSUE_COMMENT가 없고 SUMMARY가 있으면 SUMMARY로 게시한다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        ...raw,
+        result:
+          "장문의 서술...\n<<<RESULT\nPR_URL: none\nISSUE_COMMENT: none\nSUMMARY: 세션 만료 처리의 널 참조를 고쳤습니다.\nDECISION_NEEDED: none\n>>>",
+      });
+
+      await service.commentResult("i1", "u1");
+
+      const [, , body] = github.createComment.mock.calls[0];
+      expect(body).toBe("세션 만료 처리의 널 참조를 고쳤습니다.");
+      expect(body).not.toContain("<<<RESULT");
+      expect(body).not.toContain("장문의 서술");
     });
   });
 });

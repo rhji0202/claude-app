@@ -28,6 +28,7 @@ interface ClaudeAccount {
   tokenPreview: string;
   model: string | null;
   effort: string | null;
+  monthlyBudgetUsd: number | null;
   createdAt: string;
 }
 
@@ -105,8 +106,11 @@ export default function AccountPage() {
     }
   }
 
-  // 계정별 모델·effort 저장(빈 값이면 전역 기본 사용).
-  async function saveModel(id: string, patch: { model?: string; effort?: string }) {
+  // 계정별 모델·effort·월예산 저장(빈 값이면 전역 기본/무제한).
+  async function saveAccount(
+    id: string,
+    patch: { model?: string; effort?: string; monthlyBudgetUsd?: number | null },
+  ) {
     try {
       await api.patch(`/claude-accounts/${id}`, patch);
       await load();
@@ -211,7 +215,7 @@ export default function AccountPage() {
                       <select
                         className="rounded-md border border-border bg-background px-2 py-1 text-xs"
                         value={a.model ?? ""}
-                        onChange={(e) => saveModel(a.id, { model: e.target.value })}
+                        onChange={(e) => saveAccount(a.id, { model: e.target.value })}
                       >
                         {MODEL_OPTIONS.map((o) => (
                           <option key={o.value} value={o.value}>
@@ -223,7 +227,7 @@ export default function AccountPage() {
                       <select
                         className="rounded-md border border-border bg-background px-2 py-1 text-xs"
                         value={a.effort ?? ""}
-                        onChange={(e) => saveModel(a.id, { effort: e.target.value })}
+                        onChange={(e) => saveAccount(a.id, { effort: e.target.value })}
                       >
                         {EFFORT_OPTIONS.map((o) => (
                           <option key={o.value} value={o.value}>
@@ -231,6 +235,12 @@ export default function AccountPage() {
                           </option>
                         ))}
                       </select>
+                      <BudgetInput
+                        value={a.monthlyBudgetUsd}
+                        onSave={(v) =>
+                          saveAccount(a.id, { monthlyBudgetUsd: v })
+                        }
+                      />
                     </div>
                   </div>
                   {!a.isActive && (
@@ -257,6 +267,55 @@ export default function AccountPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+/**
+ * 계정 월 예산(USD) 입력. 빈 값/0 = 무제한(null).
+ * blur 또는 Enter 시, 값이 바뀐 경우에만 저장한다(매 키입력마다 PATCH 방지).
+ */
+function BudgetInput({
+  value,
+  onSave,
+}: {
+  value: number | null;
+  onSave: (v: number | null) => void;
+}) {
+  const [text, setText] = useState(value == null ? "" : String(value));
+
+  // 외부(다른 저장 후 reload)에서 값이 바뀌면 동기화.
+  useEffect(() => {
+    setText(value == null ? "" : String(value));
+  }, [value]);
+
+  function commit() {
+    const trimmed = text.trim();
+    const next = trimmed === "" ? null : Number(trimmed);
+    if (next != null && (Number.isNaN(next) || next < 0)) {
+      setText(value == null ? "" : String(value)); // 잘못된 값은 되돌림
+      return;
+    }
+    if (next === value) return; // 변경 없음
+    onSave(next);
+  }
+
+  return (
+    <>
+      <label className="text-xs text-muted-foreground">월 예산 $</label>
+      <input
+        type="number"
+        min={0}
+        step="1"
+        className="w-24 rounded-md border border-border bg-background px-2 py-1 text-xs"
+        placeholder="무제한"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
+      />
+    </>
   );
 }
 

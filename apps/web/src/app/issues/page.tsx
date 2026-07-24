@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Download, Loader2, MessageSquare, Play, Plus } from "lucide-react";
-import { Streamdown } from "streamdown";
 import type { IssueNote, IssueProgressEvent } from "@claude-app/shared";
 import CrudPanel from "@/components/CrudPanel";
 import { WorkerDashboard } from "./WorkerDashboard";
@@ -11,6 +10,13 @@ import { PageHeader } from "@/components/PageHeader";
 import { StatusBadge, Mono } from "@/components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { Markdown } from "@/components/Markdown";
+import {
+  ToolPart,
+  editedFilesFromLog,
+  fileBasename,
+} from "@/components/ToolPart";
+import { FilePen } from "lucide-react";
 import { api, upload, uploadUrl } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -127,9 +133,9 @@ function IssueStatusCell({
                 실행 결과
               </div>
               <div className="rounded-md bg-muted p-3">
-                <Streamdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
+                <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
                   {result}
-                </Streamdown>
+                </Markdown>
               </div>
             </div>
           )}
@@ -146,8 +152,29 @@ const NOTE_LABEL: Record<string, string> = {
 };
 
 /**
+ * 진행 로그에서 편집·작성된 파일을 모아 상단에 요약(claude-desktop식).
+ * 편집된 파일이 없으면 렌더링하지 않는다.
+ */
+function EditedFilesSummary({ log }: { log: IssueProgressEvent[] }) {
+  const files = editedFilesFromLog(log);
+  if (files.length === 0) return null;
+  return (
+    <div
+      className="mb-1 flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-secondary/30 px-2.5 py-2 text-xs"
+      title={files.join("\n")}
+    >
+      <FilePen className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="shrink-0 font-medium">편집된 파일 {files.length}개</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">
+        {files.map((f) => fileBasename(f)).join(", ")}
+      </span>
+    </div>
+  );
+}
+
+/**
  * 실행 중 셀: 배지 + 현재 진행(도구) 한 줄. 진행 이력(progressLog)이 있으면
- * 배지를 클릭해 도구 호출 타임라인을 볼 수 있다. 목록 4초 폴링으로 갱신됨.
+ * 배지를 클릭해 도구 호출 타임라인을 볼 수 있다. 목록은 SSE로 실시간 갱신됨.
  */
 function RunningCell({
   row,
@@ -176,29 +203,32 @@ function RunningCell({
       <DialogTrigger className="cursor-pointer text-left" title="진행 내역 보기">
         {line}
       </DialogTrigger>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader className="min-w-0">
           <DialogTitle>진행 내역</DialogTitle>
-          <DialogDescription>{String(row.title ?? "")}</DialogDescription>
+          <DialogDescription className="truncate">
+            {String(row.title ?? "")}
+          </DialogDescription>
         </DialogHeader>
-        <div className="max-h-[60vh] space-y-2 overflow-y-auto">
-          {log.map((ev, i) => (
-            <div key={i} className="flex gap-2 text-sm">
-              <span className="shrink-0 pt-0.5 text-xs tabular-nums text-muted-foreground">
-                {new Date(ev.at).toLocaleTimeString()}
-              </span>
-              <div className="min-w-0 flex-1">
-                <Mono>🔧 {ev.name}</Mono>
-                {ev.detail && (
-                  <div className="mt-0.5 whitespace-pre-wrap break-words text-xs text-muted-foreground">
-                    {ev.detail}
-                  </div>
-                )}
+        <EditedFilesSummary log={log} />
+        <div className="max-h-[60vh] min-w-0 space-y-2 overflow-y-auto">
+          {log.map((ev, i) =>
+            ev.t === "tool" ? (
+              <ToolPart key={i} name={ev.name ?? "tool"} input={ev.input ?? ev.detail} />
+            ) : ev.detail ? (
+              // 텍스트 발화는 채팅의 중간 발화처럼 흐린 말풍선으로
+              <div
+                key={i}
+                className="rounded-lg bg-secondary/50 px-3 py-2 text-sm text-muted-foreground"
+              >
+                <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
+                  {ev.detail}
+                </Markdown>
               </div>
-            </div>
-          ))}
+            ) : null,
+          )}
           <p className="pt-2 text-xs text-muted-foreground">
-            실행 중 · 4초마다 갱신됩니다.
+            실행 중 · 실시간 갱신됩니다.
           </p>
         </div>
       </DialogContent>
@@ -760,12 +790,7 @@ export default function IssuesPage() {
             },
           },
         ]}
-        pollWhile={(rows) =>
-          rows.some(
-            (r) => r.status === "queued" || r.status === "running",
-          )
-        }
-        pollMs={4000}
+        sseUrl="/issues/stream"
         columns={[
           {
             key: "projectId",

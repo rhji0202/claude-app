@@ -9,11 +9,15 @@ import {
   User,
   MessageSquare,
   FolderGit2,
-  ChevronRight,
-  Wrench,
+  FilePen,
 } from "lucide-react";
-import { Streamdown } from "streamdown";
 import { toast } from "sonner";
+import { Markdown } from "@/components/Markdown";
+import {
+  ToolPart,
+  editedFilesFromLog,
+  fileBasename,
+} from "@/components/ToolPart";
 import { api, streamPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
@@ -135,30 +139,6 @@ function groupByProject(
   return groups;
 }
 
-/** 도구 사용 칩 — 접으면 이름만, 펼치면 input */
-function ToolPart({ name, input }: { name: string; input?: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="rounded-md border border-border bg-background/40 text-xs">
-      <button
-        type="button"
-        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-muted-foreground hover:text-foreground"
-        onClick={() => setOpen((v) => !v)}
-      >
-        <ChevronRight
-          className={cn("size-3.5 transition-transform", open && "rotate-90")}
-        />
-        <Wrench className="size-3.5" />
-        <span className="font-mono">{name}</span>
-      </button>
-      {open && input && (
-        <pre className="overflow-x-auto border-t border-border px-2.5 py-2 font-mono text-[11px] text-muted-foreground">
-          {input}
-        </pre>
-      )}
-    </div>
-  );
-}
 
 /**
  * assistant 메시지의 parts 타임라인.
@@ -169,8 +149,20 @@ function AssistantParts({ parts }: { parts: Part[] }) {
     (acc, p, i) => (p.type === "text" ? i : acc),
     -1,
   );
+  const editedFiles = editedFilesFromLog(
+    parts.filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool"),
+  );
   return (
     <div className="min-w-0 space-y-2">
+      {editedFiles.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-secondary/30 px-2.5 py-2 text-xs">
+          <FilePen className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="font-medium">편집된 파일 {editedFiles.length}개</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">
+            {editedFiles.map((f) => fileBasename(f)).join(", ")}
+          </span>
+        </div>
+      )}
       {parts.map((p, i) => {
         if (p.type === "tool") {
           return <ToolPart key={p.id} name={p.name} input={p.input} />;
@@ -192,9 +184,9 @@ function AssistantParts({ parts }: { parts: Part[] }) {
               isFinal ? "bg-secondary" : "bg-secondary/50 text-muted-foreground",
             )}
           >
-            <Streamdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
+            <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
               {p.text}
-            </Streamdown>
+            </Markdown>
           </div>
         );
       })}
@@ -475,9 +467,9 @@ export default function ChatPage() {
                           ) : m.content ? (
                             // 구 메시지(parts 없음) 폴백: content만 마크다운 렌더
                             <div className="rounded-lg bg-secondary px-3 py-2 text-sm">
-                              <Streamdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
+                              <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
                                 {m.content}
-                              </Streamdown>
+                              </Markdown>
                             </div>
                           ) : streaming ? (
                             <div className="rounded-lg bg-secondary px-3 py-2 text-sm text-muted-foreground">

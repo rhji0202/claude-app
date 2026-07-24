@@ -1,4 +1,5 @@
 import { CronStatus, CronType } from "@prisma/client";
+import { ConfigService } from "@nestjs/config";
 import { SchedulerRegistry } from "@nestjs/schedule";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
@@ -7,6 +8,7 @@ import { RepoManagerService } from "../repo/repo-manager.service";
 import { WorktreeService } from "../repo/worktree.service";
 import { NotifyService } from "../notify/notify.service";
 import { IssuesService } from "../issues/issues.service";
+import { UsageService } from "../usage/usage.service";
 import { CronRegistryService } from "./cron-registry.service";
 
 describe("CronRegistryService.fire (실행 이력)", () => {
@@ -48,6 +50,7 @@ describe("CronRegistryService.fire (실행 이력)", () => {
     crypto = { decryptOptional: jest.fn().mockReturnValue("tok") };
     issues = { importAllOpen: jest.fn().mockResolvedValue(3) };
     service = new CronRegistryService(
+      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
       {} as unknown as SchedulerRegistry,
       prisma as unknown as PrismaService,
       crypto as unknown as CryptoService,
@@ -56,6 +59,12 @@ describe("CronRegistryService.fire (실행 이력)", () => {
       worktrees as unknown as WorktreeService,
       { notify: jest.fn().mockResolvedValue(undefined) } as unknown as NotifyService,
       issues as unknown as IssuesService,
+      {
+        record: jest.fn().mockResolvedValue(undefined),
+        budgetStatus: jest
+          .fn()
+          .mockResolvedValue({ over: false, nearLimit: false }),
+      } as unknown as UsageService,
     );
   });
 

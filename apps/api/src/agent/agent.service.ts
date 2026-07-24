@@ -4,6 +4,7 @@ import pLimit from "p-limit";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
 import { ClaudeAccountService } from "../claude-account/claude-account.service";
+import type { AgentUsage } from "@claude-app/shared";
 
 export interface AgentImage {
   /** base64 인코딩 이미지 데이터 */
@@ -38,6 +39,10 @@ export interface RunResult {
    * 진짜 오류가 아니므로 호출측에서 '중단' 상태로 구분한다.
    */
   interrupted?: boolean;
+  /** 토큰·비용 사용량(SDK result 메시지에서 추출, 없으면 undefined). */
+  usage?: AgentUsage;
+  /** 실행에 실제 사용된 Claude 계정 id(활성 계정 폴백 반영). .env 폴백이면 null. */
+  accountId?: string | null;
 }
 
 /**
@@ -50,8 +55,20 @@ export type AgentStreamEvent =
   | { type: "text_delta"; id: string; delta: string }
   | { type: "text_end"; id: string; text: string }
   | { type: "tool"; id: string; name: string; input?: string }
-  | { type: "done"; text: string; sessionId?: string }
-  | { type: "error"; error: string; sessionId?: string };
+  | {
+      type: "done";
+      text: string;
+      sessionId?: string;
+      usage?: AgentUsage;
+      accountId?: string | null;
+    }
+  | {
+      type: "error";
+      error: string;
+      sessionId?: string;
+      usage?: AgentUsage;
+      accountId?: string | null;
+    };
 
 export interface RunStreamOptions extends RunAgentOptions {}
 
@@ -86,16 +103,29 @@ export class AgentService {
     userId: string | undefined,
     gitToken: string | null,
     claudeAccountId?: string | null,
-  ): Promise<Record<string, string | undefined>> {
+  ): Promise<{
+    env: Record<string, string | undefined>;
+    /** 실제 자격증명을 제공한 계정 id. 사용자 활성 계정 폴백도 반영. .env 폴백이면 null. */
+    accountId: string | null;
+  }> {
     const env: Record<string, string | undefined> = { ...process.env };
 
-    const token =
-      (claudeAccountId
-        ? await this.claudeAccounts.getTokenById(claudeAccountId)
-        : null) ??
-      (userId ? await this.claudeAccounts.getActiveToken(userId) : null) ??
-      this.config.get<string>("ANTHROPIC_OAUTH_TOKEN") ??
-      null;
+    // 실행 자격증명 우선순위: 프로젝트 지정 계정 → 사용자 활성 계정 → .env 폴백.
+    // 사용량 귀속을 위해 토큰뿐 아니라 실제로 쓰인 계정 id도 함께 확정한다.
+    let token: string | null = null;
+    let accountId: string | null = null;
+    if (claudeAccountId) {
+      token = await this.claudeAccounts.getTokenById(claudeAccountId);
+      if (token) accountId = claudeAccountId;
+    }
+    if (!token && userId) {
+      token = await this.claudeAccounts.getActiveToken(userId);
+      if (token) accountId = await this.claudeAccounts.getActiveAccountId(userId);
+    }
+    if (!token) {
+      token = this.config.get<string>("ANTHROPIC_OAUTH_TOKEN") ?? null;
+      // .env 폴백은 특정 계정에 귀속되지 않으므로 accountId는 null로 둔다.
+    }
 
     // 값이 없거나 어느 쪽이든, 두 자격증명이 동시에 있으면 CLI가 혼동하므로 정리한다.
     delete env.ANTHROPIC_API_KEY;
@@ -110,7 +140,7 @@ export class AgentService {
       env.GITHUB_TOKEN = gitToken;
       env.GH_TOKEN = gitToken;
     }
-    return env;
+    return { env, accountId };
   }
 
   /**
@@ -220,7 +250,7 @@ export class AgentService {
     const systemPrompt = [opts.systemPrompt, skillPrompt]
       .filter(Boolean)
       .join("\n");
-    const env = await this.buildEnv(
+    const { env, accountId } = await this.buildEnv(
       opts.userId,
       gitToken,
       project.claudeAccountId,
@@ -237,11 +267,18 @@ export class AgentService {
     // 턴 경계 카운터 — 텍스트 세그먼트 id를 `${turn}:${blockIndex}`로 만든다.
     let turn = 0;
     // content_block_start로 열린 텍스트 블록의 id (index → true). text_start 중복 방지.
-    const openedText = new Set<string>();
+    let openedText = new Set<string>();
+    // 클라이언트에 실제 내용(text/tool/done)을 방출했는가. resume 실패 폴백 판단용
+    // (init만 오고 서브프로세스가 죽는 경우 아직 false → 새 세션 재시도 안전).
+    let sawContent = false;
+    // 현재 실행이 resume을 사용 중인가(폴백 재시도 시 false로 낮춘다).
+    let resumeInFlight = Boolean(opts.resume);
 
     const segId = (index: number) => `${turn}:${index}`;
 
-    try {
+    // 실제 SDK 스트림 1회. done/error를 onEvent로 방출하면 true 반환(정상 종료),
+    // 내용 방출 전 예외가 나면 throw(호출측이 resume 폴백 여부 판단).
+    const runOnce = async (resume?: string): Promise<boolean> => {
       const iterator = query({
         prompt: opts.prompt,
         options: {
@@ -254,7 +291,7 @@ export class AgentService {
           includePartialMessages: true,
           mcpServers: mcpServers as never,
           systemPrompt: systemPrompt || undefined,
-          resume: opts.resume,
+          resume,
           settingSources: [],
           env,
         },
@@ -268,6 +305,10 @@ export class AgentService {
           result?: string;
           error?: string;
           num_turns?: number;
+          total_cost_usd?: number;
+          duration_ms?: number;
+          usage?: Record<string, number>;
+          modelUsage?: Record<string, unknown>;
           event?: {
             type?: string;
             index?: number;
@@ -301,6 +342,7 @@ export class AgentService {
           ) {
             const id = segId(ev.index);
             openedText.add(id);
+            sawContent = true;
             onEvent({ type: "text_start", id });
           } else if (
             ev.type === "content_block_delta" &&
@@ -308,12 +350,14 @@ export class AgentService {
             ev.delta.text &&
             typeof ev.index === "number"
           ) {
+            sawContent = true;
             onEvent({ type: "text_delta", id: segId(ev.index), delta: ev.delta.text });
           }
         }
 
         // 완결된 assistant 턴 — 텍스트 블록 확정(text_end) + tool_use 블록
         if (m.type === "assistant" && m.message?.content) {
+          sawContent = true;
           m.message.content.forEach((block, index) => {
             if (block.type === "text" && block.text) {
               const id = segId(index);
@@ -338,25 +382,63 @@ export class AgentService {
         }
 
         if (m.type === "result") {
+          const usage = this.parseUsage(m);
           if (m.subtype === "success") {
-            onEvent({ type: "done", text: m.result ?? finalText, sessionId });
+            onEvent({
+              type: "done",
+              text: m.result ?? finalText,
+              sessionId,
+              usage,
+              accountId,
+            });
           } else {
             onEvent({
               type: "error",
               error: this.describeResultError(m),
               sessionId,
+              usage,
+              accountId,
             });
           }
-          return;
+          return true;
         }
       }
       // result 없이 스트림 종료 = 결과 전에 실행이 중단됨. 성공으로 오인 금지.
+      // 내용 없이 조기 종료 + resume이 있었으면 폴백 대상이므로 throw로 넘긴다.
+      if (!sawContent && resumeInFlight) {
+        throw new Error("결과 없이 스트림이 조기 종료되었습니다.");
+      }
       onEvent({
         type: "error",
         error: "에이전트가 결과를 반환하기 전에 실행이 중단되었습니다.",
         sessionId,
       });
+      return true;
+    };
+
+    // resume 시도 → 내용 방출 전 실패 시 새 세션으로 1회 재시도.
+    try {
+      await runOnce(opts.resume);
     } catch (err) {
+      // 알 수 없는 세션 resume은 CLI 서브프로세스를 exit 1로 죽인다(init 직후 예외).
+      // 클라이언트에 내용을 아직 안 보냈으면 resume 없이 새 세션으로 재시도한다.
+      if (opts.resume && !sawContent) {
+        this.logger.warn(
+          `resume(${opts.resume}) 실패 — 새 세션으로 재시도: ${String(err)}`,
+        );
+        // 재시도 전 파트 상태 초기화(새 세션은 turn=0부터, id 충돌 방지).
+        resumeInFlight = false;
+        turn = 0;
+        openedText = new Set<string>();
+        try {
+          await runOnce(undefined);
+          return;
+        } catch (err2) {
+          this.logger.error(`재시도 실패: ${String(err2)}`);
+          onEvent({ type: "error", error: String(err2), sessionId });
+          return;
+        }
+      }
       this.logger.error(`스트리밍 실행 오류: ${String(err)}`);
       onEvent({ type: "error", error: String(err), sessionId });
     }
@@ -367,6 +449,51 @@ export class AgentService {
    * SDK는 종료 사유를 subtype으로 준다(error_max_turns 등). 명시 error가 없을 때
    * 무의미한 폴백 대신 subtype·턴 수를 남겨 원인 추적이 가능하게 한다.
    */
+  /**
+   * SDK result 메시지에서 토큰·비용 사용량을 추출한다(success·error 양쪽 존재).
+   * total_cost_usd를 신뢰 비용값으로, 토큰은 usage(snake_case), 모델은 modelUsage 키에서 얻는다.
+   * 사용량 정보가 전혀 없으면 undefined.
+   */
+  private parseUsage(m: {
+    total_cost_usd?: number;
+    num_turns?: number;
+    duration_ms?: number;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+    modelUsage?: Record<string, unknown>;
+  }): AgentUsage | undefined {
+    if (m.total_cost_usd === undefined && !m.usage && !m.modelUsage)
+      return undefined;
+    const u = m.usage ?? {};
+    // modelUsage 키가 실제 사용 모델명. 여러 개면 costUSD가 가장 큰 것을 대표로.
+    let model: string | null = null;
+    if (m.modelUsage) {
+      const entries = Object.entries(m.modelUsage);
+      let best = -1;
+      for (const [name, mu] of entries) {
+        const cost = Number((mu as { costUSD?: number })?.costUSD ?? 0);
+        if (cost >= best) {
+          best = cost;
+          model = name;
+        }
+      }
+    }
+    return {
+      costUsd: Number(m.total_cost_usd ?? 0),
+      inputTokens: Number(u.input_tokens ?? 0),
+      outputTokens: Number(u.output_tokens ?? 0),
+      cacheReadTokens: Number(u.cache_read_input_tokens ?? 0),
+      cacheCreationTokens: Number(u.cache_creation_input_tokens ?? 0),
+      model,
+      durationMs: m.duration_ms ?? null,
+      numTurns: m.num_turns ?? null,
+    };
+  }
+
   private describeResultError(m: {
     subtype?: string;
     error?: string;
@@ -411,7 +538,7 @@ export class AgentService {
       .filter(Boolean)
       .join("\n");
 
-    const env = await this.buildEnv(
+    const { env, accountId } = await this.buildEnv(
       opts.userId,
       gitToken,
       project.claudeAccountId,
@@ -422,40 +549,47 @@ export class AgentService {
     );
     env.CLAUDE_CODE_EFFORT_LEVEL = effort;
 
-    const messages: unknown[] = [];
     let sessionId: string | undefined;
     let text = "";
+    // assistant 내용(text)을 받았는가. resume 실패 폴백 판단용
+    // (init만 오고 서브프로세스가 죽으면 false → 새 세션 재시도 안전).
+    let sawContent = false;
 
     // 이미지가 있으면 멀티모달 프롬프트(AsyncIterable + image content block).
     // AsyncIterable 프롬프트와 resume 병행은 불안정하므로 이미지 실행은 새 세션으로.
     const hasImages = (opts.images?.length ?? 0) > 0;
-    const promptInput = hasImages
-      ? (async function* () {
-          yield {
-            type: "user" as const,
-            session_id: "",
-            parent_tool_use_id: null,
-            message: {
-              role: "user" as const,
-              content: [
-                { type: "text" as const, text: opts.prompt },
-                ...opts.images!.map((im) => ({
-                  type: "image" as const,
-                  source: {
-                    type: "base64" as const,
-                    media_type: im.mediaType,
-                    data: im.data,
-                  },
-                })),
-              ],
-            },
-          };
-        })()
-      : opts.prompt;
+    // 현재 실행이 resume 사용 중인가(폴백 재시도 시 false로 낮춤). 이미지는 resume 없음.
+    let resumeInFlight = !hasImages && Boolean(opts.resume);
+    const makePrompt = () =>
+      hasImages
+        ? (async function* () {
+            yield {
+              type: "user" as const,
+              session_id: "",
+              parent_tool_use_id: null,
+              message: {
+                role: "user" as const,
+                content: [
+                  { type: "text" as const, text: opts.prompt },
+                  ...opts.images!.map((im) => ({
+                    type: "image" as const,
+                    source: {
+                      type: "base64" as const,
+                      media_type: im.mediaType,
+                      data: im.data,
+                    },
+                  })),
+                ],
+              },
+            };
+          })()
+        : opts.prompt;
 
-    try {
+    // SDK 스트림 1회. 결과가 나오면 RunResult 반환, 결과 없이 스트림이 끝나면 중단(interrupted).
+    // 메시지 방출 전 예외는 그대로 throw(호출측이 resume 폴백 판단).
+    const runOnce = async (resume?: string): Promise<RunResult> => {
       const iterator = query({
-        prompt: promptInput as never,
+        prompt: makePrompt() as never,
         options: {
           // 실행 디렉터리는 항상 호출측이 주입한 worktree 경로(설계 12.5). project.cwd 미사용.
           cwd: opts.cwd,
@@ -467,14 +601,13 @@ export class AgentService {
           allowDangerouslySkipPermissions: true,
           mcpServers: mcpServers as never,
           systemPrompt: systemPrompt || undefined,
-          resume: hasImages ? undefined : opts.resume,
+          resume,
           settingSources: [],
           env,
         },
       });
 
       for await (const message of iterator) {
-        messages.push(message);
         const m = message as {
           type: string;
           subtype?: string;
@@ -483,30 +616,48 @@ export class AgentService {
           error?: string;
           is_error?: boolean;
           num_turns?: number;
+          total_cost_usd?: number;
+          duration_ms?: number;
+          usage?: Record<string, number>;
+          modelUsage?: Record<string, unknown>;
           message?: { content?: Array<{ type: string; text?: string }> };
         };
         if (m.type === "system" && m.subtype === "init" && m.session_id) {
           sessionId = m.session_id;
         }
         if (m.type === "assistant" && m.message?.content) {
+          sawContent = true;
           for (const block of m.message.content) {
             if (block.type === "text" && block.text) text += block.text;
           }
         }
         if (m.type === "result") {
+          const usage = this.parseUsage(m);
           if (m.subtype === "success") {
-            return { status: "ok", sessionId, text: m.result ?? text };
+            return {
+              status: "ok",
+              sessionId,
+              text: m.result ?? text,
+              usage,
+              accountId,
+            };
           }
           return {
             status: "error",
             sessionId,
             text,
             error: this.describeResultError(m),
+            usage,
+            accountId,
           };
         }
       }
       // result 메시지 없이 스트림이 끝났다 = 서브프로세스가 결과 전에 종료됨
       // (서버 종료·프로세스 kill 등). 진짜 오류가 아닌 '중단'으로 구분한다.
+      // 단, 내용 없이 조기 종료 + resume 사용 중이면 폴백 대상이므로 throw.
+      if (!sawContent && resumeInFlight) {
+        throw new Error("결과 없이 스트림이 조기 종료되었습니다.");
+      }
       return {
         status: "error",
         sessionId,
@@ -514,7 +665,28 @@ export class AgentService {
         error: "에이전트가 결과를 반환하기 전에 실행이 중단되었습니다.",
         interrupted: true,
       };
+    };
+
+    // 이미지 실행은 애초에 resume 없음. 그 외엔 resume 시도 → 내용 전 실패 시 새 세션 재시도.
+    const resume = hasImages ? undefined : opts.resume;
+    try {
+      return await runOnce(resume);
     } catch (err) {
+      // 알 수 없는 세션 resume은 CLI 서브프로세스를 exit 1로 죽인다(init 직후 예외).
+      // 내용을 아직 못 받았으면 resume 없이 새 세션으로 재시도.
+      if (resume && !sawContent) {
+        this.logger.warn(
+          `resume(${resume}) 실패 — 새 세션으로 재시도: ${String(err)}`,
+        );
+        resumeInFlight = false;
+        text = "";
+        try {
+          return await runOnce(undefined);
+        } catch (err2) {
+          this.logger.error(`재시도 실패: ${String(err2)}`);
+          return { status: "error", sessionId, text, error: String(err2) };
+        }
+      }
       this.logger.error(`에이전트 실행 오류: ${String(err)}`);
       return { status: "error", sessionId, text, error: String(err) };
     }
