@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, streamGet } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   Card,
@@ -110,6 +110,11 @@ export interface CrudPanelProps {
   pollWhile?: (rows: Row[]) => boolean;
   pollMs?: number;
   /**
+   * SSE 구독 URL(옵트인). 지정하면 폴링 대신 이 스트림 이벤트마다 조용히 refresh한다.
+   * (이슈 목록: /issues/stream). pollWhile/pollMs보다 우선.
+   */
+  sseUrl?: string;
+  /**
    * 행 수정 활성화(옵트인). 행별 '수정' 버튼 → 다이얼로그 폼 → PATCH.
    * 어떤 필드를 수정 가능하게 할지 이름 목록으로 지정한다(fields 중 해당 필드만 폼에 표시).
    */
@@ -169,13 +174,56 @@ export default function CrudPanel(props: CrudPanelProps) {
   }, [load, props.reloadSignal]);
 
   // 폴링(옵트인): pollWhile(rows)이 true인 동안 pollMs 간격으로 조용히 refresh.
-  const { pollWhile, pollMs } = props;
-  const shouldPoll = pollWhile ? pollWhile(rows) : false;
+  // sseUrl이 있으면 폴링은 끄고 SSE로만 갱신한다.
+  const { pollWhile, pollMs, sseUrl } = props;
+  const shouldPoll = !sseUrl && pollWhile ? pollWhile(rows) : false;
   useEffect(() => {
     if (!shouldPoll) return;
     const t = setInterval(() => void refresh(), pollMs ?? 5000);
     return () => clearInterval(t);
   }, [shouldPoll, pollMs, refresh]);
+
+  // SSE 구독(옵트인): 이벤트마다 조용히 refresh. progress 이벤트가 잦으므로 디바운스(500ms).
+  // 연결이 끊기면 지수 백오프로 재연결한다.
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useEffect(() => {
+    if (!sseUrl) return;
+    const ctrl = new AbortController();
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    let retry = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleRefresh = () => {
+      if (debounce) return;
+      debounce = setTimeout(() => {
+        debounce = null;
+        void refreshRef.current();
+      }, 500);
+    };
+
+    const connect = () => {
+      streamGet(sseUrl, scheduleRefresh, ctrl.signal)
+        .then(() => {
+          // 서버가 스트림을 정상 종료 → 잠시 후 재연결(연결 유지 목적).
+          if (!ctrl.signal.aborted) {
+            reconnectTimer = setTimeout(connect, 1000);
+          }
+        })
+        .catch(() => {
+          if (ctrl.signal.aborted) return;
+          retry = Math.min(retry + 1, 5);
+          reconnectTimer = setTimeout(connect, 1000 * 2 ** (retry - 1));
+        });
+    };
+    connect();
+
+    return () => {
+      ctrl.abort();
+      if (debounce) clearTimeout(debounce);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
+  }, [sseUrl]);
 
   useEffect(() => {
     let cancelled = false;

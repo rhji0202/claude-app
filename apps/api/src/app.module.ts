@@ -9,6 +9,7 @@ import { AdminModule } from "./admin/admin.module";
 import { ClaudeAccountModule } from "./claude-account/claude-account.module";
 import { UploadsModule } from "./uploads/uploads.module";
 import { NotifyModule } from "./notify/notify.module";
+import { UsageModule } from "./usage/usage.module";
 import { AgentModule } from "./agent/agent.module";
 import { GithubModule } from "./github/github.module";
 import { ProjectsModule } from "./projects/projects.module";
@@ -31,6 +32,7 @@ import { HealthController } from "./health.controller";
     CryptoModule,
     UploadsModule,
     NotifyModule,
+    UsageModule,
     AuthModule,
     AdminModule,
     ClaudeAccountModule,

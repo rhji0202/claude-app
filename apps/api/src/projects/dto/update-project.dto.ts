@@ -1,8 +1,10 @@
 import {
   IsBoolean,
   IsIn,
+  IsNumber,
   IsOptional,
   IsString,
+  Min,
   MinLength,
 } from "class-validator";
 import type { ProjectVisibility } from "@claude-app/shared";
@@ -61,6 +63,12 @@ export class UpdateProjectDto {
   @IsOptional()
   @IsString()
   claudeAccountId?: string;
+
+  /** 월 예산(USD). null → 해제(무제한), 0 이상 값 → 설정. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  monthlyBudgetUsd?: number | null;
 
   @IsOptional()
   @IsIn(["private", "shared", "public"])

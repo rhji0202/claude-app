@@ -72,6 +72,9 @@ export default function ProjectDetailPage() {
   // 알림 webhook (시크릿: 값은 안 내려오고 보유 여부만) — 입력하면 저장, 비우고 저장하면 해제
   const [webhookInput, setWebhookInput] = useState("");
   const [savingHook, setSavingHook] = useState(false);
+  // 월 예산(USD). 빈 문자열 = 무제한. 저장 시 null(해제) 또는 숫자.
+  const [budgetInput, setBudgetInput] = useState("");
+  const [savingBudget, setSavingBudget] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -88,6 +91,9 @@ export default function ProjectDetailPage() {
       setAutoPr(Boolean(p.autoPr));
       setAutoMerge(Boolean(p.autoMerge));
       setAutoTriage(Boolean(p.autoTriage));
+      setBudgetInput(
+        p.monthlyBudgetUsd != null ? String(p.monthlyBudgetUsd) : "",
+      );
       setShares(sh);
       setLinks(lk);
       setAllSkills(sk);
@@ -171,6 +177,25 @@ export default function ProjectDetailPage() {
       toast.error((e as Error).message);
     } finally {
       setSavingHook(false);
+    }
+  }
+
+  async function saveBudget(clear = false) {
+    setSavingBudget(true);
+    try {
+      // clear면 null(무제한 해제), 아니면 숫자로 파싱해 저장.
+      const value = clear ? null : Number(budgetInput);
+      if (!clear && (!isFinite(value as number) || (value as number) < 0)) {
+        toast.error("0 이상의 숫자를 입력하세요.");
+        return;
+      }
+      await api.patch(`/projects/${id}`, { monthlyBudgetUsd: value });
+      toast.success(clear ? "월 예산을 해제했습니다." : "월 예산을 저장했습니다.");
+      await load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSavingBudget(false);
     }
   }
 
@@ -523,6 +548,57 @@ export default function ProjectDetailPage() {
                   variant="secondary"
                   onClick={() => saveWebhook(true)}
                   disabled={savingHook}
+                >
+                  해제
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* 월 예산 가드레일 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">월 예산</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              이번 달 누적 예상 비용이 이 금액에 도달하면 워커가 이 프로젝트의 이슈
+              실행을 보류합니다. 비우면 무제한입니다.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">현재:</span>
+              {project.monthlyBudgetUsd != null ? (
+                <Badge variant="success">${project.monthlyBudgetUsd} / 월</Badge>
+              ) : (
+                <Badge variant="muted">무제한</Badge>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">$</span>
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                placeholder="예: 50"
+                value={budgetInput}
+                onChange={(e) => setBudgetInput(e.target.value)}
+                className="max-w-[10rem]"
+              />
+              <span className="text-sm text-muted-foreground">/ 월</span>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                onClick={() => saveBudget(false)}
+                disabled={savingBudget || !budgetInput.trim()}
+              >
+                {savingBudget ? "저장 중..." : "저장"}
+              </Button>
+              {project.monthlyBudgetUsd != null && (
+                <Button
+                  variant="secondary"
+                  onClick={() => saveBudget(true)}
+                  disabled={savingBudget}
                 >
                   해제
                 </Button>

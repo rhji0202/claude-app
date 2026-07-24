@@ -39,6 +39,7 @@ enum IssueSource {
 enum CronStatus {
   OK
   ERROR
+  SKIPPED // 월 예산 초과로 에이전트 실행 없이 건너뜀(비용 0)
 }
 
 enum CronType {
@@ -74,6 +75,13 @@ enum ShareLinkScope {
   ISSUE_REPORT
 }
 
+// 사용량 원장의 실행 종류.
+enum UsageKind {
+  ISSUE
+  CRON
+  CHAT
+}
+
 model User {
   id            String          @id @default(uuid())
   email         String          @unique
@@ -105,7 +113,10 @@ model ClaudeAccount {
   // 이 계정으로 실행 시 사용할 모델·reasoning effort(미지정 시 env 기본값).
   model            String?
   effort           String?
+  // 월 예산 상한(USD). 초과 시 워커가 이 계정 실행을 건너뛴다(미설정 시 무제한).
+  monthlyBudgetUsd Float?
   projects         Project[]
+  usageRecords     UsageRecord[]
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -171,6 +182,9 @@ model Project {
   // 알림 webhook URL (Slack/Discord/WeCom 등). 키를 포함할 수 있어 암호화 저장.
   notifyWebhookEnc String?
 
+  // 월 예산 상한(USD). 초과 시 워커가 이 프로젝트 이슈를 건너뛴다(미설정 시 무제한).
+  monthlyBudgetUsd Float?
+
   // 프로젝트가 사용할 Claude 계정(선택). 미지정 시 실행 사용자 활성 계정 → .env 폴백.
   claudeAccountId String?
   claudeAccount   ClaudeAccount? @relation(fields: [claudeAccountId], references: [id], onDelete: SetNull)
@@ -187,6 +201,7 @@ model Project {
   issueTasks   IssueTask[]
   cronJobs     CronJob[]
   chatSessions ChatSession[]
+  usageRecords UsageRecord[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -224,6 +239,12 @@ model IssueTask {
   attempts    Int         @default(0)
   claimedAt   DateTime?
   lockedBy    String?
+  // 실행 사용량(SDK usage). 마지막 실행 기준. 상세 원장은 UsageRecord.
+  costUsd             Float?
+  inputTokens         Int?
+  outputTokens        Int?
+  cacheReadTokens     Int?
+  cacheCreationTokens Int?
   notes       IssueNote[]
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
@@ -275,6 +296,12 @@ model CronRun {
   error      String?     // 실패 사유
   sessionId  String?     // 에이전트 세션 id(추후 추적·재개용)
   durationMs Int?        // 실행 소요(ms)
+  // 실행 사용량(SDK usage). 상세 원장은 UsageRecord.
+  costUsd             Float?
+  inputTokens         Int?
+  outputTokens        Int?
+  cacheReadTokens     Int?
+  cacheCreationTokens Int?
   startedAt  DateTime    @default(now())
   finishedAt DateTime?
 
@@ -336,6 +363,33 @@ model ProjectShare {
   user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@id([projectId, userId])
+}
+
+// 사용량 원장(append-only). 모든 에이전트 실행(이슈·크론·채팅)의 토큰·비용을 1건씩 기록.
+// 집계는 이 테이블을 groupBy로 조회한다(별도 롤업 없이 인덱스로 커버).
+model UsageRecord {
+  id              String    @id @default(uuid())
+  kind            UsageKind
+  projectId       String
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  // 실행에 쓰인 Claude 계정(있으면). 계정 삭제 시 원장은 보존(SetNull).
+  claudeAccountId String?
+  claudeAccount   ClaudeAccount? @relation(fields: [claudeAccountId], references: [id], onDelete: SetNull)
+  userId          String?
+  // 참조 대상 id: issueId / cronRunId / chatSessionId.
+  refId           String?
+  model           String?
+  costUsd         Float
+  inputTokens         Int @default(0)
+  outputTokens        Int @default(0)
+  cacheReadTokens     Int @default(0)
+  cacheCreationTokens Int @default(0)
+  durationMs      Int?
+  createdAt       DateTime  @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([claudeAccountId, createdAt])
+  @@index([createdAt])
 }
 
 // 공유 링크 (로그인 없이 스코프된 접근 - 테스터 이슈 등록 등)

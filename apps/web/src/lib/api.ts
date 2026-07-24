@@ -142,7 +142,34 @@ export async function streamPost(
     throw new ApiError(res.status, message);
   }
 
-  const reader = res.body.getReader();
+  await readSseStream(res.body, onEvent);
+}
+
+/**
+ * SSE 스트리밍 GET. 장기 연결로 서버가 흘려보내는 이벤트를 onEvent로 전달한다.
+ * signal.abort()로 연결을 종료한다(폴링 대체 구독용). EventSource 대신 fetch+reader —
+ * Authorization 헤더를 실을 수 있고 종료 제어가 명확하다.
+ */
+export async function streamGet(
+  path: string,
+  onEvent: (event: unknown) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const h: Record<string, string> = {};
+  const token = getToken();
+  if (token) h.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}${path}`, { headers: h, signal });
+  if (!res.ok || !res.body) throw new ApiError(res.status, `스트림 실패 (${res.status})`);
+  await readSseStream(res.body, onEvent);
+}
+
+/** `data: <json>\n\n` 형식 SSE 본문을 파싱해 이벤트마다 onEvent 호출. */
+async function readSseStream(
+  body: ReadableStream<Uint8Array>,
+  onEvent: (event: unknown) => void,
+): Promise<void> {
+  const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   for (;;) {

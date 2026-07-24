@@ -38,6 +38,8 @@ export const envSchema = z.object({
   // stale 클레임 회수 임계(ms). RUNNING인데 이 시간 넘게 갱신 없으면 회수(INTERRUPTED).
   // maxTurns가 크면 실행이 길어지므로 넉넉히(기본 30분).
   ISSUE_STALE_MS: z.coerce.number().int().positive().default(1800000),
+  // 월 예산 임박 경고 임계 비율(spent/budget). 이 비율 도달 시 초과 전 1회 경고.
+  BUDGET_WARN_RATIO: z.coerce.number().positive().max(1).default(0.8),
   // per-run worktree 루트. 미설정 시 apps/api/worktrees.
   ISSUE_WORKTREE_ROOT: z.string().optional(),
   // 시스템 관리 clone 루트. 미설정 시 apps/api/repos. UPLOADS_DIR와 분리 필수(정적 노출 방지).
