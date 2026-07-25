@@ -462,6 +462,14 @@ function IssueDetailDialog({
   const imgs = (row.images as string[] | undefined) ?? [];
   const num = row.issueNumber ? `#${row.issueNumber}` : null;
 
+  // 본문 이미지 치환용 맵: 서버는 서명된 상대경로를 주므로 절대 URL로 바꾼다.
+  const rawMap = (row.imageMap as Record<string, string> | null | undefined) ?? null;
+  const bodyImageMap = rawMap
+    ? Object.fromEntries(
+        Object.entries(rawMap).map(([orig, rel]) => [orig, uploadUrl(rel)]),
+      )
+    : null;
+
   async function onOpenChange(next: boolean) {
     setOpen(next);
     // 이력은 열 때 한 번만 불러온다(닫았다 다시 열면 갱신).
@@ -528,7 +536,10 @@ function IssueDetailDialog({
           <Section title="본문">
             {body ? (
               <div className="rounded-md bg-muted p-3">
-                <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
+                <Markdown
+                  className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2"
+                  imageMap={bodyImageMap}
+                >
                   {body}
                 </Markdown>
               </div>

@@ -743,6 +743,67 @@ describe("IssuesService (큐/워커)", () => {
     });
   });
 
+  describe("toDto (본문 이미지 매핑)", () => {
+    /** get()을 통해 toDto 결과를 얻는다(private 메서드 직접 호출 회피). */
+    async function dtoOf(imageMap: unknown) {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        id: "i1",
+        projectId: "p1",
+        repo: "o/r",
+        issueNumber: 1,
+        title: "t",
+        body: "![x](https://github.com/user-attachments/assets/abc)",
+        url: null,
+        labels: [],
+        author: null,
+        source: "GITHUB",
+        prompt: null,
+        images: ["issue-images/i1/a.png"],
+        imageMap,
+        status: IssueStatus.QUEUED,
+        sessionId: null,
+        result: null,
+        error: null,
+        resultCommentUrl: null,
+        prUrl: null,
+        category: null,
+        progress: null,
+        progressLog: null,
+        costUsd: null,
+        inputTokens: null,
+        outputTokens: null,
+        createdAt: new Date("2026-07-25T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-25T00:00:00.000Z"),
+      });
+      projects.assertAccess = jest.fn().mockResolvedValue(undefined);
+      return service.get("i1", "u1");
+    }
+
+    it("원본 URL → 서명 경로 매핑을 그대로 내려보낸다", async () => {
+      const dto = await dtoOf({
+        "https://github.com/user-attachments/assets/abc": "issue-images/i1/a.png",
+      });
+      expect(dto.imageMap).toEqual({
+        "https://github.com/user-attachments/assets/abc": "issue-images/i1/a.png",
+      });
+    });
+
+    it("imageMap이 없으면(수동 등록·기존 행) null", async () => {
+      expect((await dtoOf(null)).imageMap).toBeNull();
+    });
+
+    // Json 컬럼이라 배열·문자열 등 예상 밖 형태가 들어올 수 있다 → 방어.
+    it("객체가 아닌 값은 null로 처리한다", async () => {
+      expect((await dtoOf(["a", "b"])).imageMap).toBeNull();
+      expect((await dtoOf("nope")).imageMap).toBeNull();
+    });
+
+    it("문자열이 아닌 값·빈 문자열은 걸러낸다", async () => {
+      const dto = await dtoOf({ a: "issue-images/i1/a.png", b: 1, c: "" });
+      expect(dto.imageMap).toEqual({ a: "issue-images/i1/a.png" });
+    });
+  });
+
   describe("list (목록 필터)", () => {
     /** list()가 prisma에 넘긴 where 절. */
     function listWhere(): Record<string, unknown> {

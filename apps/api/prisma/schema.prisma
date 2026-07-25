@@ -222,6 +222,10 @@ model IssueTask {
   prompt      String?
   // 첨부 이미지 저장 상대경로 목록 (UPLOADS_DIR 기준, 예 issue-images/<id>/a.png)
   images      String[]
+  // 본문 이미지 원본 URL → 저장 상대경로 매핑 { "<github url>": "issue-images/…" }.
+  // GitHub import 시에만 채워지며, 본문의 깨진 외부 URL을 로컬 서명 URL로
+  // 치환하는 데 쓴다. 인덱스 대응은 다운로드 실패 시 어긋나므로 URL을 키로 쓴다.
+  imageMap    Json?
   status      IssueStatus @default(QUEUED)
   sessionId   String?
   result      String?

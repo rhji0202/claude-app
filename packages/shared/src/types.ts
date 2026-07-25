@@ -182,6 +182,12 @@ export interface IssueTask {
   prompt?: string | null;
   /** 첨부 이미지 저장 상대경로 목록 (UPLOADS_DIR 기준) */
   images: string[];
+  /**
+   * 본문(body) 안 이미지의 원본 URL → 서명된 업로드 상대경로 매핑.
+   * GitHub import한 이슈에만 존재. 본문의 외부 URL은 인증이 필요해 브라우저에서
+   * 깨지므로, 렌더 시 이 매핑으로 로컬 이미지로 치환한다.
+   */
+  imageMap?: Record<string, string> | null;
   status: IssueTaskStatus;
   sessionId?: string | null;
   result?: string | null;

@@ -204,6 +204,20 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
     private readonly events: IssueEventsService,
   ) {}
 
+  /**
+   * imageMap(원본 URL → 저장 경로)의 값들을 서명 URL로 변환한다.
+   * images[]와 동일한 서명 정책을 타므로 무인증 열람은 여전히 차단된다.
+   * 값이 없거나 형태가 예상과 다르면 null(치환 없음).
+   */
+  private signImageMap(raw: unknown): Record<string, string> | null {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const out: Record<string, string> = {};
+    for (const [url, rel] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof rel === "string" && rel) out[url] = this.uploads.signRelPath(rel);
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  }
+
   private toDto(i: PrismaIssue): IssueDto {
     return {
       id: i.id,
@@ -220,6 +234,9 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
       // 서명 URL로 내려보낸다(무인증 /uploads 열람 차단). DTO는 접근 제어를
       // 통과한 응답에서만 생성되므로 여기서 서명해도 안전하다.
       images: i.images.map((rel) => this.uploads.signRelPath(rel)),
+      // 본문 이미지 치환용: 원본 URL → 서명된 상대경로. 프론트가 /uploads 절대
+      // URL로 바꿔 렌더한다(서버는 공개 origin을 모르므로 상대경로로 내려보냄).
+      imageMap: this.signImageMap(i.imageMap),
       status: fromStatus(i.status),
       sessionId: i.sessionId,
       result: i.result,
@@ -568,15 +585,22 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
           ? { Authorization: `Bearer ${token}` }
           : {};
         const saved: string[] = [];
+        // 본문 URL → 저장 경로 매핑도 함께 남긴다(toDto에서 본문 치환에 사용).
+        // 인덱스 대응은 다운로드 실패 시 밀리므로 URL을 키로 쓴다.
+        const imageMap: Record<string, string> = {};
         for (const url of urls) {
           const rel = await this.uploads.downloadAndSave(row.id, url, headers);
-          if (rel) saved.push(rel);
-          else this.logger.warn(`이슈 #${number} 이미지 다운로드 실패: ${url}`);
+          if (rel) {
+            saved.push(rel);
+            imageMap[url] = rel;
+          } else {
+            this.logger.warn(`이슈 #${number} 이미지 다운로드 실패: ${url}`);
+          }
         }
         if (saved.length > 0) {
           const updated = await this.prisma.issueTask.update({
             where: { id: row.id },
-            data: { images: saved },
+            data: { images: saved, imageMap },
           });
           created.push(this.toDto(updated));
           continue;
