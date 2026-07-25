@@ -32,12 +32,15 @@ interface ClaudeAccount {
   createdAt: string;
 }
 
-// 선택 가능한 모델(빈 값 = 전역 기본). effort 지원 최신 모델 위주.
+// 선택 가능한 모델(빈 값 = 전역 기본). 최신 모델 위주.
+// Haiku 4.5는 effort 파라미터를 지원하지 않는다.
 const MODEL_OPTIONS = [
   { value: "", label: "기본(서버 설정)" },
-  { value: "claude-opus-4-8", label: "Opus 4.8" },
+  { value: "claude-opus-5", label: "Opus 5" },
+  { value: "claude-fable-5", label: "Fable 5" },
   { value: "claude-sonnet-5", label: "Sonnet 5" },
-  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+  { value: "claude-opus-4-8", label: "Opus 4.8" },
+  { value: "claude-haiku-4-5", label: "Haiku 4.5" },
 ];
 const EFFORT_OPTIONS = [
   { value: "", label: "기본" },

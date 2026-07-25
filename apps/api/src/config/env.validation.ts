@@ -18,8 +18,8 @@ export const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default("7d"),
   // 활성 Claude 계정이 없을 때의 폴백 OAuth 토큰 (선택, sk-ant-oat...)
   ANTHROPIC_OAUTH_TOKEN: z.string().optional(),
-  // 실행 기본 모델(계정별 지정이 없을 때). 예: claude-opus-4-8 또는 alias opus/sonnet/haiku.
-  ANTHROPIC_MODEL: z.string().default("claude-opus-4-8"),
+  // 실행 기본 모델(계정별 지정이 없을 때). 예: claude-opus-5 또는 alias opus/sonnet/haiku.
+  ANTHROPIC_MODEL: z.string().default("claude-opus-5"),
   // 실행 기본 reasoning effort. low|medium|high|xhigh|max.
   ANTHROPIC_EFFORT: z
     .enum(["low", "medium", "high", "xhigh", "max"])

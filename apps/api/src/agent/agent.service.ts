@@ -166,7 +166,7 @@ export class AgentService {
       model:
         cfg.model ??
         this.config.get<string>("ANTHROPIC_MODEL") ??
-        "claude-opus-4-8",
+        "claude-opus-5",
       effort:
         cfg.effort ?? this.config.get<string>("ANTHROPIC_EFFORT") ?? "high",
     };
