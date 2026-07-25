@@ -19,7 +19,7 @@ import {
   fileBasename,
 } from "@/components/ToolPart";
 import { api, streamPost } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { cn, formatAbsolute, formatRelative } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -88,37 +88,6 @@ function reduceParts(parts: Part[], e: StreamEvent): Part[] {
     default:
       return parts;
   }
-}
-
-/** 상대 시간(방금/N분 전/N시간 전/어제) + 절대 시간 tooltip용 문자열 */
-function formatRelative(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "";
-  const diff = Date.now() - then;
-  const min = Math.floor(diff / 60000);
-  if (min < 1) return "방금";
-  if (min < 60) return `${min}분 전`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}시간 전`;
-  const day = Math.floor(hr / 24);
-  if (day < 7) return `${day}일 전`;
-  return new Date(iso).toLocaleDateString("ko-KR", {
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function formatAbsolute(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? ""
-    : d.toLocaleString("ko-KR", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
 }
 
 /** 세션을 프로젝트별로 묶는다. 입력이 updatedAt desc이므로 그룹·항목 모두 최신순 유지. */

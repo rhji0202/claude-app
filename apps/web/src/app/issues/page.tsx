@@ -15,6 +15,7 @@ import { StatusBadge, Mono } from "@/components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { Markdown } from "@/components/Markdown";
+import { NoteList } from "@/components/NoteList";
 import {
   ToolPart,
   editedFilesFromLog,
@@ -161,12 +162,6 @@ function IssueStatusCell({
     </Dialog>
   );
 }
-
-const NOTE_LABEL: Record<string, string> = {
-  human: "사람",
-  agent: "에이전트",
-  system: "시스템",
-};
 
 /**
  * 진행 로그에서 편집·작성된 파일을 모아 상단에 요약(claude-desktop식).
@@ -396,18 +391,7 @@ function RerunDialog({
             <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               이력
             </div>
-            {notes === null ? (
-              <p className="text-sm text-muted-foreground">불러오는 중…</p>
-            ) : notes.length === 0 ? (
-              <p className="text-sm text-muted-foreground">이력이 없습니다.</p>
-            ) : (
-              notes.map((n) => (
-                <div key={n.id} className="text-sm">
-                  <Mono>[{NOTE_LABEL[n.author] ?? n.author}]</Mono>{" "}
-                  <span className="whitespace-pre-wrap">{n.content}</span>
-                </div>
-              ))
-            )}
+            <NoteList notes={notes} />
           </div>
           {/* 추가 지시 입력 */}
           <div className="space-y-2">
@@ -596,20 +580,7 @@ function IssueDetailDialog({
           )}
 
           <Section title="이력">
-            {notes === null ? (
-              <p className="text-sm text-muted-foreground">불러오는 중…</p>
-            ) : notes.length === 0 ? (
-              <p className="text-sm text-muted-foreground">이력이 없습니다.</p>
-            ) : (
-              <div className="space-y-1.5">
-                {notes.map((n) => (
-                  <div key={n.id} className="text-sm">
-                    <Mono>[{NOTE_LABEL[n.author] ?? n.author}]</Mono>{" "}
-                    <span className="whitespace-pre-wrap">{n.content}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            <NoteList notes={notes} />
           </Section>
         </div>
       </DialogContent>
