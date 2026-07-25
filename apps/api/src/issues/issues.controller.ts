@@ -32,8 +32,9 @@ export class IssuesController {
   @Get() list(
     @CurrentUser() user: AuthUser,
     @Query("projectId") projectId?: string,
+    @Query("status") status?: string,
   ) {
-    return this.issues.list(user.userId, projectId);
+    return this.issues.list(user.userId, projectId, status);
   }
 
   // ---- 워커 현황 대시보드 (라우트 순서: :id보다 위에 둬야 정적 경로가 우선) ----

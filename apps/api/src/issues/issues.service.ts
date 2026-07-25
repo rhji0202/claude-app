@@ -113,6 +113,12 @@ const STATUS_TO_DTO: Record<IssueStatus, IssueTaskStatus> = {
   NEEDS_DECISION: "needs_decision",
 };
 const fromStatus = (s: IssueStatus): IssueTaskStatus => STATUS_TO_DTO[s];
+/** DTO 상태 문자열 → DB enum. 목록 필터에서 쓰며, 미지의 값은 undefined(=필터 없음). */
+const STATUS_FROM_DTO = Object.fromEntries(
+  Object.entries(STATUS_TO_DTO).map(([k, v]) => [v, k as IssueStatus]),
+) as Record<IssueTaskStatus, IssueStatus>;
+const toStatus = (s: string | undefined): IssueStatus | undefined =>
+  s ? STATUS_FROM_DTO[s as IssueTaskStatus] : undefined;
 
 @Injectable()
 export class IssuesService implements OnModuleInit, OnModuleDestroy {
@@ -231,15 +237,28 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async list(userId: string, projectId?: string): Promise<IssueDto[]> {
+  /**
+   * 이슈 목록. projectId·status로 필터(둘 다 선택).
+   * status는 DTO 표기("queued" 등)를 받으며, 허용 목록에 없는 값은 무시한다
+   * (Prisma enum 캐스팅 에러를 내지 않고 전체 조회로 폴백).
+   */
+  async list(
+    userId: string,
+    projectId?: string,
+    status?: string,
+  ): Promise<IssueDto[]> {
     if (projectId) {
       await this.projects.assertAccess(projectId, userId);
     }
     const ids = projectId
       ? [projectId]
       : await this.projects.accessibleProjectIds(userId);
+    const dbStatus = toStatus(status);
     const rows = await this.prisma.issueTask.findMany({
-      where: { projectId: { in: ids } },
+      where: {
+        projectId: { in: ids },
+        ...(dbStatus ? { status: dbStatus } : {}),
+      },
       orderBy: { createdAt: "desc" },
     });
     return rows.map((r) => this.toDto(r));

@@ -743,6 +743,52 @@ describe("IssuesService (큐/워커)", () => {
     });
   });
 
+  describe("list (목록 필터)", () => {
+    /** list()가 prisma에 넘긴 where 절. */
+    function listWhere(): Record<string, unknown> {
+      return prisma.issueTask.findMany.mock.calls[0][0].where;
+    }
+
+    beforeEach(() => {
+      prisma.issueTask.findMany.mockResolvedValue([]);
+      projects.assertAccess = jest.fn().mockResolvedValue(undefined);
+    });
+
+    it("status 미지정이면 상태 조건 없이 접근 가능한 프로젝트만 조회한다", async () => {
+      (projects.accessibleProjectIds as jest.Mock).mockResolvedValue(["p1", "p2"]);
+      await service.list("u1");
+      expect(listWhere()).toEqual({ projectId: { in: ["p1", "p2"] } });
+    });
+
+    it("status를 DB enum으로 변환해 필터에 넣는다", async () => {
+      await service.list("u1", undefined, "needs_decision");
+      expect(listWhere()).toEqual({
+        projectId: { in: ["p1"] },
+        status: IssueStatus.NEEDS_DECISION,
+      });
+    });
+
+    it("projectId와 status를 함께 적용한다(접근 검사도 수행)", async () => {
+      await service.list("u1", "p1", "running");
+      expect(projects.assertAccess).toHaveBeenCalledWith("p1", "u1");
+      expect(listWhere()).toEqual({
+        projectId: { in: ["p1"] },
+        status: IssueStatus.RUNNING,
+      });
+    });
+
+    // 허용 목록에 없는 값은 Prisma enum 캐스팅 에러 대신 전체 조회로 폴백해야 한다.
+    it("알 수 없는 status 값은 무시하고 전체를 조회한다", async () => {
+      await service.list("u1", undefined, "bogus");
+      expect(listWhere()).toEqual({ projectId: { in: ["p1"] } });
+    });
+
+    it("빈 문자열 status도 무시한다", async () => {
+      await service.list("u1", undefined, "");
+      expect(listWhere()).toEqual({ projectId: { in: ["p1"] } });
+    });
+  });
+
   describe("stats (대시보드 요약)", () => {
     it("상태별 카운트·슬롯·재시도·워커 상태를 집계한다", async () => {
       prisma.issueTask.groupBy.mockResolvedValue([

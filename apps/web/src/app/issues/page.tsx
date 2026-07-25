@@ -3,7 +3,11 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Download, Loader2, MessageSquare, Play, Plus } from "lucide-react";
-import type { IssueNote, IssueProgressEvent } from "@claude-app/shared";
+import type {
+  IssueNote,
+  IssueProgressEvent,
+  IssueTaskStatus,
+} from "@claude-app/shared";
 import CrudPanel from "@/components/CrudPanel";
 import { WorkerDashboard } from "./WorkerDashboard";
 import { PageHeader } from "@/components/PageHeader";
@@ -52,6 +56,19 @@ const STATUS_LABEL: Record<string, string> = {
   interrupted: "중단됨",
   needs_decision: "결정 대기",
 };
+
+/**
+ * 상태 필터 드롭다운 순서(작업 흐름 순). IssueTaskStatus로 타입을 묶어두면
+ * 공유 타입에 상태가 추가·변경될 때 컴파일 에러로 드러난다.
+ */
+const STATUS_ORDER: IssueTaskStatus[] = [
+  "queued",
+  "running",
+  "needs_decision",
+  "done",
+  "error",
+  "interrupted",
+];
 
 const CATEGORY_LABEL: Record<string, string> = {
   "auto-fix": "자동수정",
@@ -418,6 +435,195 @@ function RerunDialog({
   );
 }
 
+/**
+ * 이슈 상세 다이얼로그: 목록에서 제목을 클릭하면 열린다.
+ * 목록 행(row)에 이미 전체 IssueTask DTO가 들어있으므로 본문·이미지·결과는
+ * 추가 요청 없이 렌더하고, 이력(notes)만 열 때 지연 로드한다.
+ */
+function IssueDetailDialog({
+  row,
+  trigger,
+}: {
+  row: Record<string, unknown>;
+  trigger: React.ReactNode;
+}) {
+  const id = String(row.id);
+  const [open, setOpen] = useState(false);
+  const [notes, setNotes] = useState<IssueNote[] | null>(null);
+
+  const status = String(row.status);
+  const body = (row.body as string | null | undefined) ?? null;
+  const result = (row.result as string | null | undefined) ?? null;
+  const error = (row.error as string | null | undefined) ?? null;
+  const url = (row.url as string | null | undefined) ?? null;
+  const prUrl = (row.prUrl as string | null | undefined) ?? null;
+  const prompt = (row.prompt as string | null | undefined) ?? null;
+  const labels = (row.labels as string[] | undefined) ?? [];
+  const imgs = (row.images as string[] | undefined) ?? [];
+  const num = row.issueNumber ? `#${row.issueNumber}` : null;
+
+  async function onOpenChange(next: boolean) {
+    setOpen(next);
+    // 이력은 열 때 한 번만 불러온다(닫았다 다시 열면 갱신).
+    if (!next) return;
+    try {
+      setNotes(await api.get<IssueNote[]>(`/issues/${id}/notes`));
+    } catch (e) {
+      toast.error((e as Error).message);
+      setNotes([]);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogTrigger className="cursor-pointer text-left" title="이슈 상세 보기">
+        {trigger}
+      </DialogTrigger>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader className="min-w-0">
+          <DialogTitle className="flex min-w-0 items-center gap-2">
+            {num && <Mono>{num}</Mono>}
+            <span className="min-w-0 truncate">{String(row.title ?? "")}</span>
+          </DialogTitle>
+          <DialogDescription className="flex flex-wrap items-center gap-2">
+            <StatusBadge status={status} label={STATUS_LABEL[status] ?? status} />
+            <Mono>{String(row.source)}</Mono>
+            {row.author ? <span>· {String(row.author)}</span> : null}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="max-h-[65vh] min-w-0 space-y-4 overflow-y-auto">
+          {/* 링크·라벨 */}
+          {(url || prUrl || labels.length > 0) && (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              {url && (
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[var(--accent)] underline underline-offset-2"
+                >
+                  GitHub 이슈
+                </a>
+              )}
+              {prUrl && (
+                <a
+                  href={prUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[var(--accent)] underline underline-offset-2"
+                >
+                  PR
+                </a>
+              )}
+              {labels.map((l) => (
+                <Badge key={l} variant="muted">
+                  {l}
+                </Badge>
+              ))}
+            </div>
+          )}
+
+          {/* 본문 — 목록에서는 볼 수 없던 정보 */}
+          <Section title="본문">
+            {body ? (
+              <div className="rounded-md bg-muted p-3">
+                <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
+                  {body}
+                </Markdown>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">본문이 없습니다.</p>
+            )}
+          </Section>
+
+          {prompt && (
+            <Section title="추가 지시">
+              <pre className="whitespace-pre-wrap rounded-md bg-muted p-3 text-sm">
+                {prompt}
+              </pre>
+            </Section>
+          )}
+
+          {imgs.length > 0 && (
+            <Section title={`첨부 이미지 (${imgs.length})`}>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {imgs.map((rel) => (
+                  <a key={rel} href={uploadUrl(rel)} target="_blank" rel="noreferrer">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={uploadUrl(rel)}
+                      alt=""
+                      className="aspect-square w-full rounded border border-border object-cover"
+                    />
+                  </a>
+                ))}
+              </div>
+            </Section>
+          )}
+
+          {error && (
+            <Section title={status === "interrupted" ? "중단 사유" : "오류 메시지"}>
+              <pre
+                className={`whitespace-pre-wrap rounded-md bg-muted p-3 text-sm ${
+                  status === "error" ? "text-destructive" : ""
+                }`}
+              >
+                {error}
+              </pre>
+            </Section>
+          )}
+
+          {result && (
+            <Section title="실행 결과">
+              <div className="rounded-md bg-muted p-3">
+                <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
+                  {result}
+                </Markdown>
+              </div>
+            </Section>
+          )}
+
+          <Section title="이력">
+            {notes === null ? (
+              <p className="text-sm text-muted-foreground">불러오는 중…</p>
+            ) : notes.length === 0 ? (
+              <p className="text-sm text-muted-foreground">이력이 없습니다.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {notes.map((n) => (
+                  <div key={n.id} className="text-sm">
+                    <Mono>[{NOTE_LABEL[n.author] ?? n.author}]</Mono>{" "}
+                    <span className="whitespace-pre-wrap">{n.content}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Section>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** 상세 다이얼로그 내부 섹션(제목 + 내용) 공통 래퍼. */
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="min-w-0 space-y-1.5">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
 interface Project {
   id: string;
   name: string;
@@ -725,6 +931,8 @@ export default function IssuesPage() {
   const [projects, setProjects] = useState<ProjectRef[]>([]);
   // "" = 전체 프로젝트. 값이 있으면 해당 프로젝트로 필터.
   const [filterProjectId, setFilterProjectId] = useState("");
+  // "" = 전체 상태. 값이 있으면 해당 상태로 서버 필터(GET /issues?status=).
+  const [filterStatus, setFilterStatus] = useState("");
 
   useEffect(() => {
     api
@@ -733,9 +941,11 @@ export default function IssuesPage() {
       .catch(() => setProjects([]));
   }, []);
 
-  const endpoint = filterProjectId
-    ? `/issues?projectId=${filterProjectId}`
-    : "/issues";
+  // 필터를 쿼리스트링으로 조립 — endpoint가 바뀌면 CrudPanel이 자동 재조회한다.
+  const params = new URLSearchParams();
+  if (filterProjectId) params.set("projectId", filterProjectId);
+  if (filterStatus) params.set("status", filterStatus);
+  const endpoint = params.toString() ? `/issues?${params}` : "/issues";
 
   // projectId → 이름 매핑(저장소 대신 프로젝트 이름 표시용)
   const projectName = (id: unknown) =>
@@ -753,7 +963,7 @@ export default function IssuesPage() {
 
       <ManualIssueWithImages onCreated={() => setReload((r) => r + 1)} />
 
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-3">
         <Label className="shrink-0 text-xs text-muted-foreground">
           프로젝트 필터
         </Label>
@@ -769,6 +979,26 @@ export default function IssuesPage() {
             {projects.map((p) => (
               <SelectItem key={p.id} value={p.id}>
                 {p.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Label className="ml-1 shrink-0 text-xs text-muted-foreground">
+          상태 필터
+        </Label>
+        <Select
+          value={filterStatus || "all"}
+          onValueChange={(v) => setFilterStatus(v === "all" ? "" : v)}
+        >
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="전체 상태" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">전체 상태</SelectItem>
+            {STATUS_ORDER.map((s) => (
+              <SelectItem key={s} value={s}>
+                {STATUS_LABEL[s]}
               </SelectItem>
             ))}
           </SelectContent>
@@ -813,12 +1043,17 @@ export default function IssuesPage() {
             key: "title",
             label: "제목",
             render: (r) => (
-              <span
-                className="block max-w-[55vw] truncate sm:max-w-[26rem]"
-                title={String(r.title ?? "")}
-              >
-                {String(r.title ?? "")}
-              </span>
+              <IssueDetailDialog
+                row={r}
+                trigger={
+                  <span
+                    className="block max-w-[55vw] truncate underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 hover:decoration-solid hover:decoration-[var(--accent)] sm:max-w-[26rem]"
+                    title={String(r.title ?? "")}
+                  >
+                    {String(r.title ?? "")}
+                  </span>
+                }
+              />
             ),
           },
           {
