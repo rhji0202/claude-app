@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleDestroy,
   OnModuleInit,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
@@ -114,8 +115,49 @@ const STATUS_TO_DTO: Record<IssueStatus, IssueTaskStatus> = {
 const fromStatus = (s: IssueStatus): IssueTaskStatus => STATUS_TO_DTO[s];
 
 @Injectable()
-export class IssuesService implements OnModuleInit {
+export class IssuesService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(IssuesService.name);
+
+  /**
+   * 그레이스풀 셧다운: 실행 중인 모든 이슈에 취소 신호를 보내 서브프로세스 leak을 막는다.
+   * (Nest는 enableShutdownHooks가 켜져 있을 때 SIGTERM/SIGINT에서 이 훅을 호출한다.)
+   */
+  onModuleDestroy(): void {
+    this.abortAllRuns();
+  }
+
+  /**
+   * 현재 이 프로세스에서 실행 중인 이슈의 취소 컨트롤러(issueId → AbortController).
+   * executeClaimed 시작 시 등록, finally에서 삭제. stale 회수·그레이스풀 셧다운이
+   * 살아있는 서브프로세스를 실제로 종료하는 데 쓴다(DB 상태만 뒤집던 이중 실행 방지).
+   */
+  private readonly activeRuns = new Map<string, AbortController>();
+
+  /** 이 프로세스가 해당 이슈를 실행 중인가(stale 회수가 in-process/좀비를 구분). */
+  hasActiveRun(issueId: string): boolean {
+    return this.activeRuns.has(issueId);
+  }
+
+  /**
+   * 실행 중인 이슈를 취소한다. 컨트롤러 abort → SDK가 쿼리 중단·서브프로세스 정리.
+   * 실행 루프가 스스로 종료 상태(INTERRUPTED)를 기록하고 worktree를 정리하므로,
+   * 호출측은 DB를 직접 뒤집지 않는다. 실행 중이 아니면 false.
+   */
+  abortRun(issueId: string): boolean {
+    const ctrl = this.activeRuns.get(issueId);
+    if (!ctrl) return false;
+    ctrl.abort();
+    this.logger.warn(`이슈 실행 취소 신호 전송: ${issueId}`);
+    return true;
+  }
+
+  /** 실행 중인 모든 이슈를 취소한다(그레이스풀 셧다운용). 취소한 건수 반환. */
+  abortAllRuns(): number {
+    const n = this.activeRuns.size;
+    for (const ctrl of this.activeRuns.values()) ctrl.abort();
+    if (n > 0) this.logger.warn(`셧다운: 실행 중 이슈 ${n}건 취소`);
+    return n;
+  }
 
   /**
    * 부팅 시 이전 프로세스가 실행 중(RUNNING)이던 이슈를 정리한다.
@@ -169,7 +211,9 @@ export class IssuesService implements OnModuleInit {
       author: i.author,
       source: fromSource(i.source),
       prompt: i.prompt,
-      images: i.images,
+      // 서명 URL로 내려보낸다(무인증 /uploads 열람 차단). DTO는 접근 제어를
+      // 통과한 응답에서만 생성되므로 여기서 서명해도 안전하다.
+      images: i.images.map((rel) => this.uploads.signRelPath(rel)),
       status: fromStatus(i.status),
       sessionId: i.sessionId,
       result: i.result,
@@ -471,20 +515,33 @@ export class IssuesService implements OnModuleInit {
     for (const number of numbers) {
       if (seen.has(number)) continue;
       const issue = await this.github.getIssue(repo, number, token);
-      const row = await this.prisma.issueTask.create({
-        data: {
-          projectId,
-          repo,
-          issueNumber: number,
-          title: issue.title,
-          body: issue.body,
-          url: issue.html_url,
-          labels: issue.labels,
-          author: issue.author,
-          source: PrismaSource.GITHUB,
-          status: IssueStatus.QUEUED,
-        },
-      });
+      let row: PrismaIssue;
+      try {
+        row = await this.prisma.issueTask.create({
+          data: {
+            projectId,
+            repo,
+            issueNumber: number,
+            title: issue.title,
+            body: issue.body,
+            url: issue.html_url,
+            labels: issue.labels,
+            author: issue.author,
+            source: PrismaSource.GITHUB,
+            status: IssueStatus.QUEUED,
+          },
+        });
+      } catch (err) {
+        // 동시 import 경합: 사전 seen 체크를 통과했지만 다른 실행이 먼저 삽입.
+        // (projectId, repo, issueNumber) 유일 제약 위반(P2002)이면 건너뛴다.
+        if (
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === "P2002"
+        ) {
+          continue;
+        }
+        throw err;
+      }
       // 이슈 body의 이미지들을 다운로드해 저장 (private repo는 git 토큰 인증)
       const urls = GithubService.extractImageUrls(issue.body);
       if (urls.length > 0) {
@@ -868,6 +925,9 @@ export class IssuesService implements OnModuleInit {
     }
 
     const token = this.tokenOf(project);
+    // 실행 취소 컨트롤러 등록(stale 회수·셧다운이 이 실행을 실제로 종료할 수 있도록).
+    const abortController = new AbortController();
+    this.activeRuns.set(task.id, abortController);
     try {
       // 1. 관리 clone 준비(없으면 clone, 있으면 fetch)
       await this.repos.ensureRepo(project.id, project.gitRepo, token);
@@ -918,6 +978,8 @@ export class IssuesService implements OnModuleInit {
           systemPrompt: prOpts
             ? ISSUE_SYSTEM_PROMPT_PR
             : ISSUE_SYSTEM_PROMPT_BASE,
+          // 취소 신호 전달 → abort 시 SDK가 서브프로세스를 정리하고 스트림을 종료한다.
+          abortController,
         });
         // 성공했지만 에이전트가 사람 결정을 요청했으면(DECISION_NEEDED) NEEDS_DECISION 우선.
         const question =
@@ -1007,6 +1069,9 @@ export class IssuesService implements OnModuleInit {
       // clone/worktree/실행 준비 단계 실패 → ERROR로 흡수
       this.logger.error(`이슈 실행 실패 ${task.id}: ${String(err)}`);
       await this.finishRun(task.id, IssueStatus.ERROR, { error: String(err) });
+    } finally {
+      // 실행 종료(정상·중단·오류 무관) → 컨트롤러 해제. 이후 stale 회수는 좀비로 취급.
+      this.activeRuns.delete(task.id);
     }
   }
 
@@ -1108,7 +1173,17 @@ export class IssuesService implements OnModuleInit {
     try {
       await this.agent.runStream(projectId, opts, onEvent);
     } catch (err) {
-      return { status: "error", sessionId, text: finalText || lastText, error: String(err), usage, accountId };
+      // abort로 인한 종료는 진짜 오류가 아닌 '중단' → resume/재실행으로 이어갈 수 있게 표시.
+      const aborted = opts.abortController?.signal.aborted ?? false;
+      return {
+        status: "error",
+        sessionId,
+        text: finalText || lastText,
+        error: aborted ? "실행이 중단되었습니다(취소)." : String(err),
+        interrupted: aborted,
+        usage,
+        accountId,
+      };
     } finally {
       // 종료 시 진행 표시 제거(throttle 무시하고 즉시). 로그는 finishRun이 정리.
       await this.prisma.issueTask

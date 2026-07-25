@@ -249,6 +249,7 @@ model IssueTask {
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
+  @@unique([projectId, repo, issueNumber])
   @@index([projectId])
   @@index([status])
 }

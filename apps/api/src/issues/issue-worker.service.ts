@@ -59,7 +59,9 @@ export class IssueWorkerService implements OnModuleInit {
     this.concurrency = this.config.get<number>("AGENT_CONCURRENCY") ?? 3;
     this.pollMs = this.config.get<number>("ISSUE_WORKER_POLL_MS") ?? 5000;
     this.maxRetry = this.config.get<number>("ISSUE_MAX_RETRY") ?? 2;
-    this.staleMs = this.config.get<number>("ISSUE_STALE_MS") ?? 600000;
+    // 폴백은 env 검증 기본값(env.validation.ts: 1800000=30분)과 일치시킨다.
+    // maxTurns가 크면 실행이 길어 10분 컷은 정상 실행을 조기 회수한다.
+    this.staleMs = this.config.get<number>("ISSUE_STALE_MS") ?? 1800000;
     this.budgetWarnRatio = this.config.get<number>("BUDGET_WARN_RATIO") ?? 0.8;
   }
 
@@ -233,22 +235,56 @@ export class IssueWorkerService implements OnModuleInit {
   }
 
   /**
-   * stale 클레임 회수(설계 5.1): RUNNING인데 claimedAt이 staleMs보다 오래됨 → INTERRUPTED.
-   * in-process 단일 워커면 onModuleInit 정리로 대부분 커버되나, 다중 워커·긴 실행 대비.
+   * stale 클레임 회수(설계 5.1): RUNNING인데 claimedAt이 staleMs보다 오래됨.
+   *
+   * 두 경우를 구분한다(이중 실행·worktree 경합 방지):
+   *  - **이 프로세스가 실행 중**인 이슈(activeRuns에 존재): abort 신호만 보낸다.
+   *    실행 루프가 스스로 종료 상태(INTERRUPTED)를 기록하고 worktree를 정리하므로
+   *    DB를 직접 뒤집지 않는다. (뒤집으면 재큐된 2번째 실행이 살아있는 worktree를
+   *    강제 제거해 데이터가 손상됐음.)
+   *  - **좀비**(실행 핸들 없음 — 이전 프로세스가 죽고 RUNNING만 남음): DB를 INTERRUPTED로
+   *    회수한다.
    */
   private async reclaimStale(): Promise<number> {
     const cutoff = new Date(Date.now() - this.staleMs);
-    const { count } = await this.prisma.issueTask.updateMany({
+    const stale = await this.prisma.issueTask.findMany({
       where: { status: IssueStatus.RUNNING, claimedAt: { lt: cutoff } },
-      data: {
-        status: IssueStatus.INTERRUPTED,
-        error: "실행이 오래 응답 없어 중단으로 회수되었습니다.",
-        claimedAt: null,
-        lockedBy: null,
-      },
+      select: { id: true },
     });
-    if (count > 0) this.logger.warn(`stale 이슈 ${count}건 회수(INTERRUPTED)`);
-    return count;
+    if (stale.length === 0) return 0;
+
+    const zombieIds: string[] = [];
+    let aborted = 0;
+    for (const { id } of stale) {
+      if (this.issues.hasActiveRun(id)) {
+        // 살아있는 실행 → abort. DB 플립은 실행 종료 로직에 맡긴다.
+        this.issues.abortRun(id);
+        aborted += 1;
+      } else {
+        zombieIds.push(id);
+      }
+    }
+
+    let reclaimed = 0;
+    if (zombieIds.length > 0) {
+      const { count } = await this.prisma.issueTask.updateMany({
+        where: { id: { in: zombieIds }, status: IssueStatus.RUNNING },
+        data: {
+          status: IssueStatus.INTERRUPTED,
+          error: "실행이 오래 응답 없어 중단으로 회수되었습니다.",
+          claimedAt: null,
+          lockedBy: null,
+        },
+      });
+      reclaimed = count;
+    }
+    if (aborted > 0 || reclaimed > 0) {
+      this.logger.warn(
+        `stale 이슈 처리: abort=${aborted}건(실행 중), 회수=${reclaimed}건(좀비)`,
+      );
+    }
+    // 반환값은 '즉시 회수 확정' 건수(좀비). abort 건은 비동기로 종료되며 다음 tick에서 재큐 대상.
+    return reclaimed;
   }
 
   /**

@@ -102,7 +102,10 @@ describe("IssuesService (큐/워커)", () => {
       agent as unknown as AgentService,
       github as unknown as GithubService,
       projects as unknown as ProjectsService,
-      {} as unknown as UploadsService,
+      // signRelPath는 toDto가 images를 서명 URL로 변환할 때 호출 → 통과 스텁 제공.
+      {
+        signRelPath: (rel: string) => rel,
+      } as unknown as UploadsService,
       repos as unknown as RepoManagerService,
       worktrees as unknown as WorktreeService,
       makeConfig(cfg),

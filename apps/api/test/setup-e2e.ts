@@ -5,7 +5,8 @@
 process.env.NODE_ENV = "test";
 process.env.ENCRYPTION_KEY =
   process.env.ENCRYPTION_KEY || "dGVzdC1lbmNyeXB0aW9uLWtleS0zMmJ5dGVzLWxlbiE="; // 32 bytes base64
-process.env.JWT_SECRET = process.env.JWT_SECRET || "test-jwt-secret";
+process.env.JWT_SECRET =
+  process.env.JWT_SECRET || "test-jwt-secret-at-least-32-characters-long";
 process.env.JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "1h";
 process.env.DATABASE_URL =
   process.env.DATABASE_URL ||

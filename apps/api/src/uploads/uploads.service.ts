@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
-import { randomUUID } from "node:crypto";
+import { ConfigService } from "@nestjs/config";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
@@ -12,14 +13,56 @@ const MIME_EXT: Record<string, string> = {
 };
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB
 
+/** 서명 URL 기본 유효기간(ms). 이 시간 내에서만 /uploads 접근 허용. */
+const SIGNED_URL_TTL_MS = 60 * 60 * 1000; // 1h
+
 @Injectable()
 export class UploadsService {
   /** 업로드 루트. 기본 apps/api/uploads (env UPLOADS_DIR로 override) */
   readonly root =
     process.env.UPLOADS_DIR ?? path.join(process.cwd(), "uploads");
 
+  constructor(private readonly config: ConfigService) {}
+
   private issueDir(issueId: string): string {
     return path.join("issue-images", issueId);
+  }
+
+  /** HMAC 키(ENCRYPTION_KEY 파생). 부팅 시 env 검증으로 항상 존재. */
+  private signingKey(): string {
+    const key = this.config.get<string>("ENCRYPTION_KEY");
+    if (!key) throw new Error("ENCRYPTION_KEY가 설정되지 않았습니다.");
+    return key;
+  }
+
+  private hmac(relPath: string, exp: number): string {
+    return createHmac("sha256", this.signingKey())
+      .update(`${relPath}|${exp}`)
+      .digest("hex");
+  }
+
+  /**
+   * 이미지 상대경로에 만료(exp)+HMAC 서명(sig) 쿼리를 붙여 반환.
+   * 정적 /uploads 미들웨어가 이 값을 검증하므로, 인증된 응답(이슈 DTO)에서만
+   * 서명 URL을 내려보내 무인증 열람을 차단한다. relPath는 항상 posix 슬래시.
+   */
+  signRelPath(relPath: string, ttlMs = SIGNED_URL_TTL_MS): string {
+    const exp = Date.now() + ttlMs;
+    const sig = this.hmac(relPath, exp);
+    return `${relPath}?exp=${exp}&sig=${sig}`;
+  }
+
+  /**
+   * 서명 검증. relPath(쿼리 제외)와 exp·sig가 일치하고 미만료면 true.
+   * timing-safe 비교로 서명 위조를 막는다.
+   */
+  verifySignature(relPath: string, exp: number, sig: string): boolean {
+    if (!Number.isFinite(exp) || exp < Date.now()) return false;
+    const expected = this.hmac(relPath, exp);
+    const a = Buffer.from(expected);
+    const b = Buffer.from(sig);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
   }
 
   /** MIME 화이트리스트 검증 후 media_type 반환 (SDK image block용) */

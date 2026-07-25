@@ -11,7 +11,10 @@ export const envSchema = z.object({
   ENCRYPTION_KEY: z
     .string()
     .min(1, "ENCRYPTION_KEY가 필요합니다. (openssl rand -base64 32)"),
-  JWT_SECRET: z.string().min(1, "JWT_SECRET이 필요합니다."),
+  // 32자 이상 강제. 약한/미설정 시크릿으로 토큰 위조되는 것을 부팅 시 차단.
+  JWT_SECRET: z
+    .string()
+    .min(32, "JWT_SECRET은 32자 이상이어야 합니다. (openssl rand -base64 32)"),
   JWT_EXPIRES_IN: z.string().default("7d"),
   // 활성 Claude 계정이 없을 때의 폴백 OAuth 토큰 (선택, sk-ant-oat...)
   ANTHROPIC_OAUTH_TOKEN: z.string().optional(),

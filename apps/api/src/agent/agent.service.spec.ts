@@ -12,6 +12,7 @@ type BuildEnv = (
   userId: string | undefined,
   gitToken: string | null,
   claudeAccountId?: string | null,
+  accountOwnerId?: string | null,
 ) => Promise<{
   env: Record<string, string | undefined>;
   accountId: string | null;
@@ -30,11 +31,13 @@ describe("AgentService.buildEnv (자격증명 라우팅)", () => {
     userId: string | undefined,
     gitToken: string | null,
     claudeAccountId?: string | null,
+    accountOwnerId?: string | null,
   ) {
     return (service as unknown as { buildEnv: BuildEnv }).buildEnv(
       userId,
       gitToken,
       claudeAccountId,
+      accountOwnerId,
     );
   }
 
@@ -96,11 +99,12 @@ describe("AgentService.buildEnv (자격증명 라우팅)", () => {
     expect(accounts.getActiveToken).not.toHaveBeenCalled();
   });
 
-  it("프로젝트 지정 계정이 활성 계정보다 우선", async () => {
+  it("프로젝트 지정 계정이 활성 계정보다 우선(소유자 id 함께 전달)", async () => {
     accounts.getTokenById.mockResolvedValue("sk-ant-oat01-PROJECT");
     accounts.getActiveToken.mockResolvedValue("sk-ant-oat01-ACTIVE");
-    const { env } = await buildEnv("u1", null, "acc-1");
-    expect(accounts.getTokenById).toHaveBeenCalledWith("acc-1");
+    const { env } = await buildEnv("u1", null, "acc-1", "owner-1");
+    // 소유권 재확인을 위해 기대 소유자(=프로젝트 owner) id도 함께 전달한다.
+    expect(accounts.getTokenById).toHaveBeenCalledWith("acc-1", "owner-1");
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-PROJECT");
     // 지정 계정이 있으면 활성 계정은 조회조차 안 함
     expect(accounts.getActiveToken).not.toHaveBeenCalled();

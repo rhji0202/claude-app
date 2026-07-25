@@ -142,5 +142,25 @@ describe("ClaudeAccountService", () => {
       db.claudeAccount.findUnique.mockResolvedValue(null);
       expect(await service.getTokenById("nope")).toBeNull();
     });
+
+    it("expectedUserId가 소유자와 일치하면 토큰 반환", async () => {
+      const enc = crypto.encrypt("sk-ant-oat01-OWNED");
+      db.claudeAccount.findUnique.mockResolvedValue({
+        userId: "owner-1",
+        accessTokenEnc: enc,
+      });
+      expect(await service.getTokenById("a1", "owner-1")).toBe(
+        "sk-ant-oat01-OWNED",
+      );
+    });
+
+    it("expectedUserId가 소유자와 다르면 null(토큰 미노출)", async () => {
+      const enc = crypto.encrypt("sk-ant-oat01-OTHER");
+      db.claudeAccount.findUnique.mockResolvedValue({
+        userId: "owner-1",
+        accessTokenEnc: enc,
+      });
+      expect(await service.getTokenById("a1", "attacker")).toBeNull();
+    });
   });
 });

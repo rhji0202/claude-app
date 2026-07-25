@@ -5,6 +5,7 @@ import { ExtractJwt, Strategy } from "passport-jwt";
 import { GlobalRole } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import type { AuthUser } from "./current-user.decorator";
+import { requireJwtSecret } from "./jwt-secret.util";
 
 interface JwtPayload {
   sub: string;
@@ -21,7 +22,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: config.get<string>("JWT_SECRET") ?? "change-me",
+      // env 검증(min 32)을 통과하면 항상 존재. 검증 우회 시 예측 가능한
+      // 기본값으로 폴백하지 않고 부팅을 실패시킨다.
+      secretOrKey: requireJwtSecret(config),
     });
   }
 

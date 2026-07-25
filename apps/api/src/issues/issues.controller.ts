@@ -19,6 +19,7 @@ import { IssueEventsService } from "./issue-events.service";
 import { CreateIssueTaskDto, UpdateIssueTaskDto } from "./issues.dto";
 import { MAX_IMAGE_BYTES } from "../uploads/uploads.service";
 import { CurrentUser, type AuthUser } from "../auth/current-user.decorator";
+import { AdminOnly } from "../auth/admin.decorator";
 
 @Controller("issues")
 export class IssuesController {
@@ -43,19 +44,20 @@ export class IssuesController {
     return this.issues.stats(user.userId, { workerId, paused });
   }
 
-  @Post("worker/pause")
+  // 워커 제어는 프로세스 전역(모든 프로젝트/테넌트 영향) → admin만.
+  @AdminOnly() @Post("worker/pause")
   pauseWorker() {
     this.worker.pause();
     return this.worker.runtime();
   }
 
-  @Post("worker/resume")
+  @AdminOnly() @Post("worker/resume")
   resumeWorker() {
     this.worker.resume();
     return this.worker.runtime();
   }
 
-  @Post("worker/reclaim")
+  @AdminOnly() @Post("worker/reclaim")
   async reclaimStale() {
     const reclaimed = await this.worker.forceReclaimStale();
     return { reclaimed };

@@ -27,6 +27,11 @@ export interface RunAgentOptions {
    * (설계 12.5) project.cwd는 더 이상 실행 근거가 아니며, 반드시 이 값을 지정해야 한다.
    */
   cwd: string;
+  /**
+   * 실행 취소 컨트롤러. abort() 하면 SDK가 쿼리를 중단하고 서브프로세스를 정리한다.
+   * 이슈 워커의 stale 회수·그레이스풀 셧다운이 살아있는 실행을 실제로 종료하는 데 쓴다.
+   */
+  abortController?: AbortController;
 }
 
 export interface RunResult {
@@ -103,6 +108,8 @@ export class AgentService {
     userId: string | undefined,
     gitToken: string | null,
     claudeAccountId?: string | null,
+    /** 프로젝트 지정 계정의 기대 소유자(=프로젝트 owner). 읽기 시점 소유권 재확인용. */
+    accountOwnerId?: string | null,
   ): Promise<{
     env: Record<string, string | undefined>;
     /** 실제 자격증명을 제공한 계정 id. 사용자 활성 계정 폴백도 반영. .env 폴백이면 null. */
@@ -115,7 +122,10 @@ export class AgentService {
     let token: string | null = null;
     let accountId: string | null = null;
     if (claudeAccountId) {
-      token = await this.claudeAccounts.getTokenById(claudeAccountId);
+      token = await this.claudeAccounts.getTokenById(
+        claudeAccountId,
+        accountOwnerId,
+      );
       if (token) accountId = claudeAccountId;
     }
     if (!token && userId) {
@@ -254,6 +264,7 @@ export class AgentService {
       opts.userId,
       gitToken,
       project.claudeAccountId,
+      project.ownerId,
     );
     const { model, effort } = await this.resolveModel(
       opts.userId,
@@ -294,6 +305,8 @@ export class AgentService {
           resume,
           settingSources: [],
           env,
+          // 취소 시 SDK가 쿼리를 중단하고 서브프로세스를 정리한다.
+          abortController: opts.abortController,
         },
       });
 
@@ -542,6 +555,7 @@ export class AgentService {
       opts.userId,
       gitToken,
       project.claudeAccountId,
+      project.ownerId,
     );
     const { model, effort } = await this.resolveModel(
       opts.userId,
@@ -604,6 +618,8 @@ export class AgentService {
           resume,
           settingSources: [],
           env,
+          // 취소 시 SDK가 쿼리를 중단하고 서브프로세스를 정리한다.
+          abortController: opts.abortController,
         },
       });
 

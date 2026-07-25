@@ -8,6 +8,7 @@ import { AuthController } from "./auth.controller";
 import { JwtStrategy } from "./jwt.strategy";
 import { JwtAuthGuard } from "./jwt-auth.guard";
 import { RolesGuard } from "./roles.guard";
+import { requireJwtSecret } from "./jwt-secret.util";
 
 @Module({
   imports: [
@@ -16,7 +17,7 @@ import { RolesGuard } from "./roles.guard";
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        secret: config.get<string>("JWT_SECRET") ?? "change-me",
+        secret: requireJwtSecret(config),
         // '7d' 등 ms 문자열. @nestjs/jwt v11의 StringValue 타입 회피 위해 캐스팅.
         signOptions: {
           expiresIn: (config.get<string>("JWT_EXPIRES_IN") ?? "7d") as `${number}d`,

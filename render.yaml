@@ -13,7 +13,8 @@ services:
     dockerfilePath: apps/api/Dockerfile
     dockerContext: .
     plan: starter
-    healthCheckPath: /api/health
+    # 레디니스(DB 연결까지 확인) — DB 다운 시 503으로 헬스 실패 처리.
+    healthCheckPath: /api/health/ready
     envVars:
       - key: NODE_ENV
         value: production

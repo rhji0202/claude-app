@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
@@ -29,6 +30,8 @@ export interface ModelConfig {
 
 @Injectable()
 export class ClaudeAccountService {
+  private readonly logger = new Logger(ClaudeAccountService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
@@ -132,12 +135,27 @@ export class ClaudeAccountService {
     return acc?.id ?? null;
   }
 
-  /** 특정 계정 id의 액세스 토큰(복호화). 프로젝트 지정 계정 실행용. 없으면 null. */
-  async getTokenById(accountId: string): Promise<string | null> {
+  /**
+   * 특정 계정 id의 액세스 토큰(복호화). 프로젝트 지정 계정 실행용. 없으면 null.
+   *
+   * expectedUserId가 주어지면 계정 소유자가 그 사용자와 일치할 때만 반환한다
+   * (confused-deputy 방지: 실행 경로가 다른 사용자의 계정 토큰을 임의 id로
+   * 복호화하지 못하도록 읽기 시점에도 소유권을 재확인). 소유자 불일치면 null.
+   */
+  async getTokenById(
+    accountId: string,
+    expectedUserId?: string | null,
+  ): Promise<string | null> {
     const acc = await this.prisma.claudeAccount.findUnique({
       where: { id: accountId },
     });
     if (!acc) return null;
+    if (expectedUserId && acc.userId !== expectedUserId) {
+      this.logger.warn(
+        `계정 ${accountId} 소유권 불일치(소유자≠${expectedUserId}) — 토큰 반환 거부`,
+      );
+      return null;
+    }
     return this.crypto.decryptOptional(acc.accessTokenEnc);
   }
 
