@@ -4,6 +4,9 @@
   "private": true,
   "description": "Claude 관리 시스템 - Next.js 프론트엔드",
   "scripts": {
+    "// shared": "shared의 types가 dist를 가리키므로 타입체크·dev 전에 빌드가 필요하다. build에는 걸지 않는다(`pnpm -r build`가 순서를 보장하며, prebuild를 더하면 shared 산출물 경합이 생긴다).",
+    "predev": "pnpm --filter @claude-app/shared build",
+    "pretypecheck": "pnpm --filter @claude-app/shared build",
     "dev": "next dev -p 6002",
     "build": "next build",
     "start": "next start -p 6002",

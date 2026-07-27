@@ -2,7 +2,12 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "./src",
-    "noEmit": true
+    "outDir": "./dist",
+    // 소비자에 맞춘 출력 형식: API가 CommonJS로 컴파일되어 require()로 이 패키지를
+    // 로드한다. ESM으로 내보내면 engines가 허용하는 Node 20에서 require(esm)이
+    // 실패한다. web은 next transpilePackages로 소스를 직접 번들하므로 영향 없다.
+    "module": "commonjs",
+    "moduleResolution": "node"
   },
   "include": ["src/**/*.ts"]
 }
