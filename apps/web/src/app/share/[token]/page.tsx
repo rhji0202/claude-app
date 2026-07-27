@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { Bot } from "lucide-react";
+import { Bot, Plus } from "lucide-react";
 import { toast } from "sonner";
-import { api, upload } from "@/lib/api";
+import { issueSourceLabel, issueStatusLabel } from "@claude-app/shared";
+import { api, upload, uploadUrl } from "@/lib/api";
 import { StatusBadge, Mono } from "@/components/StatusBadge";
+import { MarkdownEditor } from "@/components/MarkdownEditor";
 import {
   Card,
   CardContent,
@@ -14,7 +16,6 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -45,7 +46,8 @@ export default function SharePage() {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [reporter, setReporter] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
+  // 이미지 업로드 대상으로 미리 만들어 둔 초안 이슈 id. 첫 이미지 첨부 시 생성.
+  const [draftId, setDraftId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -62,29 +64,46 @@ export default function SharePage() {
     load();
   }, [load]);
 
+  /**
+   * 본문에 붙여넣은 이미지를 업로드하고 마크다운에 넣을 URL을 돌려준다.
+   * 업로드에는 대상 이슈가 필요하므로, 없으면 초안을 먼저 만든다(제목 입력 전에도 가능).
+   */
+  async function uploadImage(file: File): Promise<string> {
+    let id = draftId;
+    if (!id) {
+      const draft = await api.post<{ id: string }>(
+        `/public/share/${token}/issue-drafts`,
+        undefined,
+        false,
+      );
+      id = draft.id;
+      setDraftId(id);
+    }
+    const form = new FormData();
+    form.append("files", file);
+    const res = await upload<{ images: string[] }>(
+      `/public/share/${token}/issues/${id}/images`,
+      form,
+      false,
+    );
+    return uploadUrl(res.images[res.images.length - 1]);
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     try {
-      const created = await api.post<{ id: string }>(
+      // 초안이 있으면 그 초안을 확정한다(새 이슈를 또 만들지 않음).
+      await api.post(
         `/public/share/${token}/issues`,
-        { title, body, reporter },
+        { title, body, reporter, issueId: draftId ?? undefined },
         false,
       );
-      // 첨부 이미지 업로드 (있으면)
-      if (files.length > 0 && created?.id) {
-        const form = new FormData();
-        files.forEach((f) => form.append("files", f));
-        await upload(
-          `/public/share/${token}/issues/${created.id}/images`,
-          form,
-          false,
-        );
-      }
       toast.success("이슈가 등록되었습니다. 감사합니다!");
       setTitle("");
       setBody("");
-      setFiles([]);
+      setReporter("");
+      setDraftId(null);
       await load();
     } catch (err) {
       toast.error((err as Error).message);
@@ -156,27 +175,13 @@ export default function SharePage() {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="s-body">내용</Label>
-                <Textarea
-                  id="s-body"
+                <Label>내용 (마크다운 · 이미지 붙여넣기/드래그 가능)</Label>
+                <MarkdownEditor
                   value={body}
-                  onChange={(e) => setBody(e.target.value)}
+                  onChange={setBody}
+                  onUploadImage={uploadImage}
+                  placeholder="어떤 문제가 있었는지 적어주세요. 이미지를 붙여넣거나 드래그하면 자동 업로드됩니다."
                 />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="s-images">이미지 첨부 (선택, 여러 개 가능)</Label>
-                <Input
-                  id="s-images"
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
-                />
-                {files.length > 0 && (
-                  <p className="text-xs text-muted-foreground">
-                    {files.length}개 선택됨
-                  </p>
-                )}
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="s-reporter">작성자 (선택)</Label>
@@ -187,7 +192,8 @@ export default function SharePage() {
                   placeholder="이름/이메일"
                 />
               </div>
-              <Button type="submit" disabled={busy || !title}>
+              <Button type="submit" disabled={busy || !title.trim()}>
+                <Plus className="size-4" />
                 {busy ? "등록 중..." : "이슈 등록"}
               </Button>
             </form>
@@ -211,9 +217,16 @@ export default function SharePage() {
                   key={i.id}
                   className="flex items-center gap-3 py-2.5 text-sm"
                 >
-                  <Mono>{i.issueNumber ? `#${i.issueNumber}` : i.source}</Mono>
+                  <Mono>
+                    {i.issueNumber
+                      ? `#${i.issueNumber}`
+                      : issueSourceLabel(i.source)}
+                  </Mono>
                   <span className="min-w-0 flex-1 truncate">{i.title}</span>
-                  <StatusBadge status={i.status} />
+                  <StatusBadge
+                    status={i.status}
+                    label={issueStatusLabel(i.status)}
+                  />
                 </li>
               ))}
             </ul>

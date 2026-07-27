@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { randomBytes } from "node:crypto";
-import { Role, ShareLinkScope as PrismaScope } from "@prisma/client";
+import { IssueStatus, Role, ShareLinkScope as PrismaScope } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { ProjectsService } from "../projects/projects.service";
 import { IssuesService } from "../issues/issues.service";
@@ -24,6 +24,8 @@ const SCOPE_TO_DTO: Record<PrismaScope, ShareLinkScope> = {
   READ: "read",
   ISSUE_REPORT: "issue_report",
 };
+/** 초안 이슈의 임시 제목(등록 확정 시 실제 제목으로 교체된다). */
+const DRAFT_TITLE = "(작성 중)";
 
 @Injectable()
 export class ShareService {
@@ -132,7 +134,8 @@ export class ShareService {
     });
     if (!project) throw new NotFoundException("프로젝트를 찾을 수 없습니다.");
     const issues = await this.prisma.issueTask.findMany({
-      where: { projectId: link.projectId },
+      // 작성 중(DRAFT)인 초안은 아직 등록 전이므로 목록에서 제외한다.
+      where: { projectId: link.projectId, status: { not: IssueStatus.DRAFT } },
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
@@ -163,11 +166,40 @@ export class ShareService {
     };
   }
 
-  /** 테스터가 공유 링크로 이슈를 수동 등록 (scope=issue_report 필요) */
+  /**
+   * 이미지 업로드 대상이 될 빈 초안 이슈를 만든다(scope=issue_report 필요).
+   * 본문에 이미지를 붙여넣는 순간 업로드할 이슈 id가 필요하므로, 제목 입력 전에도
+   * 만들 수 있어야 한다. 제목은 최종 등록(reportIssue) 시 채워진다.
+   */
+  async createReportDraft(token: string) {
+    const link = await this.assertCanReport(token);
+    const issue = await this.issues.createFromReport(link.projectId, {
+      title: DRAFT_TITLE,
+      draft: true,
+    });
+    return { id: issue.id };
+  }
+
+  /**
+   * 테스터가 공유 링크로 이슈를 수동 등록 (scope=issue_report 필요).
+   * dto.issueId가 있으면 이미지 업로드용으로 먼저 만든 초안을 갱신한다 —
+   * 공개 라우트에 범용 수정 엔드포인트를 열지 않기 위한 것으로, 토큰의 프로젝트에
+   * 속한 아직 등록되지 않은 초안만 대상이며 title·body만 쓴다.
+   */
   async reportIssue(token: string, dto: ReportIssueDto) {
-    const link = await this.resolveToken(token);
-    if (link.scope !== PrismaScope.ISSUE_REPORT) {
-      throw new BadRequestException("이슈 등록 권한이 없는 링크입니다.");
+    const link = await this.assertCanReport(token);
+    if (dto.issueId) {
+      const issue = await this.issues.finalizeReportDraft(
+        link.projectId,
+        dto.issueId,
+        {
+          title: dto.title,
+          body: dto.body,
+          labels: dto.labels,
+          reporter: dto.reporter,
+        },
+      );
+      return { ok: true, id: issue.id, title: issue.title };
     }
     const issue = await this.issues.createFromReport(link.projectId, {
       title: dto.title,
@@ -179,16 +211,26 @@ export class ShareService {
     return { ok: true, id: issue.id, title: issue.title };
   }
 
-  /** 테스터가 등록한 이슈에 이미지 첨부(공유 링크 경유). 토큰의 프로젝트 소속 이슈만. */
+  /** 링크를 해석하고 이슈 등록 권한(scope)까지 확인한다. */
+  private async assertCanReport(token: string) {
+    const link = await this.resolveToken(token);
+    if (link.scope !== PrismaScope.ISSUE_REPORT) {
+      throw new BadRequestException("이슈 등록 권한이 없는 링크입니다.");
+    }
+    return link;
+  }
+
+  /**
+   * 테스터가 등록한 이슈에 이미지 첨부(공유 링크 경유). 토큰의 프로젝트 소속 이슈만.
+   * 저장된 경로를 서명 URL로 돌려주므로 프론트가 본문에 마크다운으로 삽입할 수 있다
+   * (서명이 없으면 /uploads가 거부하므로 무인증 열람은 여전히 막힌다).
+   */
   async addReportImages(
     token: string,
     issueId: string,
     files: { buffer: Buffer; mimetype: string }[],
   ) {
-    const link = await this.resolveToken(token);
-    if (link.scope !== PrismaScope.ISSUE_REPORT) {
-      throw new BadRequestException("이슈 등록 권한이 없는 링크입니다.");
-    }
+    const link = await this.assertCanReport(token);
     const issue = await this.prisma.issueTask.findFirst({
       where: { id: issueId, projectId: link.projectId },
     });
@@ -202,6 +244,10 @@ export class ShareService {
       where: { id: issueId },
       data: { images: { push: saved } },
     });
-    return { ok: true, count: saved.length };
+    return {
+      ok: true,
+      count: saved.length,
+      images: saved.map((rel) => this.uploads.signRelPath(rel)),
+    };
   }
 }

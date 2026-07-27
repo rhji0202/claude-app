@@ -17,6 +17,7 @@ enum Visibility {
 }
 
 enum IssueStatus {
+  DRAFT // 공유 링크 이슈 등록 중(이미지 업로드 대상). 워커가 집지 않는다.
   QUEUED
   RUNNING
   DONE

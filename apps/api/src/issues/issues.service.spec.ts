@@ -25,6 +25,7 @@ describe("IssuesService (큐/워커)", () => {
       findMany: jest.Mock;
       findFirst: jest.Mock;
       findUnique: jest.Mock;
+      create: jest.Mock;
       updateMany: jest.Mock;
       update: jest.Mock;
       count: jest.Mock;
@@ -121,6 +122,7 @@ describe("IssuesService (큐/워커)", () => {
         findMany: jest.fn(),
         findFirst: jest.fn().mockResolvedValue(null),
         findUnique: jest.fn(),
+        create: jest.fn(),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
         update: jest.fn().mockResolvedValue({}),
         count: jest.fn().mockResolvedValue(0),
@@ -815,10 +817,14 @@ describe("IssuesService (큐/워커)", () => {
       projects.assertAccess = jest.fn().mockResolvedValue(undefined);
     });
 
-    it("status 미지정이면 상태 조건 없이 접근 가능한 프로젝트만 조회한다", async () => {
+    // status 미지정이면 등록 전 초안(DRAFT)만 빼고 접근 가능한 프로젝트 전체를 본다.
+    it("status 미지정이면 초안을 제외하고 접근 가능한 프로젝트만 조회한다", async () => {
       (projects.accessibleProjectIds as jest.Mock).mockResolvedValue(["p1", "p2"]);
       await service.list("u1");
-      expect(listWhere()).toEqual({ projectId: { in: ["p1", "p2"] } });
+      expect(listWhere()).toEqual({
+        projectId: { in: ["p1", "p2"] },
+        status: { not: IssueStatus.DRAFT },
+      });
     });
 
     it("status를 DB enum으로 변환해 필터에 넣는다", async () => {
@@ -841,12 +847,111 @@ describe("IssuesService (큐/워커)", () => {
     // 허용 목록에 없는 값은 Prisma enum 캐스팅 에러 대신 전체 조회로 폴백해야 한다.
     it("알 수 없는 status 값은 무시하고 전체를 조회한다", async () => {
       await service.list("u1", undefined, "bogus");
-      expect(listWhere()).toEqual({ projectId: { in: ["p1"] } });
+      expect(listWhere()).toEqual({
+        projectId: { in: ["p1"] },
+        status: { not: IssueStatus.DRAFT },
+      });
     });
 
     it("빈 문자열 status도 무시한다", async () => {
       await service.list("u1", undefined, "");
-      expect(listWhere()).toEqual({ projectId: { in: ["p1"] } });
+      expect(listWhere()).toEqual({
+        projectId: { in: ["p1"] },
+        status: { not: IssueStatus.DRAFT },
+      });
+    });
+  });
+
+  // 공유 링크(비로그인) 수동 등록 경로. 초안은 워커가 집지 않아야 하고,
+  // 확정은 "그 프로젝트의 DRAFT"만 대상이어야 한다(공개 라우트의 쓰기 범위 제한).
+  describe("createFromReport / finalizeReportDraft (공유 링크 등록)", () => {
+    const row = (over: Record<string, unknown> = {}) => ({
+      id: "i1",
+      projectId: "p1",
+      repo: "o/r",
+      issueNumber: null,
+      title: "t",
+      body: null,
+      url: null,
+      labels: [],
+      author: null,
+      source: "MANUAL",
+      prompt: null,
+      images: [],
+      imageMap: null,
+      status: IssueStatus.QUEUED,
+      sessionId: null,
+      result: null,
+      error: null,
+      resultCommentUrl: null,
+      prUrl: null,
+      category: null,
+      progress: null,
+      progressLog: null,
+      costUsd: null,
+      inputTokens: null,
+      outputTokens: null,
+      attempts: 0,
+      claimedAt: null,
+      lockedBy: null,
+      createdAt: new Date("2026-07-25T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-25T00:00:00.000Z"),
+      ...over,
+    });
+
+    beforeEach(() => {
+      prisma.project.findUnique.mockResolvedValue({ id: "p1", gitRepo: "o/r" });
+    });
+
+    it("draft=true면 DRAFT 상태로 만들어 워커가 집지 않게 한다", async () => {
+      prisma.issueTask.create.mockResolvedValue(row({ status: IssueStatus.DRAFT }));
+      await service.createFromReport("p1", { title: "(작성 중)", draft: true });
+      expect(prisma.issueTask.create.mock.calls[0][0].data.status).toBe(
+        IssueStatus.DRAFT,
+      );
+    });
+
+    it("draft가 없으면 QUEUED로 만들어 바로 큐에 넣는다", async () => {
+      prisma.issueTask.create.mockResolvedValue(row());
+      await service.createFromReport("p1", { title: "버그" });
+      expect(prisma.issueTask.create.mock.calls[0][0].data.status).toBe(
+        IssueStatus.QUEUED,
+      );
+    });
+
+    it("초안 확정은 제목·본문을 채우고 QUEUED로 넘긴다", async () => {
+      prisma.issueTask.findFirst.mockResolvedValue(row({ status: IssueStatus.DRAFT }));
+      prisma.issueTask.update.mockResolvedValue(row({ title: "버그", body: "![](x)" }));
+
+      await service.finalizeReportDraft("p1", "i1", {
+        title: "버그",
+        body: "![](x)",
+        reporter: "tester",
+      });
+
+      // 조회 범위가 (id, projectId, DRAFT)로 좁혀져 있어야 한다.
+      expect(prisma.issueTask.findFirst.mock.calls[0][0].where).toEqual({
+        id: "i1",
+        projectId: "p1",
+        status: IssueStatus.DRAFT,
+      });
+      expect(prisma.issueTask.update.mock.calls[0][0].data).toEqual({
+        title: "버그",
+        body: "![](x)",
+        labels: [],
+        author: "tester",
+        status: IssueStatus.QUEUED,
+      });
+    });
+
+    // 이미 확정된 이슈(DRAFT 아님)나 다른 프로젝트의 이슈는 findFirst가 못 찾으므로
+    // 공개 경로로 남의 이슈를 덮어쓸 수 없다.
+    it("DRAFT가 아니거나 다른 프로젝트면 거부한다", async () => {
+      prisma.issueTask.findFirst.mockResolvedValue(null);
+      await expect(
+        service.finalizeReportDraft("p1", "i1", { title: "덮어쓰기" }),
+      ).rejects.toThrow("등록 대기 중인 초안을 찾을 수 없습니다.");
+      expect(prisma.issueTask.update).not.toHaveBeenCalled();
     });
   });
 
@@ -868,6 +973,7 @@ describe("IssuesService (큐/워커)", () => {
       expect(res.slots).toEqual({ concurrency: 3, running: 2, free: 1 });
       // 미등장 상태는 0으로 채움
       expect(res.counts).toEqual({
+        draft: 0,
         queued: 4,
         running: 2,
         done: 0,

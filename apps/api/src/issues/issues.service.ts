@@ -105,6 +105,7 @@ const fromSource = (s: PrismaSource): IssueSource =>
 const toSource = (s: IssueSource): PrismaSource =>
   s === "manual" ? PrismaSource.MANUAL : PrismaSource.GITHUB;
 const STATUS_TO_DTO: Record<IssueStatus, IssueTaskStatus> = {
+  DRAFT: "draft",
   QUEUED: "queued",
   RUNNING: "running",
   DONE: "done",
@@ -274,7 +275,8 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
     const rows = await this.prisma.issueTask.findMany({
       where: {
         projectId: { in: ids },
-        ...(dbStatus ? { status: dbStatus } : {}),
+        // 작성 중(DRAFT)인 공유 링크 초안은 아직 등록된 이슈가 아니므로 감춘다.
+        ...(dbStatus ? { status: dbStatus } : { status: { not: IssueStatus.DRAFT } }),
       },
       orderBy: { createdAt: "desc" },
     });
@@ -313,6 +315,7 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
       _count: { _all: true },
     });
     const counts: Record<IssueTaskStatus, number> = {
+      draft: 0,
       queued: 0,
       running: 0,
       done: 0,
@@ -426,6 +429,38 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
         labels: report.labels ?? [],
         author: report.reporter,
         source: PrismaSource.MANUAL,
+        // 초안(draft)은 작성이 끝날 때까지 워커가 집지 않도록 DRAFT로 둔다.
+        status: report.draft ? IssueStatus.DRAFT : IssueStatus.QUEUED,
+      },
+    });
+    return this.toDto(row);
+  }
+
+  /**
+   * 공유 링크로 만든 초안(DRAFT)을 실제 이슈로 확정한다. 이미지 업로드 때문에
+   * 먼저 생성해 둔 초안에 최종 제목·본문을 채우고 QUEUED로 넘긴다.
+   *
+   * 공개(비로그인) 경로에서 호출되므로 범위를 좁게 잡는다: 해당 프로젝트의
+   * DRAFT 상태 이슈만 대상이고, 쓰는 필드도 title·body·labels·author로 한정한다.
+   * 이미 확정된 이슈는 DRAFT가 아니므로 재호출로 덮어쓸 수 없다.
+   */
+  async finalizeReportDraft(
+    projectId: string,
+    issueId: string,
+    report: ManualIssueReport,
+  ): Promise<IssueDto> {
+    const draft = await this.prisma.issueTask.findFirst({
+      where: { id: issueId, projectId, status: IssueStatus.DRAFT },
+    });
+    if (!draft)
+      throw new BadRequestException("등록 대기 중인 초안을 찾을 수 없습니다.");
+    const row = await this.prisma.issueTask.update({
+      where: { id: issueId },
+      data: {
+        title: report.title,
+        body: report.body,
+        labels: report.labels ?? [],
+        author: report.reporter,
         status: IssueStatus.QUEUED,
       },
     });

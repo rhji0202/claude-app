@@ -2,6 +2,7 @@ import { Badge, type BadgeProps } from "@/components/ui/badge";
 
 /** 상태 문자열 → Badge variant 매핑 (실행 상태 + triage 카테고리) */
 const VARIANT: Record<string, BadgeProps["variant"]> = {
+  draft: "muted",
   queued: "muted",
   running: "warning",
   done: "success",

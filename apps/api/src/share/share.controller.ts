@@ -79,6 +79,16 @@ export class ShareController {
     return this.share.reportIssue(token, dto);
   }
 
+  /**
+   * 본문에 이미지를 붙여넣을 때 필요한 업로드 대상(초안 이슈)을 미리 만든다.
+   * 초안은 DRAFT 상태라 워커가 집지 않고, 목록에도 노출되지 않는다.
+   */
+  @Public()
+  @Post("public/share/:token/issue-drafts")
+  createReportDraft(@Param("token") token: string) {
+    return this.share.createReportDraft(token);
+  }
+
   /** 테스터: 등록한 이슈에 이미지 첨부 (multipart field: files) */
   @Public()
   @Post("public/share/:token/issues/:issueId/images")

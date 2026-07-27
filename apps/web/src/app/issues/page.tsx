@@ -3,10 +3,11 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Download, Loader2, MessageSquare, Play, Plus } from "lucide-react";
-import type {
-  IssueNote,
-  IssueProgressEvent,
-  IssueTaskStatus,
+import type { IssueNote, IssueProgressEvent } from "@claude-app/shared";
+import {
+  ISSUE_STATUS_ORDER as STATUS_ORDER,
+  issueCategoryLabel,
+  issueStatusLabel,
 } from "@claude-app/shared";
 import CrudPanel from "@/components/CrudPanel";
 import { WorkerDashboard } from "./WorkerDashboard";
@@ -49,35 +50,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 
-const STATUS_LABEL: Record<string, string> = {
-  queued: "대기",
-  running: "실행 중",
-  done: "완료",
-  error: "오류",
-  interrupted: "중단됨",
-  needs_decision: "결정 대기",
-};
-
-/**
- * 상태 필터 드롭다운 순서(작업 흐름 순). IssueTaskStatus로 타입을 묶어두면
- * 공유 타입에 상태가 추가·변경될 때 컴파일 에러로 드러난다.
- */
-const STATUS_ORDER: IssueTaskStatus[] = [
-  "queued",
-  "running",
-  "needs_decision",
-  "done",
-  "error",
-  "interrupted",
-];
-
-const CATEGORY_LABEL: Record<string, string> = {
-  "auto-fix": "자동수정",
-  "needs-decision": "결정필요",
-  "needs-info": "정보부족",
-  question: "질문",
-};
-
 /**
  * 상태 배지를 클릭하면 오류 메시지·실행 결과 전문을 다이얼로그로 보여준다.
  * error/result가 있는 상태(오류·완료)에서만 클릭 가능하게 한다.
@@ -94,7 +66,7 @@ function IssueStatusCell({
   const result = (row.result as string | null | undefined) ?? null;
   const progress = (row.progress as string | null | undefined) ?? null;
   const badge = (
-    <StatusBadge status={status} label={STATUS_LABEL[status] ?? status} />
+    <StatusBadge status={status} label={issueStatusLabel(status)} />
   );
 
   // 실행 중이면 배지 + 진행 상황(현재 도구). 진행 이력이 있으면 클릭 시 타임라인.
@@ -478,7 +450,7 @@ function IssueDetailDialog({
             <span className="min-w-0 truncate">{String(row.title ?? "")}</span>
           </DialogTitle>
           <DialogDescription className="flex flex-wrap items-center gap-2">
-            <StatusBadge status={status} label={STATUS_LABEL[status] ?? status} />
+            <StatusBadge status={status} label={issueStatusLabel(status)} />
             <Mono>{String(row.source)}</Mono>
             {row.author ? <span>· {String(row.author)}</span> : null}
           </DialogDescription>
@@ -980,7 +952,7 @@ export default function IssuesPage() {
             <SelectItem value="all">전체 상태</SelectItem>
             {STATUS_ORDER.map((s) => (
               <SelectItem key={s} value={s}>
-                {STATUS_LABEL[s]}
+                {issueStatusLabel(s)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -1056,7 +1028,7 @@ export default function IssuesPage() {
             render: (r) => {
               const cat = (r.category as string | null | undefined) ?? null;
               if (!cat) return <Mono>—</Mono>;
-              return <StatusBadge status={cat} label={CATEGORY_LABEL[cat] ?? cat} />;
+              return <StatusBadge status={cat} label={issueCategoryLabel(cat)} />;
             },
           },
           {

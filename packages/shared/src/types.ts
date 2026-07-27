@@ -125,6 +125,8 @@ export interface Project {
 }
 
 export type IssueTaskStatus =
+  /** 공유 링크로 등록 중인 미완성 이슈(이미지 업로드 대상). 목록에 노출하지 않는다. */
+  | "draft"
   | "queued"
   | "running"
   | "done"
@@ -348,4 +350,9 @@ export interface ManualIssueReport {
   body?: string;
   labels?: string[];
   reporter?: string;
+  /**
+   * true면 DRAFT 상태로 만든다(본문 이미지 업로드 대상 확보용). 작성이 끝나면
+   * finalizeReportDraft가 QUEUED로 넘긴다.
+   */
+  draft?: boolean;
 }
