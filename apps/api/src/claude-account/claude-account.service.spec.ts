@@ -163,4 +163,90 @@ describe("ClaudeAccountService", () => {
       expect(await service.getTokenById("a1", "attacker")).toBeNull();
     });
   });
+
+  describe("update — effort 미지원 모델 정리", () => {
+    // update는 갱신 결과 행을 toDto에 넘기므로, 최소 필드를 갖춘 행을 돌려준다.
+    function mockUpdateEcho(stored: { model: string | null; effort: string | null }) {
+      db.claudeAccount.findFirst.mockResolvedValue({
+        id: "a1",
+        userId: "u1",
+        ...stored,
+      });
+      db.claudeAccount.update.mockImplementation(({ data }) => ({
+        id: "a1",
+        label: "L",
+        accountEmail: null,
+        subscriptionType: null,
+        accessTokenEnc: crypto.encrypt("sk-ant-oat01-X"),
+        isActive: true,
+        model: stored.model,
+        effort: stored.effort,
+        monthlyBudgetUsd: null,
+        createdAt: new Date(),
+        ...data,
+      }));
+    }
+
+    it("Haiku + effort를 함께 저장하면 effort를 버린다", async () => {
+      mockUpdateEcho({ model: null, effort: null });
+      await service.update("a1", "u1", {
+        model: "claude-haiku-4-5",
+        effort: "xhigh",
+      });
+      expect(db.claudeAccount.update.mock.calls[0][0].data).toMatchObject({
+        model: "claude-haiku-4-5",
+        effort: null,
+      });
+    });
+
+    it("모델만 Haiku로 바꿔도 기존 effort를 정리한다", async () => {
+      // effort는 이번 요청에 없지만 결과 모델이 미지원이므로 비워야 한다.
+      mockUpdateEcho({ model: "claude-opus-5", effort: "max" });
+      await service.update("a1", "u1", { model: "claude-haiku-4-5" });
+      expect(db.claudeAccount.update.mock.calls[0][0].data.effort).toBeNull();
+    });
+
+    it("effort 지원 모델이면 지정값을 그대로 저장한다", async () => {
+      mockUpdateEcho({ model: "claude-opus-5", effort: null });
+      await service.update("a1", "u1", { effort: "low" });
+      expect(db.claudeAccount.update.mock.calls[0][0].data.effort).toBe("low");
+    });
+  });
+
+  describe("getModelConfig", () => {
+    it("effort 미지원 모델이면 effort=null + effortSupported=false", async () => {
+      db.claudeAccount.findUnique.mockResolvedValue({
+        model: "claude-haiku-4-5",
+        // 이 검증이 생기기 전에 저장된 조합도 실행 시점에 막혀야 한다.
+        effort: "xhigh",
+      });
+      expect(await service.getModelConfig("u1", "a1")).toEqual({
+        model: "claude-haiku-4-5",
+        effort: null,
+        effortSupported: false,
+      });
+    });
+
+    it("지원 모델이면 계정 effort를 그대로 전달", async () => {
+      db.claudeAccount.findUnique.mockResolvedValue({
+        model: "claude-opus-5",
+        effort: "xhigh",
+      });
+      expect(await service.getModelConfig("u1", "a1")).toEqual({
+        model: "claude-opus-5",
+        effort: "xhigh",
+        effortSupported: true,
+      });
+    });
+
+    it("계정 지정이 없으면 null + effortSupported=true(전역 기본 폴백 허용)", async () => {
+      db.claudeAccount.findUnique.mockResolvedValue(null);
+      db.claudeAccount.findFirst.mockResolvedValue(null);
+      expect(await service.getModelConfig("u1", "a1")).toEqual({
+        model: null,
+        effort: null,
+        effortSupported: true,
+      });
+    });
+  });
 });

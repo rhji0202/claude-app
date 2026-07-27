@@ -5,6 +5,8 @@ import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
 import { ClaudeAccountService } from "../claude-account/claude-account.service";
 import type { AgentUsage } from "@claude-app/shared";
+// 타입 전용 import — 컴파일 시 지워지므로 SDK 런타임 동적 로드에 영향 없다.
+import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 
 export interface AgentImage {
   /** base64 인코딩 이미지 데이터 */
@@ -156,20 +158,38 @@ export class AgentService {
   /**
    * 실행에 쓸 모델·effort 해석. 계정 지정값 우선, 없으면 env 전역 기본
    * (ANTHROPIC_MODEL / ANTHROPIC_EFFORT). SDK query options.model/effort로 전달된다.
+   * effort=null이면 options.effort를 아예 넘기지 않는다(CLI 기본값 사용).
    */
   private async resolveModel(
     userId: string | undefined,
     claudeAccountId?: string | null,
-  ): Promise<{ model: string; effort: string }> {
+  ): Promise<{ model: string; effort: EffortLevel | null }> {
     const cfg = await this.claudeAccounts.getModelConfig(userId, claudeAccountId);
-    return {
-      model:
-        cfg.model ??
-        this.config.get<string>("ANTHROPIC_MODEL") ??
-        "claude-opus-5",
-      effort:
-        cfg.effort ?? this.config.get<string>("ANTHROPIC_EFFORT") ?? "high",
-    };
+    const model =
+      cfg.model ?? this.config.get<string>("ANTHROPIC_MODEL") ?? "claude-opus-5";
+    // effort 미지원 모델(Haiku 등)은 env 전역 기본으로도 폴백하지 않는다 —
+    // 계정은 Haiku인데 effort는 전역값에서 흘러드는 경로를 막는다.
+    const effort = cfg.effortSupported
+      ? ((cfg.effort ??
+          this.config.get<string>("ANTHROPIC_EFFORT") ??
+          "high") as EffortLevel)
+      : null;
+    return { model, effort };
+  }
+
+  /**
+   * effort는 SDK Options.effort(1급 필드)로 전달한다. 과거에는 타입에 없어
+   * CLAUDE_CODE_EFFORT_LEVEL env로 우회했는데, 그 경로는 low|medium|high만
+   * 해석해 xhigh·max가 조용히 무시됐다.
+   *
+   * 주의: CLI는 잘못된 effort 값도 오류 없이 받아들인다(실측 확인). 즉 런타임
+   * 방어가 없으므로 resolveModel의 EffortLevel 타입이 유일한 안전장치다.
+   *
+   * env 키는 여기서 지운다 — buildEnv가 {...process.env}를 복사하므로 호스트에
+   * 남은 값이 상속되어 Options.effort와 충돌·오작동할 수 있다.
+   */
+  private clearEffortEnv(env: Record<string, string | undefined>): void {
+    delete env.CLAUDE_CODE_EFFORT_LEVEL;
   }
 
   /** 프로젝트에 연결된 활성 MCP 서버를 SDK mcpServers 설정으로 변환 */
@@ -270,8 +290,7 @@ export class AgentService {
       opts.userId,
       project.claudeAccountId,
     );
-    // effort는 SDK Options 타입 버전에 따라 없을 수 있어 env로 전달(CLI가 해석).
-    env.CLAUDE_CODE_EFFORT_LEVEL = effort;
+    this.clearEffortEnv(env);
 
     let sessionId: string | undefined;
     let finalText = "";
@@ -296,6 +315,8 @@ export class AgentService {
           // 실행 디렉터리는 항상 호출측이 주입한 worktree 경로(설계 12.5). project.cwd 미사용.
           cwd: opts.cwd,
           model,
+          // null이면 키를 생략해 CLI 기본값을 쓴다(effort 미지원 모델).
+          ...(effort ? { effort } : {}),
           maxTurns: opts.maxTurns ?? 20,
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
@@ -316,6 +337,8 @@ export class AgentService {
           subtype?: string;
           session_id?: string;
           result?: string;
+          errors?: string[];
+          terminal_reason?: string;
           error?: string;
           num_turns?: number;
           total_cost_usd?: number;
@@ -509,17 +532,32 @@ export class AgentService {
 
   private describeResultError(m: {
     subtype?: string;
+    /** SDK가 실제로 주는 필드. 단수 error는 없다. */
+    errors?: string[];
+    /** 종료 원인 상세(max_turns·api_error·prompt_too_long 등). 있으면 함께 노출. */
+    terminal_reason?: string;
     error?: string;
     num_turns?: number;
   }): string {
-    if (m.error) return m.error;
+    // SDK result 메시지는 errors: string[]를 준다. 과거 코드가 단수 m.error만
+    // 봤기 때문에 실제 오류 내용이 항상 버려지고 subtype 폴백 문구만 남았다.
+    const detail =
+      m.errors?.filter((e) => e && e.trim()).join("; ") || m.error?.trim();
+    if (detail) return detail;
+
+    // 오류 문구가 비어 있을 때만 종료 사유로 문장을 만든다.
     const reason =
       m.subtype === "error_max_turns"
         ? `최대 턴 수(${m.num_turns ?? "?"}턴)에 도달해 중단되었습니다.`
-        : m.subtype === "error_during_execution"
-          ? "실행 중 오류가 발생했습니다."
-          : `실행이 비정상 종료되었습니다 (${m.subtype ?? "unknown"}).`;
-    return reason;
+        : m.subtype === "error_max_budget_usd"
+          ? "실행 비용이 예산 상한에 도달해 중단되었습니다."
+          : m.subtype === "error_max_structured_output_retries"
+            ? "구조화 출력 재시도 한도를 초과했습니다."
+            : m.subtype === "error_during_execution"
+              ? "실행 중 오류가 발생했습니다."
+              : `실행이 비정상 종료되었습니다 (${m.subtype ?? "unknown"}).`;
+    // terminal_reason은 subtype보다 구체적이라 원인 추적에 도움이 된다.
+    return m.terminal_reason ? `${reason} (${m.terminal_reason})` : reason;
   }
 
   private async execute(
@@ -561,7 +599,7 @@ export class AgentService {
       opts.userId,
       project.claudeAccountId,
     );
-    env.CLAUDE_CODE_EFFORT_LEVEL = effort;
+    this.clearEffortEnv(env);
 
     let sessionId: string | undefined;
     let text = "";
@@ -608,6 +646,8 @@ export class AgentService {
           // 실행 디렉터리는 항상 호출측이 주입한 worktree 경로(설계 12.5). project.cwd 미사용.
           cwd: opts.cwd,
           model,
+          // null이면 키를 생략해 CLI 기본값을 쓴다(effort 미지원 모델).
+          ...(effort ? { effort } : {}),
           maxTurns: opts.maxTurns ?? 20,
           // 전체 bypass 실행. 헤드리스 서버 컨텍스트라 권한 프롬프트가 불가능하므로
           // 모든 도구(bash 포함)를 무프롬프트로 실행한다. bypass에는 이 플래그가 필요.
@@ -629,6 +669,8 @@ export class AgentService {
           subtype?: string;
           session_id?: string;
           result?: string;
+          errors?: string[];
+          terminal_reason?: string;
           error?: string;
           is_error?: boolean;
           num_turns?: number;

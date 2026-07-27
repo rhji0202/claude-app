@@ -4,6 +4,7 @@ import request from "supertest";
 import * as bcrypt from "bcryptjs";
 import { AppModule } from "../src/app.module";
 import { AgentService, type AgentStreamEvent } from "../src/agent/agent.service";
+import { RepoManagerService } from "../src/repo/repo-manager.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 /** 실제 Anthropic 호출을 막기 위한 AgentService mock */
@@ -37,12 +38,30 @@ export const agentMock = {
     ),
 };
 
+/**
+ * 실제 git clone/fetch를 막기 위한 RepoManagerService mock.
+ * 실행 경로는 관리 clone 경로를 요구하므로(설계 12.5) 이 경계를 막지 않으면
+ * e2e가 네트워크·디스크에 의존하게 된다. AgentService와 같은 이유의 mock이다.
+ */
+export const repoMock = {
+  prepareForProject: jest.fn().mockResolvedValue("/tmp/e2e-managed-clone"),
+  ensureRepo: jest.fn().mockResolvedValue("/tmp/e2e-managed-clone"),
+  baseDir: jest.fn().mockReturnValue("/tmp/e2e-managed-clone"),
+  defaultBranch: jest.fn().mockResolvedValue("main"),
+  invalidate: jest.fn().mockResolvedValue(undefined),
+  withProjectLock: jest
+    .fn()
+    .mockImplementation((_pid: string, fn: () => unknown) => fn()),
+};
+
 export async function createTestApp(): Promise<INestApplication> {
   const moduleRef = await Test.createTestingModule({
     imports: [AppModule],
   })
     .overrideProvider(AgentService)
     .useValue(agentMock)
+    .overrideProvider(RepoManagerService)
+    .useValue(repoMock)
     .compile();
 
   const app = moduleRef.createNestApplication();
