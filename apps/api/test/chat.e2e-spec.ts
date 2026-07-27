@@ -14,7 +14,9 @@ describe("Chat (e2e, AgentService mock)", () => {
     const proj = await request(app.getHttpServer())
       .post("/api/projects")
       .set("Authorization", auth(token))
-      .send({ name: "chat-e2e", cwd: "/tmp/chat-e2e" })
+      // gitRepo 필수 — 실행은 관리 clone 경로에서 이뤄진다(설계 12.5).
+      // 실제 clone은 helpers의 repoMock이 막는다.
+      .send({ name: "chat-e2e", cwd: "/tmp/chat-e2e", gitRepo: "o/chat-e2e" })
       .expect(201);
     projectId = proj.body.id;
   });

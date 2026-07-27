@@ -32,7 +32,10 @@ describe("Projects (e2e)", () => {
     projectId = res.body.id;
     expect(res.body).not.toHaveProperty("model");
     expect(res.body).not.toHaveProperty("allowedTools");
-    expect(res.body.secrets).toEqual({ hasGitToken: false });
+    expect(res.body.secrets).toEqual({
+      hasGitToken: false,
+      hasNotifyWebhook: false,
+    });
   });
 
   it("제거된 필드(model) 전송 → 400", async () => {
