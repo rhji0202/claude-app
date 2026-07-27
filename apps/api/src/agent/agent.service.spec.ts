@@ -249,3 +249,89 @@ describe("AgentService.parseUsage (사용량 추출)", () => {
     expect(u.model).toBe("claude-opus");
   });
 });
+
+/**
+ * 모델·effort 해석. effort 미지원 모델(Haiku)에 전역 기본 effort가 흘러드는 것과,
+ * 부모 env에 남은 CLAUDE_CODE_EFFORT_LEVEL이 상속되는 것을 막는지 확인한다.
+ */
+describe("AgentService.resolveModel / applyEffortEnv", () => {
+  let service: AgentService;
+  let config: { get: jest.Mock };
+  let accounts: { getModelConfig: jest.Mock };
+
+  type ResolveModel = (
+    userId: string | undefined,
+    claudeAccountId?: string | null,
+  ) => Promise<{ model: string; effort: string | null }>;
+
+  const resolveModel = (userId?: string) =>
+    (service as unknown as { resolveModel: ResolveModel }).resolveModel(userId);
+
+  const applyEffortEnv = (
+    env: Record<string, string | undefined>,
+    effort: string | null,
+  ) =>
+    (
+      service as unknown as {
+        applyEffortEnv: (
+          e: Record<string, string | undefined>,
+          f: string | null,
+        ) => void;
+      }
+    ).applyEffortEnv(env, effort);
+
+  beforeEach(() => {
+    config = {
+      get: jest.fn().mockImplementation((k: string) => {
+        if (k === "ANTHROPIC_MODEL") return "claude-opus-5";
+        if (k === "ANTHROPIC_EFFORT") return "high";
+        return undefined;
+      }),
+    };
+    accounts = { getModelConfig: jest.fn() };
+    service = new AgentService(
+      {} as unknown as PrismaService,
+      {} as unknown as CryptoService,
+      config as unknown as ConfigService,
+      accounts as unknown as ClaudeAccountService,
+    );
+  });
+
+  it("effort 미지원 모델이면 env 전역 기본으로도 폴백하지 않는다", async () => {
+    accounts.getModelConfig.mockResolvedValue({
+      model: "claude-haiku-4-5",
+      effort: null,
+      effortSupported: false,
+    });
+    expect(await resolveModel("u1")).toEqual({
+      model: "claude-haiku-4-5",
+      effort: null,
+    });
+  });
+
+  it("계정 지정이 없으면 env 기본 모델·effort를 쓴다", async () => {
+    accounts.getModelConfig.mockResolvedValue({
+      model: null,
+      effort: null,
+      effortSupported: true,
+    });
+    expect(await resolveModel("u1")).toEqual({
+      model: "claude-opus-5",
+      effort: "high",
+    });
+  });
+
+  it("effort=null이면 부모 env에 상속된 키까지 지운다", () => {
+    const env: Record<string, string | undefined> = {
+      CLAUDE_CODE_EFFORT_LEVEL: "max",
+    };
+    applyEffortEnv(env, null);
+    expect("CLAUDE_CODE_EFFORT_LEVEL" in env).toBe(false);
+  });
+
+  it("effort가 있으면 env에 설정한다", () => {
+    const env: Record<string, string | undefined> = {};
+    applyEffortEnv(env, "low");
+    expect(env.CLAUDE_CODE_EFFORT_LEVEL).toBe("low");
+  });
+});

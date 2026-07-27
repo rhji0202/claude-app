@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, Trash2, Plus, KeyRound, UserCog } from "lucide-react";
 import { toast } from "sonner";
+import {
+  EFFORT_LEVELS,
+  MODEL_OPTIONS,
+  modelSupportsEffort,
+} from "@claude-app/shared";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { PageHeader } from "@/components/PageHeader";
@@ -32,23 +37,15 @@ interface ClaudeAccount {
   createdAt: string;
 }
 
-// 선택 가능한 모델(빈 값 = 전역 기본). 최신 모델 위주.
-// Haiku 4.5는 effort 파라미터를 지원하지 않는다.
-const MODEL_OPTIONS = [
+// 모델·effort 목록은 shared/models.ts가 단일 출처(서버 검증과 동일).
+// 빈 값 = 전역 기본(서버 설정).
+const MODEL_SELECT = [
   { value: "", label: "기본(서버 설정)" },
-  { value: "claude-opus-5", label: "Opus 5" },
-  { value: "claude-fable-5", label: "Fable 5" },
-  { value: "claude-sonnet-5", label: "Sonnet 5" },
-  { value: "claude-opus-4-8", label: "Opus 4.8" },
-  { value: "claude-haiku-4-5", label: "Haiku 4.5" },
+  ...MODEL_OPTIONS.map((m) => ({ value: m.id, label: m.label })),
 ];
-const EFFORT_OPTIONS = [
+const EFFORT_SELECT = [
   { value: "", label: "기본" },
-  { value: "low", label: "low" },
-  { value: "medium", label: "medium" },
-  { value: "high", label: "high" },
-  { value: "xhigh", label: "xhigh" },
-  { value: "max", label: "max" },
+  ...EFFORT_LEVELS.map((e) => ({ value: e, label: e })),
 ];
 
 export default function AccountPage() {
@@ -220,7 +217,7 @@ export default function AccountPage() {
                         value={a.model ?? ""}
                         onChange={(e) => saveAccount(a.id, { model: e.target.value })}
                       >
-                        {MODEL_OPTIONS.map((o) => (
+                        {MODEL_SELECT.map((o) => (
                           <option key={o.value} value={o.value}>
                             {o.label}
                           </option>
@@ -228,11 +225,17 @@ export default function AccountPage() {
                       </select>
                       <label className="text-xs text-muted-foreground">effort</label>
                       <select
-                        className="rounded-md border border-border bg-background px-2 py-1 text-xs"
-                        value={a.effort ?? ""}
+                        className="rounded-md border border-border bg-background px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                        value={modelSupportsEffort(a.model) ? (a.effort ?? "") : ""}
+                        disabled={!modelSupportsEffort(a.model)}
+                        title={
+                          modelSupportsEffort(a.model)
+                            ? undefined
+                            : "이 모델은 effort를 지원하지 않습니다."
+                        }
                         onChange={(e) => saveAccount(a.id, { effort: e.target.value })}
                       >
-                        {EFFORT_OPTIONS.map((o) => (
+                        {EFFORT_SELECT.map((o) => (
                           <option key={o.value} value={o.value}>
                             {o.label}
                           </option>

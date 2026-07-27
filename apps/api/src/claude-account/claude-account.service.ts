@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
 } from "@nestjs/common";
+import { modelSupportsEffort } from "@claude-app/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
 
@@ -26,6 +27,11 @@ export interface ClaudeAccountDto {
 export interface ModelConfig {
   model: string | null;
   effort: string | null;
+  /**
+   * 이 모델이 effort를 지원하는가. false면 호출부는 env 기본 effort로도
+   * 폴백하지 말고 effort 전달 자체를 생략해야 한다.
+   */
+  effortSupported: boolean;
 }
 
 @Injectable()
@@ -204,13 +210,33 @@ export class ClaudeAccountService {
       where: { id, userId },
     });
     if (!acc) throw new NotFoundException("계정을 찾을 수 없습니다.");
+
+    // 모델과 effort가 같은 요청에서 함께 바뀔 수 있으므로, 저장된 모델이 아니라
+    // 이 수정의 '결과' 모델로 판단한다. effort 미지원 모델이면 effort를 비운다
+    // (예: 모델만 Haiku로 바꿀 때 남아있던 effort도 함께 정리).
+    const nextModel =
+      data.model !== undefined ? data.model || null : acc.model;
+    const nextEffort =
+      data.effort !== undefined ? data.effort || null : acc.effort;
+    const effortAllowed = modelSupportsEffort(nextModel);
+    if (!effortAllowed && nextEffort) {
+      this.logger.warn(
+        `계정(${id}) 모델 ${nextModel}은 effort를 지원하지 않아 effort를 비웁니다.`,
+      );
+    }
+
     const updated = await this.prisma.claudeAccount.update({
       where: { id },
       data: {
         ...(data.label !== undefined ? { label: data.label } : {}),
         // "" → null(전역 기본), 값 → 지정
         ...(data.model !== undefined ? { model: data.model || null } : {}),
-        ...(data.effort !== undefined ? { effort: data.effort || null } : {}),
+        // 미지원 모델이면 요청값과 무관하게 null로 정리한다.
+        ...(effortAllowed
+          ? data.effort !== undefined
+            ? { effort: data.effort || null }
+            : {}
+          : { effort: null }),
         // 0/null → 무제한(null), 양수 → 예산
         ...(data.monthlyBudgetUsd !== undefined
           ? { monthlyBudgetUsd: data.monthlyBudgetUsd || null }
@@ -223,6 +249,10 @@ export class ClaudeAccountService {
   /**
    * 실행에 쓸 모델·effort 해석: 프로젝트 지정 계정 → 실행 사용자 활성 계정 순.
    * 계정에 지정이 없으면 null(호출부가 env 기본값으로 폴백).
+   *
+   * effortSupported=false면 호출부는 env 기본 effort로 폴백하지 않고 effort를
+   * 아예 보내지 않아야 한다. 이 검증 이전에 저장된 조합과, 계정은 Haiku인데
+   * effort는 전역 기본에서 오는 경우를 함께 막는다.
    */
   async getModelConfig(
     userId: string | undefined,
@@ -237,6 +267,12 @@ export class ClaudeAccountService {
             where: { userId, isActive: true },
           })
         : null);
-    return { model: acc?.model ?? null, effort: acc?.effort ?? null };
+    const model = acc?.model ?? null;
+    const effortSupported = modelSupportsEffort(model);
+    return {
+      model,
+      effort: effortSupported ? (acc?.effort ?? null) : null,
+      effortSupported,
+    };
   }
 }

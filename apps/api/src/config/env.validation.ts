@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EFFORT_LEVELS, MODEL_IDS } from "@claude-app/shared";
 
 /**
  * 환경변수 검증 스키마. 부팅 시 @nestjs/config가 이 함수로 검증한다.
@@ -18,11 +19,14 @@ export const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default("7d"),
   // 활성 Claude 계정이 없을 때의 폴백 OAuth 토큰 (선택, sk-ant-oat...)
   ANTHROPIC_OAUTH_TOKEN: z.string().optional(),
-  // 실행 기본 모델(계정별 지정이 없을 때). 예: claude-opus-5 또는 alias opus/sonnet/haiku.
-  ANTHROPIC_MODEL: z.string().default("claude-opus-5"),
+  // 실행 기본 모델(계정별 지정이 없을 때). 오타난 모델 id로 첫 실행이 실패하는 것을
+  // 막기 위해 부팅 시 알려진 목록으로 제한한다(추가는 shared/models.ts).
+  ANTHROPIC_MODEL: z
+    .enum(MODEL_IDS as [string, ...string[]])
+    .default("claude-opus-5"),
   // 실행 기본 reasoning effort. low|medium|high|xhigh|max.
   ANTHROPIC_EFFORT: z
-    .enum(["low", "medium", "high", "xhigh", "max"])
+    .enum(EFFORT_LEVELS as unknown as [string, ...string[]])
     .default("high"),
   WEB_ORIGIN: z.string().optional(),
   // 부팅 시 admin으로 승격할 이메일(쉼표 구분). 첫 관리자 부트스트랩.

@@ -160,16 +160,30 @@ export class AgentService {
   private async resolveModel(
     userId: string | undefined,
     claudeAccountId?: string | null,
-  ): Promise<{ model: string; effort: string }> {
+  ): Promise<{ model: string; effort: string | null }> {
     const cfg = await this.claudeAccounts.getModelConfig(userId, claudeAccountId);
-    return {
-      model:
-        cfg.model ??
-        this.config.get<string>("ANTHROPIC_MODEL") ??
-        "claude-opus-5",
-      effort:
-        cfg.effort ?? this.config.get<string>("ANTHROPIC_EFFORT") ?? "high",
-    };
+    const model =
+      cfg.model ?? this.config.get<string>("ANTHROPIC_MODEL") ?? "claude-opus-5";
+    // effort 미지원 모델(Haiku 등)은 env 전역 기본으로도 폴백하지 않는다 —
+    // 계정은 Haiku인데 effort는 전역값에서 흘러드는 경로를 막는다.
+    const effort = cfg.effortSupported
+      ? (cfg.effort ?? this.config.get<string>("ANTHROPIC_EFFORT") ?? "high")
+      : null;
+    return { model, effort };
+  }
+
+  /**
+   * 해석된 effort를 SDK 서브프로세스 env에 반영한다.
+   * effort는 SDK Options 타입 버전에 따라 없을 수 있어 env로 전달(CLI가 해석).
+   * 미지원 모델이면 키를 아예 지운다 — 부모 프로세스 env에서 상속되어
+   * 조용히 적용되는 것까지 막아야 한다.
+   */
+  private applyEffortEnv(
+    env: Record<string, string | undefined>,
+    effort: string | null,
+  ): void {
+    if (effort) env.CLAUDE_CODE_EFFORT_LEVEL = effort;
+    else delete env.CLAUDE_CODE_EFFORT_LEVEL;
   }
 
   /** 프로젝트에 연결된 활성 MCP 서버를 SDK mcpServers 설정으로 변환 */
@@ -270,8 +284,7 @@ export class AgentService {
       opts.userId,
       project.claudeAccountId,
     );
-    // effort는 SDK Options 타입 버전에 따라 없을 수 있어 env로 전달(CLI가 해석).
-    env.CLAUDE_CODE_EFFORT_LEVEL = effort;
+    this.applyEffortEnv(env, effort);
 
     let sessionId: string | undefined;
     let finalText = "";
@@ -561,7 +574,7 @@ export class AgentService {
       opts.userId,
       project.claudeAccountId,
     );
-    env.CLAUDE_CODE_EFFORT_LEVEL = effort;
+    this.applyEffortEnv(env, effort);
 
     let sessionId: string | undefined;
     let text = "";
