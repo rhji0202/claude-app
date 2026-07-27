@@ -9,6 +9,14 @@ const nextConfig = {
   // Docker 배포용 슬림 산출물. 모노레포이므로 트레이싱 루트를 저장소 루트로 지정.
   output: "standalone",
   outputFileTracingRoot: path.join(__dirname, "../../"),
+  async rewrites() {
+    return [
+      {
+        source: "/api/:path*",
+        destination: "http://127.0.0.1:3001/api/:path*",
+      },
+    ];
+  },
 };
 
 module.exports = nextConfig;
