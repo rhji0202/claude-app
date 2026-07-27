@@ -145,7 +145,13 @@ describe("AgentService.buildEnv (자격증명 라우팅)", () => {
  * 무의미한 폴백 대신 종료 사유(subtype·턴 수)를 남기는 게 핵심.
  */
 describe("AgentService.describeResultError (오류 사유 해석)", () => {
-  type Msg = { subtype?: string; error?: string; num_turns?: number };
+  type Msg = {
+    subtype?: string;
+    errors?: string[];
+    terminal_reason?: string;
+    error?: string;
+    num_turns?: number;
+  };
   let service: AgentService;
 
   function describe_(m: Msg) {
@@ -163,7 +169,27 @@ describe("AgentService.describeResultError (오류 사유 해석)", () => {
     );
   });
 
-  it("명시적 error가 있으면 그대로 사용", () => {
+  // SDK가 실제로 주는 필드는 errors: string[]다(단수 error는 없음).
+  it("errors[]가 있으면 그 내용을 사용한다", () => {
+    expect(
+      describe_({ errors: ["권한 거부됨"], subtype: "error_during_execution" }),
+    ).toBe("권한 거부됨");
+  });
+
+  it("errors[]가 여러 건이면 모두 합친다", () => {
+    expect(describe_({ errors: ["첫째 오류", "둘째 오류"] })).toBe(
+      "첫째 오류; 둘째 오류",
+    );
+  });
+
+  it("errors[]가 빈 문자열만이면 subtype 폴백으로 넘어간다", () => {
+    // 빈 값을 그대로 반환해 오류 문구가 사라지는 것을 막는다.
+    expect(describe_({ errors: ["", "  "], subtype: "error_max_turns" })).toContain(
+      "최대 턴 수",
+    );
+  });
+
+  it("단수 error도 방어적으로 지원", () => {
     expect(describe_({ error: "권한 거부됨", subtype: "whatever" })).toBe(
       "권한 거부됨",
     );
@@ -175,11 +201,35 @@ describe("AgentService.describeResultError (오류 사유 해석)", () => {
     );
   });
 
+  it("error_max_budget_usd는 예산 상한을 알린다", () => {
+    expect(describe_({ subtype: "error_max_budget_usd" })).toContain("예산 상한");
+  });
+
+  it("error_max_structured_output_retries는 재시도 한도를 알린다", () => {
+    expect(describe_({ subtype: "error_max_structured_output_retries" })).toContain(
+      "재시도 한도",
+    );
+  });
+
+  it("terminal_reason이 있으면 사유를 덧붙인다", () => {
+    const out = describe_({
+      subtype: "error_during_execution",
+      terminal_reason: "prompt_too_long",
+    });
+    expect(out).toContain("prompt_too_long");
+  });
+
+  it("errors[]가 있으면 terminal_reason보다 우선(실제 내용이 더 유용)", () => {
+    expect(
+      describe_({ errors: ["구체적 오류"], terminal_reason: "api_error" }),
+    ).toBe("구체적 오류");
+  });
+
   it("알 수 없는 subtype은 문구에 그대로 노출", () => {
     expect(describe_({ subtype: "error_weird" })).toContain("error_weird");
   });
 
-  it("subtype·error 모두 없으면 unknown으로 표기", () => {
+  it("subtype·errors 모두 없으면 unknown으로 표기", () => {
     expect(describe_({})).toContain("unknown");
   });
 });

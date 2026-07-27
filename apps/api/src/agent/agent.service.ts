@@ -182,6 +182,9 @@ export class AgentService {
    * CLAUDE_CODE_EFFORT_LEVEL env로 우회했는데, 그 경로는 low|medium|high만
    * 해석해 xhigh·max가 조용히 무시됐다.
    *
+   * 주의: CLI는 잘못된 effort 값도 오류 없이 받아들인다(실측 확인). 즉 런타임
+   * 방어가 없으므로 resolveModel의 EffortLevel 타입이 유일한 안전장치다.
+   *
    * env 키는 여기서 지운다 — buildEnv가 {...process.env}를 복사하므로 호스트에
    * 남은 값이 상속되어 Options.effort와 충돌·오작동할 수 있다.
    */
@@ -334,6 +337,8 @@ export class AgentService {
           subtype?: string;
           session_id?: string;
           result?: string;
+          errors?: string[];
+          terminal_reason?: string;
           error?: string;
           num_turns?: number;
           total_cost_usd?: number;
@@ -527,17 +532,32 @@ export class AgentService {
 
   private describeResultError(m: {
     subtype?: string;
+    /** SDK가 실제로 주는 필드. 단수 error는 없다. */
+    errors?: string[];
+    /** 종료 원인 상세(max_turns·api_error·prompt_too_long 등). 있으면 함께 노출. */
+    terminal_reason?: string;
     error?: string;
     num_turns?: number;
   }): string {
-    if (m.error) return m.error;
+    // SDK result 메시지는 errors: string[]를 준다. 과거 코드가 단수 m.error만
+    // 봤기 때문에 실제 오류 내용이 항상 버려지고 subtype 폴백 문구만 남았다.
+    const detail =
+      m.errors?.filter((e) => e && e.trim()).join("; ") || m.error?.trim();
+    if (detail) return detail;
+
+    // 오류 문구가 비어 있을 때만 종료 사유로 문장을 만든다.
     const reason =
       m.subtype === "error_max_turns"
         ? `최대 턴 수(${m.num_turns ?? "?"}턴)에 도달해 중단되었습니다.`
-        : m.subtype === "error_during_execution"
-          ? "실행 중 오류가 발생했습니다."
-          : `실행이 비정상 종료되었습니다 (${m.subtype ?? "unknown"}).`;
-    return reason;
+        : m.subtype === "error_max_budget_usd"
+          ? "실행 비용이 예산 상한에 도달해 중단되었습니다."
+          : m.subtype === "error_max_structured_output_retries"
+            ? "구조화 출력 재시도 한도를 초과했습니다."
+            : m.subtype === "error_during_execution"
+              ? "실행 중 오류가 발생했습니다."
+              : `실행이 비정상 종료되었습니다 (${m.subtype ?? "unknown"}).`;
+    // terminal_reason은 subtype보다 구체적이라 원인 추적에 도움이 된다.
+    return m.terminal_reason ? `${reason} (${m.terminal_reason})` : reason;
   }
 
   private async execute(
@@ -649,6 +669,8 @@ export class AgentService {
           subtype?: string;
           session_id?: string;
           result?: string;
+          errors?: string[];
+          terminal_reason?: string;
           error?: string;
           is_error?: boolean;
           num_turns?: number;
