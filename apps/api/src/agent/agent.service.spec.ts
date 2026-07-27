@@ -253,8 +253,9 @@ describe("AgentService.parseUsage (사용량 추출)", () => {
 /**
  * 모델·effort 해석. effort 미지원 모델(Haiku)에 전역 기본 effort가 흘러드는 것과,
  * 부모 env에 남은 CLAUDE_CODE_EFFORT_LEVEL이 상속되는 것을 막는지 확인한다.
+ * effort 자체는 SDK Options.effort로 전달되고, env 키는 지워져야 한다.
  */
-describe("AgentService.resolveModel / applyEffortEnv", () => {
+describe("AgentService.resolveModel / clearEffortEnv", () => {
   let service: AgentService;
   let config: { get: jest.Mock };
   let accounts: { getModelConfig: jest.Mock };
@@ -267,18 +268,12 @@ describe("AgentService.resolveModel / applyEffortEnv", () => {
   const resolveModel = (userId?: string) =>
     (service as unknown as { resolveModel: ResolveModel }).resolveModel(userId);
 
-  const applyEffortEnv = (
-    env: Record<string, string | undefined>,
-    effort: string | null,
-  ) =>
+  const clearEffortEnv = (env: Record<string, string | undefined>) =>
     (
       service as unknown as {
-        applyEffortEnv: (
-          e: Record<string, string | undefined>,
-          f: string | null,
-        ) => void;
+        clearEffortEnv: (e: Record<string, string | undefined>) => void;
       }
-    ).applyEffortEnv(env, effort);
+    ).clearEffortEnv(env);
 
   beforeEach(() => {
     config = {
@@ -321,17 +316,21 @@ describe("AgentService.resolveModel / applyEffortEnv", () => {
     });
   });
 
-  it("effort=null이면 부모 env에 상속된 키까지 지운다", () => {
+  it("xhigh/max도 그대로 해석한다(env 우회는 이 값을 버렸음)", async () => {
+    accounts.getModelConfig.mockResolvedValue({
+      model: "claude-opus-5",
+      effort: "xhigh",
+      effortSupported: true,
+    });
+    expect((await resolveModel("u1")).effort).toBe("xhigh");
+  });
+
+  it("부모 env에 상속된 CLAUDE_CODE_EFFORT_LEVEL은 항상 지운다", () => {
+    // effort는 Options.effort로 전달되므로 env 키가 남아 있으면 충돌 소지가 있다.
     const env: Record<string, string | undefined> = {
       CLAUDE_CODE_EFFORT_LEVEL: "max",
     };
-    applyEffortEnv(env, null);
+    clearEffortEnv(env);
     expect("CLAUDE_CODE_EFFORT_LEVEL" in env).toBe(false);
-  });
-
-  it("effort가 있으면 env에 설정한다", () => {
-    const env: Record<string, string | undefined> = {};
-    applyEffortEnv(env, "low");
-    expect(env.CLAUDE_CODE_EFFORT_LEVEL).toBe("low");
   });
 });

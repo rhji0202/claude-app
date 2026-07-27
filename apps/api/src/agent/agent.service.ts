@@ -5,6 +5,8 @@ import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
 import { ClaudeAccountService } from "../claude-account/claude-account.service";
 import type { AgentUsage } from "@claude-app/shared";
+// 타입 전용 import — 컴파일 시 지워지므로 SDK 런타임 동적 로드에 영향 없다.
+import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 
 export interface AgentImage {
   /** base64 인코딩 이미지 데이터 */
@@ -156,34 +158,35 @@ export class AgentService {
   /**
    * 실행에 쓸 모델·effort 해석. 계정 지정값 우선, 없으면 env 전역 기본
    * (ANTHROPIC_MODEL / ANTHROPIC_EFFORT). SDK query options.model/effort로 전달된다.
+   * effort=null이면 options.effort를 아예 넘기지 않는다(CLI 기본값 사용).
    */
   private async resolveModel(
     userId: string | undefined,
     claudeAccountId?: string | null,
-  ): Promise<{ model: string; effort: string | null }> {
+  ): Promise<{ model: string; effort: EffortLevel | null }> {
     const cfg = await this.claudeAccounts.getModelConfig(userId, claudeAccountId);
     const model =
       cfg.model ?? this.config.get<string>("ANTHROPIC_MODEL") ?? "claude-opus-5";
     // effort 미지원 모델(Haiku 등)은 env 전역 기본으로도 폴백하지 않는다 —
     // 계정은 Haiku인데 effort는 전역값에서 흘러드는 경로를 막는다.
     const effort = cfg.effortSupported
-      ? (cfg.effort ?? this.config.get<string>("ANTHROPIC_EFFORT") ?? "high")
+      ? ((cfg.effort ??
+          this.config.get<string>("ANTHROPIC_EFFORT") ??
+          "high") as EffortLevel)
       : null;
     return { model, effort };
   }
 
   /**
-   * 해석된 effort를 SDK 서브프로세스 env에 반영한다.
-   * effort는 SDK Options 타입 버전에 따라 없을 수 있어 env로 전달(CLI가 해석).
-   * 미지원 모델이면 키를 아예 지운다 — 부모 프로세스 env에서 상속되어
-   * 조용히 적용되는 것까지 막아야 한다.
+   * effort는 SDK Options.effort(1급 필드)로 전달한다. 과거에는 타입에 없어
+   * CLAUDE_CODE_EFFORT_LEVEL env로 우회했는데, 그 경로는 low|medium|high만
+   * 해석해 xhigh·max가 조용히 무시됐다.
+   *
+   * env 키는 여기서 지운다 — buildEnv가 {...process.env}를 복사하므로 호스트에
+   * 남은 값이 상속되어 Options.effort와 충돌·오작동할 수 있다.
    */
-  private applyEffortEnv(
-    env: Record<string, string | undefined>,
-    effort: string | null,
-  ): void {
-    if (effort) env.CLAUDE_CODE_EFFORT_LEVEL = effort;
-    else delete env.CLAUDE_CODE_EFFORT_LEVEL;
+  private clearEffortEnv(env: Record<string, string | undefined>): void {
+    delete env.CLAUDE_CODE_EFFORT_LEVEL;
   }
 
   /** 프로젝트에 연결된 활성 MCP 서버를 SDK mcpServers 설정으로 변환 */
@@ -284,7 +287,7 @@ export class AgentService {
       opts.userId,
       project.claudeAccountId,
     );
-    this.applyEffortEnv(env, effort);
+    this.clearEffortEnv(env);
 
     let sessionId: string | undefined;
     let finalText = "";
@@ -309,6 +312,8 @@ export class AgentService {
           // 실행 디렉터리는 항상 호출측이 주입한 worktree 경로(설계 12.5). project.cwd 미사용.
           cwd: opts.cwd,
           model,
+          // null이면 키를 생략해 CLI 기본값을 쓴다(effort 미지원 모델).
+          ...(effort ? { effort } : {}),
           maxTurns: opts.maxTurns ?? 20,
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
@@ -574,7 +579,7 @@ export class AgentService {
       opts.userId,
       project.claudeAccountId,
     );
-    this.applyEffortEnv(env, effort);
+    this.clearEffortEnv(env);
 
     let sessionId: string | undefined;
     let text = "";
@@ -621,6 +626,8 @@ export class AgentService {
           // 실행 디렉터리는 항상 호출측이 주입한 worktree 경로(설계 12.5). project.cwd 미사용.
           cwd: opts.cwd,
           model,
+          // null이면 키를 생략해 CLI 기본값을 쓴다(effort 미지원 모델).
+          ...(effort ? { effort } : {}),
           maxTurns: opts.maxTurns ?? 20,
           // 전체 bypass 실행. 헤드리스 서버 컨텍스트라 권한 프롬프트가 불가능하므로
           // 모든 도구(bash 포함)를 무프롬프트로 실행한다. bypass에는 이 플래그가 필요.

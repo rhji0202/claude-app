@@ -1,9 +1,14 @@
 /**
  * 실행에 쓸 수 있는 Claude 모델·effort 정의. API(검증)와 web(선택 UI)이 함께 쓴다.
  * 모델을 추가할 때 여기만 고치면 양쪽이 같이 따라온다.
+ *
+ * Agent SDK도 ModelInfo.supportsEffort / supportedEffortLevels를 제공하지만,
+ * 이는 Query 객체의 supportedModels()로만 얻을 수 있어(=실행 세션 필요) 부팅 시
+ * env 검증이나 설정 폼 검증에는 쓸 수 없다. 그래서 정적 목록을 따로 둔다.
+ * SDK의 EffortLevel 유니온과 값이 일치해야 한다.
  */
 
-/** reasoning effort 레벨. 낮을수록 토큰·지연이 적다. */
+/** reasoning effort 레벨. 낮을수록 토큰·지연이 적다. SDK EffortLevel과 동일. */
 export const EFFORT_LEVELS = [
   "low",
   "medium",
