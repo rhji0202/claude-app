@@ -114,7 +114,7 @@ export default function SharePage() {
 
   if (error && !view) {
     return (
-      <div className="mx-auto max-w-2xl px-4 py-16">
+      <div className="mx-auto max-w-2xl p-4 sm:p-6 lg:p-8">
         <Card>
           <CardHeader>
             <CardTitle>접근 불가</CardTitle>
@@ -129,7 +129,7 @@ export default function SharePage() {
 
   if (!view) {
     return (
-      <div className="mx-auto max-w-2xl space-y-4 px-4 py-10">
+      <div className="mx-auto max-w-2xl space-y-4 p-4 sm:p-6 lg:p-8">
         <Skeleton className="h-6 w-40" />
         <Skeleton className="h-8 w-64" />
         <Skeleton className="h-40 w-full" />
@@ -138,7 +138,7 @@ export default function SharePage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-10">
+    <div className="mx-auto max-w-2xl p-4 sm:p-6 lg:p-8">
       <div className="mb-2 flex items-center gap-2 text-sm text-muted-foreground">
         <Bot className="size-4 text-accent" />
         더원 에이전트 · 공유 링크

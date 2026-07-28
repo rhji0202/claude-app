@@ -19,6 +19,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export default function AdminUsersPage() {
   const { user: me } = useAuth();
@@ -28,6 +35,8 @@ export default function AdminUsersPage() {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<"member" | "admin">("member");
   const [busy, setBusy] = useState(false);
+  // 생성 폼은 레이어 팝업(다이얼로그)으로 띄운다.
+  const [createOpen, setCreateOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -42,6 +51,19 @@ export default function AdminUsersPage() {
     load();
   }, [load]);
 
+  function resetForm() {
+    setEmail("");
+    setName("");
+    setPassword("");
+    setRole("member");
+  }
+
+  function openCreate() {
+    // 이전에 입력하다 닫은 값이 남지 않도록 열 때마다 초기화.
+    resetForm();
+    setCreateOpen(true);
+  }
+
   async function create(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -53,10 +75,8 @@ export default function AdminUsersPage() {
         role,
       });
       toast.success("사용자를 생성했습니다.");
-      setEmail("");
-      setName("");
-      setPassword("");
-      setRole("member");
+      resetForm();
+      setCreateOpen(false);
       await load();
     } catch (e) {
       toast.error((e as Error).message);
@@ -82,63 +102,14 @@ export default function AdminUsersPage() {
         (자가 회원가입은 닫혀 있습니다.)
       </PageHeader>
 
-      {/* 생성 */}
-      <Card className="mb-5">
-        <CardHeader>
-          <CardTitle className="text-sm">사용자 생성</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={create} className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="u-email">이메일 *</Label>
-              <Input
-                id="u-email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="u-name">이름</Label>
-              <Input id="u-name" value={name} onChange={(e) => setName(e.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="u-pw">임시 비밀번호 * (8자 이상)</Label>
-              <Input
-                id="u-pw"
-                type="text"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="u-role">역할</Label>
-              <select
-                id="u-role"
-                className="flex h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9"
-                value={role}
-                onChange={(e) => setRole(e.target.value as "member" | "admin")}
-              >
-                <option value="member">member</option>
-                <option value="admin">admin</option>
-              </select>
-            </div>
-            <div className="sm:col-span-2">
-              <Button type="submit" disabled={busy || !email || !password}>
-                <Plus className="size-4" />
-                {busy ? "생성 중..." : "생성"}
-              </Button>
-            </div>
-          </form>
-        </CardContent>
-      </Card>
-
       {/* 목록 */}
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
           <CardTitle className="text-sm">사용자 목록</CardTitle>
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="size-4" />
+            추가
+          </Button>
         </CardHeader>
         <CardContent>
           {users === null ? (
@@ -229,6 +200,72 @@ export default function AdminUsersPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* 생성 다이얼로그 */}
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>사용자 생성</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={create} className="grid gap-4">
+            <div className="grid max-h-[65vh] grid-cols-1 gap-4 overflow-y-auto sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="u-email">이메일 *</Label>
+                <Input
+                  id="u-email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="u-name">이름</Label>
+                <Input
+                  id="u-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="u-pw">임시 비밀번호 * (8자 이상)</Label>
+                <Input
+                  id="u-pw"
+                  type="text"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="u-role">역할</Label>
+                <select
+                  id="u-role"
+                  className="flex h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9"
+                  value={role}
+                  onChange={(e) => setRole(e.target.value as "member" | "admin")}
+                >
+                  <option value="member">member</option>
+                  <option value="admin">admin</option>
+                </select>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setCreateOpen(false)}
+              >
+                취소
+              </Button>
+              <Button type="submit" disabled={busy || !email || !password}>
+                <Plus className="size-4" />
+                {busy ? "생성 중..." : "생성"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

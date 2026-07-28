@@ -140,6 +140,8 @@ export default function CrudPanel(props: CrudPanelProps) {
   const [form, setForm] = useState<Record<string, unknown>>(() =>
     initialForm(fields),
   );
+  // 생성 폼은 레이어 팝업(다이얼로그)으로 띄운다.
+  const [createOpen, setCreateOpen] = useState(false);
   // 다중 선택(batchActions 활성 시)
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pendingBatch, setPendingBatch] = useState<BatchAction | null>(null);
@@ -253,12 +255,19 @@ export default function CrudPanel(props: CrudPanelProps) {
     };
   }, [fields]);
 
+  function openCreate() {
+    // 이전에 입력하다 닫은 값이 남지 않도록 열 때마다 초기화.
+    setForm(initialForm(fields));
+    setCreateOpen(true);
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     try {
       await api.post(baseEndpoint, serialize(form, fields));
       setForm(initialForm(fields));
+      setCreateOpen(false);
       toast.success(`${title}이(가) 추가되었습니다.`);
       await load();
     } catch (e) {
@@ -361,61 +370,37 @@ export default function CrudPanel(props: CrudPanelProps) {
 
   return (
     <>
-      {/* 생성 폼 */}
-      {!props.hideCreate && (
-        <Card className="mb-5">
-          <CardHeader>
-            <CardTitle className="text-sm">
-              {props.createTitle ?? `${title} 추가`}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={submit}>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {fields.map((f) => (
-                  <FieldInput
-                    key={f.name}
-                    field={f}
-                    value={form[f.name]}
-                    options={f.optionsFrom ? dynOptions[f.name] : f.options}
-                    onChange={(v) => setForm((s) => ({ ...s, [f.name]: v }))}
-                  />
-                ))}
-              </div>
-              <div className="mt-4">
-                <Button type="submit" disabled={busy}>
-                  <Plus className="size-4" />
-                  {busy ? "처리 중..." : "추가"}
-                </Button>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-      )}
-
       {/* 목록 */}
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between gap-3">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
           <CardTitle className="text-sm">{title} 목록</CardTitle>
-          {selectable && selected.size > 0 && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">
-                {selected.size}개 선택
-              </span>
-              {props.batchActions?.map((a) => (
-                <Button
-                  key={a.label}
-                  size="sm"
-                  disabled={busy}
-                  onClick={() =>
-                    a.confirm ? setPendingBatch(a) : void runBatch(a)
-                  }
-                >
-                  {a.label}
-                </Button>
-              ))}
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            {selectable && selected.size > 0 && (
+              <>
+                <span className="text-xs text-muted-foreground">
+                  {selected.size}개 선택
+                </span>
+                {props.batchActions?.map((a) => (
+                  <Button
+                    key={a.label}
+                    size="sm"
+                    disabled={busy}
+                    onClick={() =>
+                      a.confirm ? setPendingBatch(a) : void runBatch(a)
+                    }
+                  >
+                    {a.label}
+                  </Button>
+                ))}
+              </>
+            )}
+            {!props.hideCreate && (
+              <Button size="sm" onClick={openCreate}>
+                <Plus className="size-4" />
+                추가
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -541,6 +526,41 @@ export default function CrudPanel(props: CrudPanelProps) {
           )}
         </CardContent>
       </Card>
+
+      {/* 생성 다이얼로그 */}
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{props.createTitle ?? `${title} 추가`}</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={submit} className="grid gap-4">
+            <div className="grid max-h-[65vh] grid-cols-1 gap-4 overflow-y-auto sm:grid-cols-2">
+              {fields.map((f) => (
+                <FieldInput
+                  key={f.name}
+                  field={f}
+                  value={form[f.name]}
+                  options={f.optionsFrom ? dynOptions[f.name] : f.options}
+                  onChange={(v) => setForm((s) => ({ ...s, [f.name]: v }))}
+                />
+              ))}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setCreateOpen(false)}
+              >
+                취소
+              </Button>
+              <Button type="submit" disabled={busy}>
+                <Plus className="size-4" />
+                {busy ? "처리 중..." : "추가"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* 삭제 확인 다이얼로그 */}
       <Dialog

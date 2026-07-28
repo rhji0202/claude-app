@@ -27,12 +27,6 @@ import { api, upload, uploadUrl } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -45,6 +39,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -591,7 +586,15 @@ interface GhIssue {
   html_url: string;
 }
 
-function GithubImport({ onImported }: { onImported: () => void }) {
+function GithubImport({
+  open,
+  onOpenChange,
+  onImported,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onImported: () => void;
+}) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [state, setState] = useState<"open" | "closed" | "all">("open");
@@ -635,6 +638,7 @@ function GithubImport({ onImported }: { onImported: () => void }) {
       toast.success(`${n}개 이슈를 큐에 추가했습니다.`);
       setSelected(new Set());
       setIssues([]);
+      onOpenChange(false);
       onImported();
     } catch (e) {
       toast.error((e as Error).message);
@@ -644,14 +648,14 @@ function GithubImport({ onImported }: { onImported: () => void }) {
   }
 
   return (
-    <Card className="mb-5">
-      <CardHeader>
-        <CardTitle className="text-sm">GitHub에서 이슈 가져오기</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="flex flex-col gap-2 sm:flex-row">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>GitHub에서 이슈 가져오기</DialogTitle>
+        </DialogHeader>
+        <div className="flex min-w-0 flex-col gap-2 sm:flex-row">
           <Select value={projectId} onValueChange={setProjectId}>
-            <SelectTrigger className="flex-1">
+            <SelectTrigger className="min-w-0 flex-1">
               <SelectValue placeholder="프로젝트 선택 (gitRepo 필요)" />
             </SelectTrigger>
             <SelectContent>
@@ -682,11 +686,11 @@ function GithubImport({ onImported }: { onImported: () => void }) {
         </div>
 
         {issues.length > 0 && (
-          <>
-            <label className="mt-4 flex cursor-pointer items-center gap-3 border-b border-border px-3 py-2 text-sm font-medium">
+          <div className="min-w-0">
+            <label className="flex cursor-pointer items-center gap-3 border-b border-border px-3 py-2 text-sm font-medium">
               <input
                 type="checkbox"
-                className="size-4 accent-[var(--accent)]"
+                className="size-4 shrink-0 accent-[var(--accent)]"
                 checked={selected.size === issues.length && issues.length > 0}
                 // 일부만 선택된 상태를 시각적으로 표시(부분 선택)
                 ref={(el) => {
@@ -704,17 +708,17 @@ function GithubImport({ onImported }: { onImported: () => void }) {
               />
               전체 선택 ({selected.size}/{issues.length})
             </label>
-            <div className="mt-1 space-y-1">
+            <div className="mt-1 max-h-[45vh] min-w-0 space-y-1 overflow-y-auto">
               {issues.map((i) => {
                 const checked = selected.has(i.number);
                 return (
                   <label
                     key={i.number}
-                    className="flex cursor-pointer items-center gap-3 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted/40"
+                    className="flex min-w-0 cursor-pointer items-center gap-3 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted/40"
                   >
                     <input
                       type="checkbox"
-                      className="size-4 accent-[var(--accent)]"
+                      className="size-4 shrink-0 accent-[var(--accent)]"
                       checked={checked}
                       onChange={() =>
                         setSelected((s) => {
@@ -725,27 +729,40 @@ function GithubImport({ onImported }: { onImported: () => void }) {
                         })
                       }
                     />
-                    <Mono>#{i.number}</Mono>
-                    <span className="min-w-0 flex-1 truncate">{i.title}</span>
+                    <span className="shrink-0">
+                      <Mono>#{i.number}</Mono>
+                    </span>
+                    <span className="min-w-0 flex-1 truncate" title={i.title}>
+                      {i.title}
+                    </span>
                     {i.labels.length > 0 && (
-                      <Mono>{i.labels.join(", ")}</Mono>
+                      <span
+                        className="max-w-[30%] shrink-0 truncate"
+                        title={i.labels.join(", ")}
+                      >
+                        <Mono>{i.labels.join(", ")}</Mono>
+                      </span>
                     )}
                   </label>
                 );
               })}
             </div>
-            <div className="mt-4">
-              <Button
-                disabled={busy || selected.size === 0}
-                onClick={importSel}
-              >
-                선택한 {selected.size}개 큐에 추가
-              </Button>
-            </div>
-          </>
+          </div>
         )}
-      </CardContent>
-    </Card>
+
+        <DialogFooter>
+          <Button variant="secondary" onClick={() => onOpenChange(false)}>
+            닫기
+          </Button>
+          <Button
+            disabled={busy || selected.size === 0}
+            onClick={importSel}
+          >
+            선택한 {selected.size}개 큐에 추가
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -756,7 +773,15 @@ interface ProjectRef {
 }
 
 /** 이미지 첨부가 가능한 수동 이슈 등록 (마크다운 에디터 + 붙여넣기 업로드) */
-function ManualIssueWithImages({ onCreated }: { onCreated: () => void }) {
+function ManualIssueWithImages({
+  open,
+  onOpenChange,
+  onCreated,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCreated: () => void;
+}) {
   const [projects, setProjects] = useState<ProjectRef[]>([]);
   const [projectId, setProjectId] = useState("");
   const [title, setTitle] = useState("");
@@ -815,6 +840,7 @@ function ManualIssueWithImages({ onCreated }: { onCreated: () => void }) {
       setBody("");
       setPrompt("");
       setIssueId(null);
+      onOpenChange(false);
       onCreated();
     } catch (e) {
       toast.error((e as Error).message);
@@ -824,59 +850,67 @@ function ManualIssueWithImages({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <Card className="mb-5">
-      <CardHeader>
-        <CardTitle className="text-sm">이슈 수동 등록 (이미지 첨부 가능)</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label>프로젝트 *</Label>
-            <Select value={projectId} onValueChange={setProjectId}>
-              <SelectTrigger>
-                <SelectValue placeholder="프로젝트 선택" />
-              </SelectTrigger>
-              <SelectContent>
-                {projects.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>이슈 수동 등록 (이미지 첨부 가능)</DialogTitle>
+        </DialogHeader>
+        <div className="max-h-[65vh] space-y-3 overflow-y-auto">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>프로젝트 *</Label>
+              <Select value={projectId} onValueChange={setProjectId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="프로젝트 선택" />
+                </SelectTrigger>
+                <SelectContent>
+                  {projects.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="mi-title">제목 *</Label>
+              <Input
+                id="mi-title"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+              />
+            </div>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="mi-title">제목 *</Label>
-            <Input
-              id="mi-title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
+            <Label>본문 (마크다운 · 이미지 붙여넣기/드래그 가능)</Label>
+            <MarkdownEditor
+              value={body}
+              onChange={setBody}
+              onUploadImage={uploadImage}
+              placeholder="이슈 내용. 이미지를 붙여넣거나 드래그하면 자동 업로드됩니다."
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label>추가 지시 (선택)</Label>
+            <Textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="에이전트에게 전달할 추가 지시 (선택)"
             />
           </div>
         </div>
-        <div className="space-y-1.5">
-          <Label>본문 (마크다운 · 이미지 붙여넣기/드래그 가능)</Label>
-          <MarkdownEditor
-            value={body}
-            onChange={setBody}
-            onUploadImage={uploadImage}
-            placeholder="이슈 내용. 이미지를 붙여넣거나 드래그하면 자동 업로드됩니다."
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label>추가 지시 (선택)</Label>
-          <Textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="에이전트에게 전달할 추가 지시 (선택)"
-          />
-        </div>
-        <Button onClick={submit} disabled={busy || !projectId || !title.trim()}>
-          <Plus className="size-4" />
-          {busy ? "등록 중..." : "이슈 등록"}
-        </Button>
-      </CardContent>
-    </Card>
+
+        <DialogFooter>
+          <Button variant="secondary" onClick={() => onOpenChange(false)}>
+            취소
+          </Button>
+          <Button onClick={submit} disabled={busy || !projectId || !title.trim()}>
+            <Plus className="size-4" />
+            {busy ? "등록 중..." : "이슈 등록"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -887,6 +921,9 @@ export default function IssuesPage() {
   const [filterProjectId, setFilterProjectId] = useState("");
   // "" = 전체 상태. 값이 있으면 해당 상태로 서버 필터(GET /issues?status=).
   const [filterStatus, setFilterStatus] = useState("");
+  // 등록 폼 두 개는 레이어 팝업(다이얼로그)으로 띄운다.
+  const [importOpen, setImportOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
 
   useEffect(() => {
     api
@@ -913,9 +950,17 @@ export default function IssuesPage() {
 
       <WorkerDashboard />
 
-      <GithubImport onImported={() => setReload((r) => r + 1)} />
+      <GithubImport
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={() => setReload((r) => r + 1)}
+      />
 
-      <ManualIssueWithImages onCreated={() => setReload((r) => r + 1)} />
+      <ManualIssueWithImages
+        open={manualOpen}
+        onOpenChange={setManualOpen}
+        onCreated={() => setReload((r) => r + 1)}
+      />
 
       <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-3">
         <Label className="shrink-0 text-xs text-muted-foreground">
@@ -957,6 +1002,18 @@ export default function IssuesPage() {
             ))}
           </SelectContent>
         </Select>
+
+        {/* 등록 진입점 */}
+        <div className="ml-auto flex items-center gap-2">
+          <Button variant="secondary" onClick={() => setImportOpen(true)}>
+            <Download className="size-4" />
+            GitHub에서 가져오기
+          </Button>
+          <Button onClick={() => setManualOpen(true)}>
+            <Plus className="size-4" />
+            이슈 등록
+          </Button>
+        </div>
       </div>
 
       <CrudPanel

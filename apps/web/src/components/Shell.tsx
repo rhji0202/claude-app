@@ -16,7 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 function LoadingShell() {
   return (
-    <div className="mx-auto max-w-3xl space-y-4 p-8">
+    <div className="w-full space-y-4 p-4 sm:p-6 lg:p-8">
       <Skeleton className="h-8 w-48" />
       <Skeleton className="h-4 w-full max-w-md" />
       <div className="grid grid-cols-2 gap-4 pt-4 md:grid-cols-3">
@@ -32,9 +32,6 @@ function AuthedShell({ children }: { children: React.ReactNode }) {
   const { user, loading, logout } = useAuth();
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
   const setSidebarOpen = useUiStore((s) => s.setSidebarOpen);
-  const pathname = usePathname();
-  // 이슈 목록은 컬럼이 많아 넓은 폭이 필요 → 이 페이지만 더 넓게.
-  const wide = pathname?.startsWith("/issues");
 
   if (loading) return <LoadingShell />;
   if (!user) return <LoginForm />;
@@ -71,11 +68,8 @@ function AuthedShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <main
-          className={`mx-auto w-full flex-1 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 ${
-            wide ? "max-w-screen-2xl" : "max-w-6xl"
-          }`}
-        >
+        {/* 콘텐츠는 항상 가용 폭 100% + 모든 페이지 동일 padding */}
+        <main className="w-full min-w-0 flex-1 p-4 sm:p-6 lg:p-8">
           {children}
         </main>
       </div>

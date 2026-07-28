@@ -34,7 +34,9 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-1/2 top-1/2 z-50 grid w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border border-border bg-card p-6 shadow-lg data-[state=open]:animate-dialog-in",
+        // [&>*]:min-w-0 — grid 자식의 기본 min-width:auto 때문에 긴 텍스트가
+        // 팝업 밖으로 넘치는 것을 막는다(내부에서 truncate/줄바꿈이 먹도록).
+        "fixed left-1/2 top-1/2 z-50 grid w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border border-border bg-card p-6 shadow-lg data-[state=open]:animate-dialog-in [&>*]:min-w-0",
         className,
       )}
       {...props}
