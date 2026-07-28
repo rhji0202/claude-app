@@ -8,6 +8,7 @@ import {
   FolderGit2,
   CircleDot,
   Clock,
+  Github,
   Sparkles,
   Server,
   MessageSquare,
@@ -29,7 +30,10 @@ const NAV: NavItem[] = [
   { href: "/", label: "대시보드", icon: LayoutDashboard },
   { href: "/chat", label: "채팅", icon: MessageSquare },
   { href: "/projects", label: "프로젝트", icon: FolderGit2 },
-  { href: "/issues", label: "GitHub 이슈", icon: CircleDot },
+  { href: "/issues", label: "이슈", icon: CircleDot },
+  // /issues(에이전트 실행 큐)와 완전 별개인 GitHub 이슈 뷰어
+  // (docs/rules/github-issue-separation.md)
+  { href: "/github-issues", label: "GitHub Issue", icon: Github },
   { href: "/cron", label: "크론", icon: Clock },
   { href: "/skills", label: "스킬", icon: Sparkles },
   { href: "/mcp", label: "MCP 서버", icon: Server },

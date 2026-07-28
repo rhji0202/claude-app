@@ -15,7 +15,9 @@ claude-app/
 │  │     ├─ config/    환경변수 검증 (zod)
 │  │     ├─ prisma/    PrismaModule / PrismaService
 │  │     ├─ crypto/    자격증명 필드 암호화 (AES-256-GCM)
-│  │     └─ …          Phase 2+: projects/issues/cron/skills/mcp/agent/auth/share
+│  │     ├─ issues/    에이전트 이슈 큐 (실행·워커)
+│  │     ├─ gh-issues/ GitHub Issue 뷰어 (실시간 프록시 — issues와 완전 별개)
+│  │     └─ …          Phase 2+: projects/cron/skills/mcp/agent/auth/share
 │  └─ web/      Next.js 15 프론트엔드 (대시보드 UI)
 └─ packages/
    └─ shared/   API·UI 공유 도메인 타입 (타입 전용)
@@ -25,6 +27,17 @@ claude-app/
 - **프론트엔드**: Next.js 15 (App Router) + React 19
 - **인증/보안**: JWT 인증, 프로젝트별 자격증명 AES-256-GCM 암호화 저장
 - **공유**: 팀원 멀티유저 공유 + 공유 링크(테스터 수동 이슈 등록)
+
+## ⚠️ 절대 규칙: 이슈 관련 두 메뉴는 별개 기능
+
+| | **이슈** | **GitHub Issue** |
+|---|---|---|
+| 경로 | `/issues` · `/api/issues/**` | `/github-issues` · `/api/gh-issues/**` |
+| 목적 | 에이전트가 처리할 작업 큐 | GitHub 저장소 이슈 뷰어/에디터 |
+| 저장 | 자체 DB(`IssueTask`) | 저장 안 함(실시간 프록시) |
+
+두 기능은 서로의 서비스·타입·컴포넌트를 import하지 않습니다. 통합·재사용 금지.
+전체 규칙: [docs/rules/github-issue-separation.md](./docs/rules/github-issue-separation.md)
 
 ## 개발 시작
 
@@ -83,6 +96,40 @@ POST /api/public/share/:token/issues     테스터 수동 이슈 등록 (scope=i
 
 모든 리소스 라우트는 전역 JWT 가드로 보호되며, 프로젝트 접근은 소유자 또는
 공유받은 사용자만 가능합니다(viewer는 읽기, editor는 편집, owner는 삭제·공유 관리).
+
+## GitHub Issue 뷰어 API (`/api/gh-issues`)
+
+에이전트 이슈 큐(`/api/issues`)와 **완전히 별개**인 실시간 GitHub 프록시입니다.
+
+```
+GET    /api/gh-issues/projects                      저장소가 연결된 프로젝트(탭 목록)
+GET    /api/gh-issues/:projectId                    이슈 목록
+       ?state=open|closed|all&labels=a,b&q=검색어&sort=created|updated|comments
+       &direction=asc|desc&page=1&perPage=25
+POST   /api/gh-issues/:projectId                    이슈 생성 { title, body?, labels?, assignees? }
+GET    /api/gh-issues/:projectId/labels             저장소 라벨
+GET    /api/gh-issues/:projectId/assignees          담당자 후보
+GET    /api/gh-issues/:projectId/milestones         마일스톤
+GET    /api/gh-issues/:projectId/:number            이슈 상세
+PATCH  /api/gh-issues/:projectId/:number            제목·본문·라벨 수정
+POST   /api/gh-issues/:projectId/:number/state      닫기/열기 { state, stateReason? }
+PUT    /api/gh-issues/:projectId/:number/labels     라벨 덮어쓰기 { labels }
+PUT    /api/gh-issues/:projectId/:number/assignees  담당자 교체 { assignees }
+GET    /api/gh-issues/:projectId/:number/comments   코멘트 목록
+POST   /api/gh-issues/:projectId/:number/comments   코멘트 작성 { body }
+DELETE /api/gh-issues/:projectId/comments/:commentId
+# 첨부 이미지 프록시 (서명 URL — JWT 대신 u·exp·sig로 접근 통제)
+GET    /api/gh-issues/:projectId/image?u=&exp=&sig=
+```
+
+읽기는 프로젝트 접근 권한(viewer 포함), 쓰기는 editor 이상 + 프로젝트 GitHub 토큰이
+필요합니다. 조회 결과는 DB에 저장하지 않습니다.
+
+이슈·코멘트 응답에는 `imageMap`(원본 GitHub 이미지 URL → 서명된 프록시 경로)이 함께
+내려갑니다. GitHub 첨부(`user-attachments`)는 인증을 요구해 브라우저가 직접 열면
+깨지므로, 서버가 프로젝트 토큰으로 대신 받아 스트리밍합니다. `<img>`는 Authorization
+헤더를 실을 수 없어 서명(HMAC + 1시간 만료)으로 접근을 통제하며, 프록시 대상은
+`github.com` · `*.githubusercontent.com`의 https URL로 제한합니다(SSRF 방지).
 
 ## 배포
 

@@ -14,6 +14,9 @@ import { AgentModule } from "./agent/agent.module";
 import { GithubModule } from "./github/github.module";
 import { ProjectsModule } from "./projects/projects.module";
 import { IssuesModule } from "./issues/issues.module";
+// GitHub Issue 뷰어 — IssuesModule과 완전 분리된 별도 기능
+// (docs/rules/github-issue-separation.md)
+import { GhIssuesModule } from "./gh-issues/gh-issues.module";
 import { CronModule } from "./cron/cron.module";
 import { SkillsModule } from "./skills/skills.module";
 import { McpModule } from "./mcp/mcp.module";
@@ -40,6 +43,7 @@ import { HealthController } from "./health.controller";
     GithubModule,
     ProjectsModule,
     IssuesModule,
+    GhIssuesModule,
     CronModule,
     SkillsModule,
     McpModule,

@@ -944,7 +944,7 @@ export default function IssuesPage() {
 
   return (
     <div>
-      <PageHeader title="GitHub 이슈">
+      <PageHeader title="이슈">
         GitHub에서 이슈를 가져오거나 수동 등록해 에이전트로 실행하고, 결과를 이슈 코멘트로 되돌립니다.
       </PageHeader>
 
