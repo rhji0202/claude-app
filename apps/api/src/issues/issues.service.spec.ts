@@ -1,5 +1,8 @@
 import { IssueStatus } from "@prisma/client";
 import { ConfigService } from "@nestjs/config";
+import { promises as fs } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { IssuesService } from "./issues.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
@@ -104,8 +107,12 @@ describe("IssuesService (큐/워커)", () => {
       github as unknown as GithubService,
       projects as unknown as ProjectsService,
       // signRelPath는 toDto가 images를 서명 URL로 변환할 때 호출 → 통과 스텁 제공.
+      // readAsBase64는 실행 시 images[]를 첨부로 싣는 경로에서 호출.
       {
         signRelPath: (rel: string) => rel,
+        readAsBase64: (rel: string) =>
+          Promise.resolve({ data: `b64:${rel}`, mediaType: "image/png" }),
+        readFile: (rel: string) => Promise.resolve(Buffer.from(`bin:${rel}`)),
       } as unknown as UploadsService,
       repos as unknown as RepoManagerService,
       worktrees as unknown as WorktreeService,
@@ -195,6 +202,7 @@ describe("IssuesService (큐/워커)", () => {
       id: "i1",
       projectId: "p1",
       images: [],
+      files: [],
       sessionId: null,
       repo: "o/r",
       title: "t",
@@ -307,11 +315,107 @@ describe("IssuesService (큐/워커)", () => {
       expect(upd.prUrl).toBe("https://github.com/o/r/pull/42");
     });
 
+    it("재실행 지시에 첨부한 이미지를 첨부로 싣고 메모의 이미지 마크다운은 표기로 줄인다", async () => {
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      // 지시 저장 시 업로드된 이미지가 images[]에 쌓인 상태.
+      const withImage = { ...(task as object), images: ["issue-images/i1/a.png"] } as never;
+      prisma.issueNote.findMany.mockResolvedValue([
+        {
+          issueId: "i1",
+          author: "HUMAN",
+          content: "이 화면처럼 고쳐줘\n![screen.png](http://h/uploads/issue-images/i1/a.png?exp=1&sig=ab)",
+          createdAt: new Date(0),
+        },
+      ]);
+      mockAgentResult({ status: "ok", sessionId: "s1", text: "done" });
+      await service.executeClaimed(withImage);
+
+      const opts = agent.runStream.mock.calls[0][1];
+      // 이미지는 실제 첨부로 전달된다.
+      expect(opts.images).toEqual([
+        { data: "b64:issue-images/i1/a.png", mediaType: "image/png" },
+      ]);
+      // 지시 본문은 유지하되 서명 URL은 프롬프트에 싣지 않는다.
+      expect(opts.prompt).toContain("이 화면처럼 고쳐줘");
+      expect(opts.prompt).toContain("(첨부 이미지: screen.png)");
+      expect(opts.prompt).not.toContain("sig=ab");
+    });
+
+    it("첨부 파일을 worktree로 복사하고 프롬프트에 경로를 알려준다", async () => {
+      // 실제 파일을 쓰므로 임시 디렉터리를 worktree 경로로 준다.
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "issue-att-"));
+      worktrees.create.mockResolvedValue({ path: tmp, branch: "issue/i1" });
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      const withFile = {
+        ...(task as object),
+        files: ["issue-images/i1/uuid.xlsx|매출.xlsx"],
+      } as never;
+      mockAgentResult({ status: "ok", sessionId: "s1", text: "done" });
+      await service.executeClaimed(withFile);
+
+      // 파일이 실제로 복사됐다(원본 파일명 유지).
+      const copied = await fs.readFile(
+        path.join(tmp, "첨부파일", "매출.xlsx"),
+        "utf8",
+      );
+      expect(copied).toBe("bin:issue-images/i1/uuid.xlsx");
+      // 커밋 오염 방지용 .gitignore도 함께 놓는다.
+      expect(await fs.readFile(path.join(tmp, "첨부파일", ".gitignore"), "utf8")).toBe(
+        "*\n",
+      );
+      // 프롬프트가 경로를 알려준다.
+      const opts = agent.runStream.mock.calls[0][1];
+      expect(opts.prompt).toContain("첨부파일/매출.xlsx");
+
+      await fs.rm(tmp, { recursive: true, force: true });
+    });
+
+    it("첨부 파일명이 겹치면 순번을 붙여 덮어쓰지 않는다", async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "issue-dup-"));
+      worktrees.create.mockResolvedValue({ path: tmp, branch: "issue/i1" });
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      const dup = {
+        ...(task as object),
+        files: ["issue-images/i1/a.pdf|보고서.pdf", "issue-images/i1/b.pdf|보고서.pdf"],
+      } as never;
+      mockAgentResult({ status: "ok", sessionId: "s1", text: "done" });
+      await service.executeClaimed(dup);
+
+      // 두 파일이 각각 남는다(뒤엣것은 순번 접두).
+      expect(await fs.readFile(path.join(tmp, "첨부파일", "보고서.pdf"), "utf8")).toBe(
+        "bin:issue-images/i1/a.pdf",
+      );
+      expect(
+        await fs.readFile(path.join(tmp, "첨부파일", "2_보고서.pdf"), "utf8"),
+      ).toBe("bin:issue-images/i1/b.pdf");
+
+      await fs.rm(tmp, { recursive: true, force: true });
+    });
+
     it("ISSUE_COMMENT가 있으면 그 문구로 이슈 코멘트를 게시한다", async () => {
       const ghTask = {
         id: "i1",
         projectId: "p1",
         images: [],
+        files: [],
         sessionId: null,
         repo: "o/r",
         issueNumber: 7,
@@ -348,6 +452,7 @@ describe("IssuesService (큐/워커)", () => {
         id: "i1",
         projectId: "p1",
         images: [],
+        files: [],
         sessionId: null,
         repo: "o/r",
         issueNumber: 7,
@@ -401,6 +506,7 @@ describe("IssuesService (큐/워커)", () => {
         id: "i1",
         projectId: "p1",
         images: [],
+        files: [],
         sessionId: null,
         repo: "o/r",
         issueNumber: 7,
@@ -441,6 +547,7 @@ describe("IssuesService (큐/워커)", () => {
         id: "i1",
         projectId: "p1",
         images: [],
+        files: [],
         sessionId: null,
         repo: "o/r",
         issueNumber: 7,
@@ -467,6 +574,7 @@ describe("IssuesService (큐/워커)", () => {
         id: "i1",
         projectId: "p1",
         images: [],
+        files: [],
         sessionId: null,
         repo: "o/r",
         issueNumber: 7,
@@ -496,6 +604,7 @@ describe("IssuesService (큐/워커)", () => {
         id: "i1",
         projectId: "p1",
         images: [],
+        files: [],
         sessionId: null,
         repo: "o/r",
         issueNumber: 7,
@@ -550,6 +659,7 @@ describe("IssuesService (큐/워커)", () => {
         id: "i1",
         projectId: "p1",
         images: [],
+        files: [],
         sessionId: null,
         repo: "o/r",
         issueNumber: 7,
@@ -581,6 +691,7 @@ describe("IssuesService (큐/워커)", () => {
         id: "i1",
         projectId: "p1",
         images: [],
+        files: [],
         sessionId: null,
         repo: "o/r",
         issueNumber: 7,

@@ -49,6 +49,8 @@ export class WorktreeService {
   /**
    * 이슈용 worktree를 생성한다. base clone은 호출 전에 준비돼 있어야 한다.
    * baseBranch가 있으면 origin/<baseBranch>를, 없으면 origin/HEAD를 기준으로 브랜치를 만든다.
+   * 지정한 baseBranch가 원격에 없으면(오타·삭제된 브랜치) 명시적으로 실패한다 —
+   * 조용히 다른 브랜치를 base로 삼으면 잘못된 기준으로 작업이 나간다.
    */
   async create(
     projectId: string,
@@ -60,11 +62,24 @@ export class WorktreeService {
     const branch = `issue/${issueId}`;
 
     // 기준 브랜치 결정: 지정값 → origin/HEAD → 실패 시 지정 없이 add(현재 HEAD).
-    const startPoint =
-      (baseBranch && `origin/${baseBranch}`) ??
-      (await this.repos.defaultBranch(projectId).then((b) =>
-        b ? `origin/${b}` : null,
-      ));
+    const wanted = baseBranch?.trim();
+    let startPoint: string | null;
+    if (wanted) {
+      startPoint = `origin/${wanted}`;
+      const check = await runGit(
+        ["rev-parse", "--verify", "--quiet", `refs/remotes/${startPoint}`],
+        { cwd: base },
+      );
+      if (check.code !== 0) {
+        throw new Error(
+          `프로젝트에 설정된 기준 브랜치 '${wanted}'를 원격에서 찾을 수 없습니다. ` +
+            `브랜치명을 확인하세요(origin/${wanted} 없음).`,
+        );
+      }
+    } else {
+      const def = await this.repos.defaultBranch(projectId);
+      startPoint = def ? `origin/${def}` : null;
+    }
 
     // worktree add/remove는 base .git 잠금 → 프로젝트별 직렬화.
     await this.repos.withProjectLock(projectId, async () => {

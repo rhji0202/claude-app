@@ -17,7 +17,7 @@ import { IssuesService } from "./issues.service";
 import { IssueWorkerService } from "./issue-worker.service";
 import { IssueEventsService } from "./issue-events.service";
 import { CreateIssueTaskDto, UpdateIssueTaskDto } from "./issues.dto";
-import { MAX_IMAGE_BYTES } from "../uploads/uploads.service";
+import { MAX_FILE_BYTES, MAX_IMAGE_BYTES } from "../uploads/uploads.service";
 import { CurrentUser, type AuthUser } from "../auth/current-user.decorator";
 import { AdminOnly } from "../auth/admin.decorator";
 
@@ -151,6 +151,19 @@ export class IssuesController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.issues.addImages(id, files ?? [], user.userId);
+  }
+
+  /** 이슈에 이미지가 아닌 파일 첨부(엑셀·PDF 등, 다중). multipart field name: files */
+  @Post(":id/files")
+  @UseInterceptors(
+    FilesInterceptor("files", 10, { limits: { fileSize: MAX_FILE_BYTES } }),
+  )
+  addFiles(
+    @Param("id") id: string,
+    @UploadedFiles() files: Array<{ buffer: Buffer; originalname: string }>,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.issues.addFiles(id, files ?? [], user.userId);
   }
 
   @Post("batch-run")

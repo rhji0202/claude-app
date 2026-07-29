@@ -2,8 +2,19 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Download, Loader2, MessageSquare, Play, Plus } from "lucide-react";
-import type { IssueNote, IssueProgressEvent } from "@claude-app/shared";
+import {
+  Download,
+  Loader2,
+  MessageSquare,
+  Paperclip,
+  Play,
+  Plus,
+} from "lucide-react";
+import type {
+  IssueAttachment,
+  IssueNote,
+  IssueProgressEvent,
+} from "@claude-app/shared";
 import {
   ISSUE_STATUS_ORDER as STATUS_ORDER,
   issueCategoryLabel,
@@ -257,12 +268,88 @@ function ImageCell({ imgs, title }: { imgs: string[]; title: string }) {
 }
 
 /**
- * 재실행 다이얼로그: 이력 타임라인 + 추가 지시 입력 + 재실행.
+ * 이미지가 아닌 파일(엑셀·PDF 등) 첨부 컨트롤. 등록 폼·재실행 다이얼로그가 공유한다.
+ * 업로드 즉시 이슈 files[]에 쌓이므로, 다음 실행 때 에이전트 작업 디렉터리로 복사된다.
+ *
+ * ensureIssue: 업로드 대상 이슈 id를 확보한다(등록 폼은 첫 업로드 시 이슈를 생성).
+ */
+function FileAttach({
+  ensureIssue,
+  attached,
+  onAttached,
+}: {
+  ensureIssue: () => Promise<string>;
+  attached: IssueAttachment[];
+  onAttached: (files: IssueAttachment[]) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  async function handleFiles(picked: File[]) {
+    if (picked.length === 0) return;
+    setBusy(true);
+    try {
+      const id = await ensureIssue();
+      const form = new FormData();
+      for (const f of picked) form.append("files", f);
+      const res = await upload<{ files: IssueAttachment[] }>(
+        `/issues/${id}/files`,
+        form,
+      );
+      onAttached(res.files);
+      toast.success(`파일 ${picked.length}개를 첨부했습니다.`);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-input px-2 py-1 text-xs text-muted-foreground hover:text-foreground">
+        <Paperclip className="size-3.5" />
+        {busy ? "업로드 중..." : "파일 첨부 (엑셀·PDF 등)"}
+        <input
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            handleFiles(Array.from(e.target.files ?? []));
+            e.target.value = "";
+          }}
+        />
+      </label>
+      {attached.length > 0 && (
+        <ul className="space-y-1 text-xs">
+          {attached.map((f) => (
+            <li key={f.url} className="flex items-center gap-1.5">
+              <Paperclip className="size-3 shrink-0 text-muted-foreground" />
+              <a
+                href={uploadUrl(f.url)}
+                target="_blank"
+                rel="noreferrer"
+                className="truncate underline underline-offset-2"
+              >
+                {f.name}
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 재실행 다이얼로그: 이력 타임라인 + 추가 지시 입력(이미지·파일 첨부 가능) + 재실행.
  * 어떤 상태의 이슈에도 쓸 수 있다. 열 때 GET /issues/:id/notes로 이력 지연 로드.
  *
  * 재실행 동작:
  *  - 입력한 추가 지시가 있으면 먼저 POST /notes(HUMAN)로 남긴다(실행 시 프롬프트에 주입됨).
  *  - 상태가 needs_decision이면 POST /resume, 그 외에는 POST /run으로 재큐한다.
+ *
+ * 이미지: 등록 폼과 같은 방식(POST /issues/:id/images)으로 붙여넣기·드래그 업로드한다.
+ * 업로드 즉시 이슈의 images[]에 쌓이므로, 다음 실행 때 첨부 이미지로 함께 전달된다.
  */
 function RerunDialog({
   row,
@@ -280,6 +367,10 @@ function RerunDialog({
   const [notes, setNotes] = useState<IssueNote[] | null>(null);
   const [memo, setMemo] = useState("");
   const [busy, setBusy] = useState(false);
+  // 이번 재실행에 첨부한 파일(엑셀·PDF 등). 업로드 시점에 이미 이슈에 붙는다.
+  const [files, setFiles] = useState<IssueAttachment[]>(
+    (row.files as IssueAttachment[] | undefined) ?? [],
+  );
 
   async function loadNotes(next: boolean) {
     setOpen(next);
@@ -290,6 +381,19 @@ function RerunDialog({
       toast.error((e as Error).message);
       setNotes([]);
     }
+  }
+
+  /**
+   * 지시에 붙일 이미지 업로드. 등록 폼과 동일한 엔드포인트를 쓴다.
+   * 이슈는 이미 존재하므로 등록 폼의 ensureIssue 같은 선생성이 필요 없다.
+   */
+  async function uploadImage(file: File): Promise<string> {
+    const form = new FormData();
+    form.append("files", file);
+    const res = await upload<{ images: string[] }>(`/issues/${id}/images`, form);
+    const rel = res.images[res.images.length - 1];
+    onChanged?.();
+    return uploadUrl(rel);
   }
 
   async function addMemo() {
@@ -360,12 +464,22 @@ function RerunDialog({
             </div>
             <NoteList notes={notes} />
           </div>
-          {/* 추가 지시 입력 */}
+          {/* 추가 지시 입력 (이미지 붙여넣기/드래그 업로드 가능) */}
           <div className="space-y-2">
-            <Textarea
-              placeholder="이번 실행에 반영할 추가 지시를 입력하세요. (선택 — 비워두면 그대로 재실행)"
+            <MarkdownEditor
               value={memo}
-              onChange={(e) => setMemo(e.target.value)}
+              onChange={setMemo}
+              onUploadImage={uploadImage}
+              placeholder="이번 실행에 반영할 추가 지시를 입력하세요. 이미지를 붙여넣거나 드래그하면 자동 업로드됩니다. (선택 — 비워두면 그대로 재실행)"
+              minRows={4}
+            />
+            <FileAttach
+              ensureIssue={async () => id}
+              attached={files}
+              onAttached={(next) => {
+                setFiles(next);
+                onChanged?.();
+              }}
             />
             <div className="flex gap-2">
               <Button
@@ -411,6 +525,7 @@ function IssueDetailDialog({
   const prompt = (row.prompt as string | null | undefined) ?? null;
   const labels = (row.labels as string[] | undefined) ?? [];
   const imgs = (row.images as string[] | undefined) ?? [];
+  const atts = (row.files as IssueAttachment[] | undefined) ?? [];
   const num = row.issueNumber ? `#${row.issueNumber}` : null;
 
   // 본문 이미지 치환용 맵: 서버는 서명된 상대경로를 주므로 절대 URL로 바꾼다.
@@ -521,6 +636,26 @@ function IssueDetailDialog({
                   </a>
                 ))}
               </div>
+            </Section>
+          )}
+
+          {atts.length > 0 && (
+            <Section title={`첨부 파일 (${atts.length})`}>
+              <ul className="space-y-1 text-sm">
+                {atts.map((f) => (
+                  <li key={f.url} className="flex items-center gap-1.5">
+                    <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
+                    <a
+                      href={uploadUrl(f.url)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="truncate underline underline-offset-2"
+                    >
+                      {f.name}
+                    </a>
+                  </li>
+                ))}
+              </ul>
             </Section>
           )}
 
@@ -787,8 +922,9 @@ function ManualIssueWithImages({
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [prompt, setPrompt] = useState("");
-  // 이미 생성된 이슈 id (이미지 업로드 대상). 첫 저장 시 생성.
+  // 이미 생성된 이슈 id (이미지·파일 업로드 대상). 첫 저장 시 생성.
   const [issueId, setIssueId] = useState<string | null>(null);
+  const [files, setFiles] = useState<IssueAttachment[]>([]);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -839,6 +975,7 @@ function ManualIssueWithImages({
       setTitle("");
       setBody("");
       setPrompt("");
+      setFiles([]);
       setIssueId(null);
       onOpenChange(false);
       onCreated();
@@ -888,6 +1025,14 @@ function ManualIssueWithImages({
               onChange={setBody}
               onUploadImage={uploadImage}
               placeholder="이슈 내용. 이미지를 붙여넣거나 드래그하면 자동 업로드됩니다."
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label>첨부 파일 (선택 · 엑셀·PDF 등)</Label>
+            <FileAttach
+              ensureIssue={ensureIssue}
+              attached={files}
+              onAttached={setFiles}
             />
           </div>
           <div className="space-y-1.5">

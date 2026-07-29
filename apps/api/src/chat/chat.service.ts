@@ -3,7 +3,11 @@ import { ChatRole, UsageKind } from "@prisma/client";
 import type { AgentUsage } from "@claude-app/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { ProjectsService } from "../projects/projects.service";
-import { AgentService, type AgentStreamEvent } from "../agent/agent.service";
+import {
+  AgentService,
+  type AgentControl,
+  type AgentStreamEvent,
+} from "../agent/agent.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
 import { UsageService } from "../usage/usage.service";
 
@@ -18,10 +22,25 @@ export interface ChatSessionDto {
 /** assistant 메시지의 순서 있는 파트(claude.ai식 타임라인). parts 컬럼에 저장. */
 export type ChatPart =
   | { type: "text"; id: string; text: string }
-  | { type: "tool"; id: string; name: string; input?: string };
+  | {
+      type: "tool";
+      id: string;
+      name: string;
+      input?: string;
+      /** 도구 실행 결과(CLI 트랜스크립트의 `⎿` 줄). tool_result 이벤트로 채워진다. */
+      result?: string;
+      resultIsError?: boolean;
+    };
 
-/** 스트림 이벤트를 parts 배열로 누적하는 리듀서 (프론트와 동일 규칙) */
+/**
+ * 스트림 이벤트를 parts 배열로 누적하는 리듀서 (프론트와 동일 규칙)
+ *
+ * 서브에이전트 이벤트(parentId 있음)는 저장하지 않는다 — 중첩 구조를 잃고
+ * 메인 타임라인에 평평하게 섞이면 재로드 시 대화가 뒤섞여 보인다.
+ * 중첩 트랜스크립트는 실행 중 화면에만 존재한다.
+ */
 function reduceParts(parts: ChatPart[], e: AgentStreamEvent): ChatPart[] {
+  if ("parentId" in e && e.parentId) return parts;
   switch (e.type) {
     case "text_start":
       if (parts.some((p) => p.type === "text" && p.id === e.id)) return parts;
@@ -39,6 +58,12 @@ function reduceParts(parts: ChatPart[], e: AgentStreamEvent): ChatPart[] {
     case "tool":
       if (parts.some((p) => p.type === "tool" && p.id === e.id)) return parts;
       return [...parts, { type: "tool", id: e.id, name: e.name, input: e.input }];
+    case "tool_result":
+      return parts.map((p) =>
+        p.type === "tool" && p.id === e.id
+          ? { ...p, result: e.content, resultIsError: e.isError }
+          : p,
+      );
     default:
       return parts;
   }
@@ -77,9 +102,14 @@ export class ChatService {
       include: { messages: { orderBy: { createdAt: "asc" } } },
     });
     if (!s) throw new NotFoundException("세션을 찾을 수 없습니다.");
+    // 실행 중인 브랜치(CLI 상태줄 표시용). 관리 clone이 아직 없으면 null.
+    // project.gitBranch가 아니라 clone의 실제 HEAD를 읽는다 — ensureRepo는
+    // gitBranch를 체크아웃하지 않으므로 둘이 다를 수 있다.
+    const branch = await this.repos.currentBranch(s.projectId);
     return {
       ...this.toDto(s),
       sdkSessionId: s.sdkSessionId,
+      branch,
       messages: s.messages.map((m) => ({
         id: m.id,
         role: m.role === ChatRole.USER ? "user" : "assistant",
@@ -105,6 +135,11 @@ export class ChatService {
     sessionId: string,
     prompt: string,
     onEvent: (e: AgentStreamEvent) => void,
+    /**
+     * 실행 제어 핸들을 호출측(컨트롤러)에 넘긴다. SSE 연결이 끊기면 interrupt()를
+     * 호출해 턴을 중단시키는 데 쓴다 — abort와 달리 부분 응답이 보존된다.
+     */
+    onControl?: (control: AgentControl) => void,
   ): Promise<void> {
     const session = await this.prisma.chatSession.findFirst({
       where: { id: sessionId, userId },
@@ -142,6 +177,7 @@ export class ChatService {
         cwd,
         systemPrompt:
           "당신은 이 프로젝트 컨텍스트에서 사용자를 돕는 코딩 에이전트입니다.",
+        onQuery: onControl,
       },
       (e) => {
         if (e.type === "session") newSdkSessionId = e.sessionId;

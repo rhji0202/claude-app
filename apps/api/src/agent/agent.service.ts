@@ -58,10 +58,91 @@ export interface RunResult {
  */
 export type AgentStreamEvent =
   | { type: "session"; sessionId: string }
-  | { type: "text_start"; id: string }
-  | { type: "text_delta"; id: string; delta: string }
-  | { type: "text_end"; id: string; text: string }
-  | { type: "tool"; id: string; name: string; input?: string }
+  /**
+   * text·tool 계열 이벤트의 parentId는 서브에이전트 소속을 뜻한다.
+   * 값이 있으면 그 id를 가진 Task 도구 파트 **안쪽**에 렌더해야 한다(중첩 트랜스크립트).
+   * 없으면 메인 트랜스크립트 소속. forwardSubagentText가 꺼져 있으면 항상 없다.
+   */
+  | { type: "text_start"; id: string; parentId?: string }
+  | { type: "text_delta"; id: string; delta: string; parentId?: string }
+  | { type: "text_end"; id: string; text: string; parentId?: string }
+  | {
+      type: "tool";
+      id: string;
+      name: string;
+      input?: string;
+      parentId?: string;
+    }
+  /**
+   * 도구 실행 결과. id는 대응하는 tool 이벤트의 id(tool_use_id)와 같다.
+   * CLI 트랜스크립트의 `⎿` 줄에 해당한다. content는 길 수 있어 호출측에서 잘라 쓴다.
+   */
+  | {
+      type: "tool_result";
+      id: string;
+      content: string;
+      isError?: boolean;
+      parentId?: string;
+    }
+  /**
+   * 실행 중인 도구의 경과 시간(CLI의 "실행 중 12s"). id는 tool 이벤트의 id와 같다.
+   * 같은 도구에 대해 반복 방출되므로 호출측은 갱신(누적 아님)해야 한다.
+   * 진행 표시 전용이라 DB에는 저장하지 않는다.
+   */
+  | { type: "tool_progress"; id: string; elapsedSeconds: number }
+  /**
+   * 사고 토큰 누적 추정치(CLI 상태줄). 세션 단위이며 특정 파트에 속하지 않는다.
+   * 진행 표시 전용이라 DB에는 저장하지 않는다.
+   */
+  | { type: "thinking_tokens"; tokens: number }
+  /**
+   * API 재시도 알림(429·5xx 등). 지금까지 조용히 지나가던 구간을 드러낸다.
+   * 알림 전용이라 DB에는 저장하지 않는다.
+   */
+  | {
+      type: "api_retry";
+      attempt: number;
+      maxRetries: number;
+      delayMs: number;
+      reason: string;
+    }
+  /**
+   * 사용량 한도 알림(구독 계정). status가 allowed_warning·rejected일 때만 의미가 있다.
+   * 알림 전용이라 DB에는 저장하지 않는다.
+   */
+  | {
+      type: "rate_limit";
+      status: "allowed" | "allowed_warning" | "rejected";
+      /** 0~1 사용률. SDK가 주지 않으면 undefined. */
+      utilization?: number;
+      /** 한도 초기화 시각(ISO). SDK는 epoch 초로 주므로 변환해 넘긴다. */
+      resetsAt?: string;
+      limitType?: string;
+    }
+  /**
+   * 서브에이전트(Task 도구) 시작. id는 대응하는 tool 이벤트의 id(tool_use_id).
+   * tool_use_id가 없는 태스크(워크플로 등)는 방출하지 않는다 — 붙일 파트가 없다.
+   */
+  | {
+      type: "agent_start";
+      id: string;
+      taskId: string;
+      description: string;
+      agentType?: string;
+    }
+  /**
+   * 서브에이전트 진행. 같은 id로 반복 방출되므로 호출측은 갱신(누적 아님)해야 한다.
+   * summary는 agentProgressSummaries 옵션이 켜져 있을 때만 채워진다.
+   */
+  | {
+      type: "agent_progress";
+      id: string;
+      taskId: string;
+      tokens: number;
+      toolUses: number;
+      lastToolName?: string;
+      summary?: string;
+    }
   | {
       type: "done";
       text: string;
@@ -77,7 +158,32 @@ export type AgentStreamEvent =
       accountId?: string | null;
     };
 
-export interface RunStreamOptions extends RunAgentOptions {}
+/**
+ * 실행 중 세션을 제어하는 핸들. SDK query()의 반환값(Query)이 제공하는 메서드 중
+ * 이 앱에서 쓰는 것만 좁혀서 노출한다 — SDK는 런타임 동적 로드이므로 타입을
+ * 직접 import하면 서비스가 SDK에 정적으로 묶인다.
+ *
+ * abortController(서브프로세스 kill)와 다르다: interrupt는 턴만 끊고 지금까지의
+ * 부분 응답을 살린 채 세션을 유지한다.
+ */
+export interface AgentControl {
+  /** 현재 턴을 중단한다. 부분 응답은 보존되고 세션은 살아있다. */
+  interrupt(): Promise<unknown>;
+  /** 세션 재시작 없이 모델을 교체한다. 인자 생략 시 기본 모델로 되돌린다. */
+  setModel(model?: string): Promise<void>;
+  /** 이 세션에서 실제로 사용 가능한 슬래시 명령 목록. */
+  supportedCommands(): Promise<unknown[]>;
+  /** 컨텍스트 사용량(카테고리별 토큰·percentage 등). */
+  getContextUsage(): Promise<unknown>;
+}
+
+export interface RunStreamOptions extends RunAgentOptions {
+  /**
+   * 스트림이 열린 직후 제어 핸들을 넘겨준다(호출측이 interrupt 등을 걸 수 있게).
+   * resume 폴백으로 재시도되면 새 핸들로 다시 호출된다 — 호출측은 마지막 것만 유지한다.
+   */
+  onQuery?: (control: AgentControl) => void;
+}
 
 /**
  * 에이전트 실행 서비스. Claude Agent SDK의 query()를 감싸고,
@@ -304,7 +410,12 @@ export class AgentService {
     // 현재 실행이 resume을 사용 중인가(폴백 재시도 시 false로 낮춘다).
     let resumeInFlight = Boolean(opts.resume);
 
-    const segId = (index: number) => `${turn}:${index}`;
+    /**
+     * 텍스트 세그먼트 id. 서브에이전트(parent 있음)는 별도 이름공간을 쓴다 —
+     * 메인 스레드와 turn·blockIndex가 같아도 id가 겹치면 서로의 텍스트를 덮어쓴다.
+     */
+    const segId = (index: number, parent?: string | null) =>
+      parent ? `${parent}#${turn}:${index}` : `${turn}:${index}`;
 
     // 실제 SDK 스트림 1회. done/error를 onEvent로 방출하면 true 반환(정상 종료),
     // 내용 방출 전 예외가 나면 throw(호출측이 resume 폴백 여부 판단).
@@ -321,6 +432,12 @@ export class AgentService {
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
           includePartialMessages: true,
+          // 서브에이전트 진행 요약(~30초마다). 서브에이전트 대화를 포크해 만들지만
+          // 프롬프트 캐시를 재사용하므로 비용은 미미하다. task_progress.summary로 온다.
+          agentProgressSummaries: true,
+          // 서브에이전트의 텍스트·도구 호출까지 전달받아 중첩 트랜스크립트를 그린다.
+          // 이 이벤트들은 parent_tool_use_id를 갖고 오므로 메인 타임라인과 분리해야 한다.
+          forwardSubagentText: true,
           mcpServers: mcpServers as never,
           systemPrompt: systemPrompt || undefined,
           resume,
@@ -330,6 +447,10 @@ export class AgentService {
           abortController: opts.abortController,
         },
       });
+
+      // query()의 반환값은 단순 iterator가 아니라 Query — interrupt/setModel 등
+      // 제어 메서드를 갖는다. 호출측에 넘겨 세션 제어가 가능하게 한다.
+      opts.onQuery?.(iterator as unknown as AgentControl);
 
       for await (const message of iterator) {
         const m = message as {
@@ -345,6 +466,30 @@ export class AgentService {
           duration_ms?: number;
           usage?: Record<string, number>;
           modelUsage?: Record<string, unknown>;
+          // tool_progress 필드
+          tool_use_id?: string;
+          elapsed_time_seconds?: number;
+          parent_tool_use_id?: string | null;
+          // system/thinking_tokens 필드
+          estimated_tokens?: number;
+          // system/task_started·task_progress 필드
+          task_id?: string;
+          description?: string;
+          subagent_type?: string;
+          last_tool_name?: string;
+          summary?: string;
+          // system/api_retry 필드
+          attempt?: number;
+          max_retries?: number;
+          retry_delay_ms?: number;
+          error_status?: number | null;
+          // rate_limit_event 필드
+          rate_limit_info?: {
+            status?: string;
+            utilization?: number;
+            resetsAt?: number;
+            rateLimitType?: string;
+          };
           event?: {
             type?: string;
             index?: number;
@@ -358,6 +503,10 @@ export class AgentService {
               id?: string;
               name?: string;
               input?: unknown;
+              // tool_result 블록 필드
+              tool_use_id?: string;
+              is_error?: boolean;
+              content?: unknown;
             }>;
           };
         };
@@ -367,8 +516,92 @@ export class AgentService {
           onEvent({ type: "session", sessionId });
         }
 
+        // 도구 진행(경과 시간). 서브에이전트 내부 도구(parent_tool_use_id 있음)는
+        // 프론트에 대응하는 파트가 없으므로 건너뛴다.
+        if (
+          m.type === "tool_progress" &&
+          m.tool_use_id &&
+          typeof m.elapsed_time_seconds === "number" &&
+          !m.parent_tool_use_id
+        ) {
+          onEvent({
+            type: "tool_progress",
+            id: m.tool_use_id,
+            elapsedSeconds: m.elapsed_time_seconds,
+          });
+        }
+
+        // 사고 토큰 누적 추정치(상태줄용).
+        if (
+          m.type === "system" &&
+          m.subtype === "thinking_tokens" &&
+          typeof m.estimated_tokens === "number"
+        ) {
+          onEvent({ type: "thinking_tokens", tokens: m.estimated_tokens });
+        }
+
+        // API 재시도(429·5xx 등). 지금까지 조용히 지나가 사용자에게 멈춘 것처럼 보였다.
+        if (
+          m.type === "system" &&
+          m.subtype === "api_retry" &&
+          typeof m.attempt === "number"
+        ) {
+          onEvent({
+            type: "api_retry",
+            attempt: m.attempt,
+            maxRetries: Number(m.max_retries ?? 0),
+            delayMs: Number(m.retry_delay_ms ?? 0),
+            // error는 SDK가 주는 사유 코드(rate_limit·overloaded 등).
+            reason: m.error ?? (m.error_status ? String(m.error_status) : "unknown"),
+          });
+        }
+
+        // 사용량 한도(구독 계정). 경고·차단만 의미가 있으므로 allowed는 흘리지 않는다.
+        if (m.type === "rate_limit_event" && m.rate_limit_info) {
+          const info = m.rate_limit_info;
+          const status = info.status;
+          if (status === "allowed_warning" || status === "rejected") {
+            onEvent({
+              type: "rate_limit",
+              status,
+              utilization: info.utilization,
+              // SDK는 epoch 초를 준다 — 프론트가 바로 쓰도록 ISO로 변환한다.
+              resetsAt:
+                typeof info.resetsAt === "number"
+                  ? new Date(info.resetsAt * 1000).toISOString()
+                  : undefined,
+              limitType: info.rateLimitType,
+            });
+          }
+        }
+
+        // 서브에이전트(Task 도구) 시작·진행. tool_use_id가 없는 태스크(워크플로 등)는
+        // 프론트에 붙일 파트가 없으므로 건너뛴다.
+        if (m.type === "system" && m.subtype === "task_started" && m.tool_use_id) {
+          onEvent({
+            type: "agent_start",
+            id: m.tool_use_id,
+            taskId: m.task_id ?? m.tool_use_id,
+            description: m.description ?? "",
+            agentType: m.subagent_type,
+          });
+        }
+        if (m.type === "system" && m.subtype === "task_progress" && m.tool_use_id) {
+          onEvent({
+            type: "agent_progress",
+            id: m.tool_use_id,
+            taskId: m.task_id ?? m.tool_use_id,
+            tokens: Number(m.usage?.total_tokens ?? 0),
+            toolUses: Number(m.usage?.tool_uses ?? 0),
+            lastToolName: m.last_tool_name,
+            summary: m.summary,
+          });
+        }
+
         if (m.type === "stream_event" && m.event) {
           const ev = m.event;
+          // 서브에이전트 소속이면 그 Task 파트 안쪽에 렌더된다.
+          const parent = m.parent_tool_use_id ?? undefined;
           if (ev.type === "message_start") {
             turn += 1;
           } else if (
@@ -376,10 +609,10 @@ export class AgentService {
             ev.content_block?.type === "text" &&
             typeof ev.index === "number"
           ) {
-            const id = segId(ev.index);
+            const id = segId(ev.index, parent);
             openedText.add(id);
             sawContent = true;
-            onEvent({ type: "text_start", id });
+            onEvent({ type: "text_start", id, parentId: parent });
           } else if (
             ev.type === "content_block_delta" &&
             ev.delta?.type === "text_delta" &&
@@ -387,19 +620,26 @@ export class AgentService {
             typeof ev.index === "number"
           ) {
             sawContent = true;
-            onEvent({ type: "text_delta", id: segId(ev.index), delta: ev.delta.text });
+            onEvent({
+              type: "text_delta",
+              id: segId(ev.index, parent),
+              delta: ev.delta.text,
+              parentId: parent,
+            });
           }
         }
 
         // 완결된 assistant 턴 — 텍스트 블록 확정(text_end) + tool_use 블록
         if (m.type === "assistant" && m.message?.content) {
           sawContent = true;
+          const parent = m.parent_tool_use_id ?? undefined;
           m.message.content.forEach((block, index) => {
             if (block.type === "text" && block.text) {
-              const id = segId(index);
+              const id = segId(index, parent);
               // 델타가 없었던(스트리밍 안 된) 텍스트면 start도 보내 프론트가 파트를 만들게 함
-              if (!openedText.has(id)) onEvent({ type: "text_start", id });
-              onEvent({ type: "text_end", id, text: block.text });
+              if (!openedText.has(id))
+                onEvent({ type: "text_start", id, parentId: parent });
+              onEvent({ type: "text_end", id, text: block.text, parentId: parent });
             } else if (block.type === "tool_use" && block.name) {
               let input: string | undefined;
               try {
@@ -409,12 +649,28 @@ export class AgentService {
               }
               onEvent({
                 type: "tool",
-                id: block.id ?? segId(index),
+                id: block.id ?? segId(index, parent),
                 name: block.name,
                 input,
+                parentId: parent,
               });
             }
           });
+        }
+
+        // 도구 실행 결과 — SDK는 tool_result 블록을 user 메시지로 되돌려준다.
+        if (m.type === "user" && m.message?.content) {
+          const parent = m.parent_tool_use_id ?? undefined;
+          for (const block of m.message.content) {
+            if (block.type !== "tool_result" || !block.tool_use_id) continue;
+            onEvent({
+              type: "tool_result",
+              id: block.tool_use_id,
+              content: this.flattenToolResult(block.content),
+              isError: block.is_error === true,
+              parentId: parent,
+            });
+          }
         }
 
         if (m.type === "result") {
@@ -478,6 +734,34 @@ export class AgentService {
       this.logger.error(`스트리밍 실행 오류: ${String(err)}`);
       onEvent({ type: "error", error: String(err), sessionId });
     }
+  }
+
+  /**
+   * tool_result 블록의 content를 평문으로 만든다.
+   * SDK는 문자열 또는 블록 배열(text 블록 등)을 준다. 이미지 등 텍스트가 아닌
+   * 블록은 타입 표시로 대체한다.
+   *
+   * 파일 전체 읽기처럼 결과가 매우 클 수 있어 상한을 둔다 — SSE·DB(parts)에
+   * 그대로 흘리면 응답이 비대해지고, UI는 어차피 앞부분만 보여준다.
+   */
+  private flattenToolResult(content: unknown): string {
+    const MAX = 4000;
+    let text: string;
+    if (typeof content === "string") text = content;
+    else if (Array.isArray(content)) {
+      text = content
+        .map((b) => {
+          const block = b as { type?: string; text?: string };
+          if (typeof block?.text === "string") return block.text;
+          return block?.type ? `[${block.type}]` : "";
+        })
+        .filter(Boolean)
+        .join("\n");
+    } else if (content == null) text = "";
+    else text = JSON.stringify(content);
+
+    if (text.length <= MAX) return text;
+    return `${text.slice(0, MAX)}\n… (${text.length - MAX}자 생략)`;
   }
 
   /**

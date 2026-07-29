@@ -10,6 +10,7 @@ import {
 import type { Response } from "express";
 import { IsString, MinLength } from "class-validator";
 import { ChatService } from "./chat.service";
+import type { AgentControl } from "../agent/agent.service";
 import { CurrentUser, type AuthUser } from "../auth/current-user.decorator";
 
 class CreateSessionDto {
@@ -75,17 +76,40 @@ export class ChatController {
       res.write(": ping\n\n");
     }, 15000);
 
+    // 클라이언트가 연결을 끊었는가. 끊긴 뒤 write는 무의미하므로 억제한다
+    // (에이전트 실행은 계속되어 부분 응답 저장까지 마친다).
+    let closed = false;
     const send = (data: unknown) => {
+      if (closed) return;
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
+    // 실행 제어 핸들. 스트림이 열린 뒤 채워진다(resume 폴백 시 새 핸들로 교체).
+    let control: AgentControl | undefined;
+
+    // 프론트가 esc로 fetch를 중단하면 이 이벤트가 뜬다. abort(서브프로세스 kill)와
+    // 달리 interrupt()는 턴만 끊어 지금까지의 부분 응답을 살린다.
+    res.on("close", () => {
+      closed = true;
+      clearInterval(heartbeat);
+      control?.interrupt().catch(() => {
+        /* 이미 끝난 실행이면 무시 — 표시할 대상이 없다 */
+      });
+    });
+
     try {
-      await this.chat.streamMessage(user.userId, id, dto.prompt, (e) => send(e));
+      await this.chat.streamMessage(
+        user.userId,
+        id,
+        dto.prompt,
+        (e) => send(e),
+        (c) => (control = c),
+      );
     } catch (err) {
       send({ type: "error", error: (err as Error).message });
     } finally {
       clearInterval(heartbeat);
-      res.end();
+      if (!closed) res.end();
     }
   }
 }

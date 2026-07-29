@@ -13,6 +13,33 @@ const MIME_EXT: Record<string, string> = {
 };
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB
 
+/**
+ * 이미지가 아닌 첨부 파일의 허용 확장자.
+ * 에이전트가 worktree에서 직접 열어보는 자료 파일만 받는다.
+ * 실행 형식(exe/sh/bat 등)은 받지 않는다 — worktree는 에이전트가
+ * bypassPermissions로 도는 디렉터리라 실행물을 둘 이유가 없다.
+ */
+const ALLOWED_FILE_EXTS = new Set([
+  "pdf",
+  "xlsx",
+  "xls",
+  "csv",
+  "docx",
+  "doc",
+  "pptx",
+  "ppt",
+  "txt",
+  "md",
+  "json",
+  "xml",
+  "yaml",
+  "yml",
+  "log",
+  "zip",
+]);
+/** 엑셀·PDF는 이미지보다 크므로 별도 상한을 둔다. */
+export const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25MB
+
 /** 서명 URL 기본 유효기간(ms). 이 시간 내에서만 /uploads 접근 허용. */
 const SIGNED_URL_TTL_MS = 60 * 60 * 1000; // 1h
 
@@ -94,6 +121,41 @@ export class UploadsService {
     await fs.writeFile(abs, buffer);
     // 상대경로는 항상 posix 슬래시로 저장(웹 URL·크로스플랫폼 일관)
     return { relPath: rel.split(path.sep).join("/"), mediaType };
+  }
+
+  /**
+   * 이미지가 아닌 첨부 파일을 저장하고 상대경로 + 정리된 원본 파일명을 반환.
+   * 저장명은 UUID(traversal·충돌 방지)지만 확장자는 유지해 형식을 알 수 있게 한다.
+   */
+  async saveFile(
+    issueId: string,
+    buffer: Buffer,
+    originalName: string,
+  ): Promise<{ relPath: string; fileName: string }> {
+    if (buffer.length > MAX_FILE_BYTES)
+      throw new BadRequestException("파일 크기가 25MB를 초과합니다.");
+    // 경로 성분을 버리고 파일명만 취한다(../ 등 traversal 차단).
+    const base = path.basename(originalName || "file").trim();
+    const ext = path.extname(base).slice(1).toLowerCase();
+    if (!ALLOWED_FILE_EXTS.has(ext))
+      throw new BadRequestException(
+        `지원하지 않는 파일 형식입니다: ${ext || "(확장자 없음)"} ` +
+          `(${[...ALLOWED_FILE_EXTS].join("/")}만 허용)`,
+      );
+    const rel = path.join(this.issueDir(issueId), `${randomUUID()}.${ext}`);
+    const abs = path.join(this.root, rel);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, buffer);
+    return {
+      relPath: rel.split(path.sep).join("/"),
+      // 표시·복사용 이름. 경로 구분자·공백을 밑줄로 바꿔 경로에서 안전하게 만든다.
+      fileName: base.replace(/[^\w.가-힣-]+/g, "_"),
+    };
+  }
+
+  /** 저장된 첨부 파일을 버퍼로 읽는다(worktree 복사용). */
+  async readFile(relPath: string): Promise<Buffer> {
+    return fs.readFile(this.absPath(relPath));
   }
 
   absPath(relPath: string): string {

@@ -1,5 +1,5 @@
 import { ConfigService } from "@nestjs/config";
-import { AgentService } from "./agent.service";
+import { AgentService, type AgentStreamEvent } from "./agent.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
 import { ClaudeAccountService } from "../claude-account/claude-account.service";
@@ -382,5 +382,672 @@ describe("AgentService.resolveModel / clearEffortEnv", () => {
     };
     clearEffortEnv(env);
     expect("CLAUDE_CODE_EFFORT_LEVEL" in env).toBe(false);
+  });
+});
+
+/**
+ * onQuery(제어 핸들 전달) 검증. SDK는 런타임 동적 import이므로 모듈을 목으로 바꿔
+ * query()가 제어 메서드를 가진 async generator를 반환하게 만든다.
+ */
+jest.mock(
+  "@anthropic-ai/claude-agent-sdk",
+  () => ({ query: jest.fn() }),
+  { virtual: true },
+);
+
+describe("AgentService.runStream — Query 제어 핸들", () => {
+  let service: AgentService;
+  let prisma: { project: { findUnique: jest.Mock } };
+  let interrupt: jest.Mock;
+  let setModel: jest.Mock;
+
+  /** 제어 메서드를 가진 가짜 Query. 이벤트를 하나도 안 내고 result로 끝낸다. */
+  function fakeQuery() {
+    async function* gen() {
+      yield { type: "system", subtype: "init", session_id: "sdk-1" };
+      yield { type: "result", subtype: "success", result: "완료" };
+    }
+    return Object.assign(gen(), {
+      interrupt,
+      setModel,
+      supportedCommands: jest.fn().mockResolvedValue([{ name: "clear" }]),
+      getContextUsage: jest.fn().mockResolvedValue({ percentage: 12 }),
+    });
+  }
+
+  beforeEach(async () => {
+    interrupt = jest.fn().mockResolvedValue(undefined);
+    setModel = jest.fn().mockResolvedValue(undefined);
+
+    const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
+      query: jest.Mock;
+    };
+    sdk.query.mockImplementation(() => fakeQuery());
+
+    prisma = {
+      project: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: "p1",
+          gitTokenEnc: null,
+          claudeAccountId: null,
+          ownerId: "u1",
+        }),
+      },
+    };
+    service = new AgentService(
+      prisma as unknown as PrismaService,
+      { decryptOptional: () => null } as unknown as CryptoService,
+      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+      {
+        getModelConfig: jest.fn().mockResolvedValue({
+          model: "claude-opus-5",
+          effort: null,
+          effortSupported: false,
+        }),
+        getActiveToken: jest.fn().mockResolvedValue(null),
+        getActiveAccountId: jest.fn().mockResolvedValue(null),
+        getTokenById: jest.fn().mockResolvedValue(null),
+      } as unknown as ClaudeAccountService,
+    );
+    // 프로젝트에 연결된 MCP·스킬 조회는 이 테스트 범위 밖 — 빈 배열로 고정.
+    (prisma as unknown as Record<string, unknown>).projectMcpServer = {
+      findMany: jest.fn().mockResolvedValue([]),
+    };
+    (prisma as unknown as Record<string, unknown>).projectSkill = {
+      findMany: jest.fn().mockResolvedValue([]),
+    };
+  });
+
+  it("스트림이 열리면 제어 핸들을 넘긴다", async () => {
+    const handles: unknown[] = [];
+    await service.runStream(
+      "p1",
+      { prompt: "hi", cwd: "/wt", onQuery: (c) => handles.push(c) },
+      () => {},
+    );
+    expect(handles).toHaveLength(1);
+  });
+
+  it("넘겨준 핸들의 interrupt/setModel이 SDK Query로 연결된다", async () => {
+    let control: import("./agent.service").AgentControl | undefined;
+    await service.runStream(
+      "p1",
+      { prompt: "hi", cwd: "/wt", onQuery: (c) => (control = c) },
+      () => {},
+    );
+    await control!.interrupt();
+    await control!.setModel("claude-sonnet-5");
+    expect(interrupt).toHaveBeenCalled();
+    expect(setModel).toHaveBeenCalledWith("claude-sonnet-5");
+    await expect(control!.supportedCommands()).resolves.toEqual([
+      { name: "clear" },
+    ]);
+  });
+
+  it("onQuery 미지정이어도 정상 동작한다(선택 옵션)", async () => {
+    const events: string[] = [];
+    await service.runStream("p1", { prompt: "hi", cwd: "/wt" }, (e) =>
+      events.push(e.type),
+    );
+    expect(events).toContain("done");
+  });
+});
+
+describe("AgentService.runStream — 진행 이벤트 방출", () => {
+  let service: AgentService;
+  let messages: unknown[];
+
+  /** SDK 메시지 시퀀스를 그대로 흘려보내는 가짜 Query. */
+  function fakeQueryFrom(seq: unknown[]) {
+    async function* gen() {
+      for (const m of seq) yield m;
+    }
+    return Object.assign(gen(), {
+      interrupt: jest.fn(),
+      setModel: jest.fn(),
+      supportedCommands: jest.fn(),
+      getContextUsage: jest.fn(),
+    });
+  }
+
+  beforeEach(async () => {
+    const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
+      query: jest.Mock;
+    };
+    sdk.query.mockImplementation(() => fakeQueryFrom(messages));
+
+    const prisma = {
+      project: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: "p1",
+          gitTokenEnc: null,
+          claudeAccountId: null,
+          ownerId: "u1",
+        }),
+      },
+      projectMcpServer: { findMany: jest.fn().mockResolvedValue([]) },
+      projectSkill: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    service = new AgentService(
+      prisma as unknown as PrismaService,
+      { decryptOptional: () => null } as unknown as CryptoService,
+      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+      {
+        getModelConfig: jest.fn().mockResolvedValue({
+          model: "claude-opus-5",
+          effort: null,
+          effortSupported: false,
+        }),
+        getActiveToken: jest.fn().mockResolvedValue(null),
+        getActiveAccountId: jest.fn().mockResolvedValue(null),
+        getTokenById: jest.fn().mockResolvedValue(null),
+      } as unknown as ClaudeAccountService,
+    );
+  });
+
+  async function collect() {
+    const out: AgentStreamEvent[] = [];
+    await service.runStream("p1", { prompt: "hi", cwd: "/wt" }, (e) =>
+      out.push(e),
+    );
+    return out;
+  }
+
+  it("tool_progress를 경과 초와 함께 방출한다", async () => {
+    messages = [
+      {
+        type: "tool_progress",
+        tool_use_id: "tu_1",
+        elapsed_time_seconds: 12.7,
+        parent_tool_use_id: null,
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    expect(events).toEqual(
+      expect.arrayContaining([
+        { type: "tool_progress", id: "tu_1", elapsedSeconds: 12.7 },
+      ]),
+    );
+  });
+
+  it("서브에이전트 내부 도구의 진행은 건너뛴다(대응 파트가 없음)", async () => {
+    messages = [
+      {
+        type: "tool_progress",
+        tool_use_id: "tu_child",
+        elapsed_time_seconds: 5,
+        parent_tool_use_id: "tu_parent",
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    expect(events.some((e) => e.type === "tool_progress")).toBe(false);
+  });
+
+  it("thinking_tokens를 방출한다", async () => {
+    messages = [
+      {
+        type: "system",
+        subtype: "thinking_tokens",
+        estimated_tokens: 2048,
+        estimated_tokens_delta: 128,
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    expect(events).toEqual(
+      expect.arrayContaining([{ type: "thinking_tokens", tokens: 2048 }]),
+    );
+  });
+
+  it("진행 이벤트만 온 뒤 result 없이 끝나면 중단으로 처리한다(내용으로 오인 금지)", async () => {
+    // sawContent를 올리지 않아야 resume 폴백 판단이 깨지지 않는다.
+    messages = [
+      {
+        type: "tool_progress",
+        tool_use_id: "tu_1",
+        elapsed_time_seconds: 1,
+        parent_tool_use_id: null,
+      },
+    ];
+    const events = await collect();
+    expect(events.at(-1)?.type).toBe("error");
+  });
+});
+
+describe("AgentService.runStream — 서브에이전트(Task) 이벤트", () => {
+  let service: AgentService;
+  let messages: unknown[];
+
+  function fakeQueryFrom(seq: unknown[]) {
+    async function* gen() {
+      for (const m of seq) yield m;
+    }
+    return Object.assign(gen(), {
+      interrupt: jest.fn(),
+      setModel: jest.fn(),
+      supportedCommands: jest.fn(),
+      getContextUsage: jest.fn(),
+    });
+  }
+
+  beforeEach(async () => {
+    const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
+      query: jest.Mock;
+    };
+    sdk.query.mockImplementation(() => fakeQueryFrom(messages));
+
+    const prisma = {
+      project: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: "p1",
+          gitTokenEnc: null,
+          claudeAccountId: null,
+          ownerId: "u1",
+        }),
+      },
+      projectMcpServer: { findMany: jest.fn().mockResolvedValue([]) },
+      projectSkill: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    service = new AgentService(
+      prisma as unknown as PrismaService,
+      { decryptOptional: () => null } as unknown as CryptoService,
+      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+      {
+        getModelConfig: jest.fn().mockResolvedValue({
+          model: "claude-opus-5",
+          effort: null,
+          effortSupported: false,
+        }),
+        getActiveToken: jest.fn().mockResolvedValue(null),
+        getActiveAccountId: jest.fn().mockResolvedValue(null),
+        getTokenById: jest.fn().mockResolvedValue(null),
+      } as unknown as ClaudeAccountService,
+    );
+  });
+
+  async function collect() {
+    const out: AgentStreamEvent[] = [];
+    await service.runStream("p1", { prompt: "hi", cwd: "/wt" }, (e) =>
+      out.push(e),
+    );
+    return out;
+  }
+
+  it("task_started를 agent_start로 방출한다(tool_use_id로 파트에 연결)", async () => {
+    messages = [
+      {
+        type: "system",
+        subtype: "task_started",
+        task_id: "task_1",
+        tool_use_id: "tu_1",
+        description: "인증 모듈 분석",
+        subagent_type: "Explore",
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    expect(events).toEqual(
+      expect.arrayContaining([
+        {
+          type: "agent_start",
+          id: "tu_1",
+          taskId: "task_1",
+          description: "인증 모듈 분석",
+          agentType: "Explore",
+        },
+      ]),
+    );
+  });
+
+  it("task_progress를 usage·summary와 함께 방출한다", async () => {
+    messages = [
+      {
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task_1",
+        tool_use_id: "tu_1",
+        description: "인증 모듈 분석",
+        usage: { total_tokens: 5000, tool_uses: 7, duration_ms: 31000 },
+        last_tool_name: "Grep",
+        summary: "인증 흐름을 확인하는 중",
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    expect(events).toEqual(
+      expect.arrayContaining([
+        {
+          type: "agent_progress",
+          id: "tu_1",
+          taskId: "task_1",
+          tokens: 5000,
+          toolUses: 7,
+          lastToolName: "Grep",
+          summary: "인증 흐름을 확인하는 중",
+        },
+      ]),
+    );
+  });
+
+  it("tool_use_id 없는 태스크는 건너뛴다(붙일 파트가 없음)", async () => {
+    messages = [
+      {
+        type: "system",
+        subtype: "task_started",
+        task_id: "task_wf",
+        description: "워크플로",
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    expect(events.some((e) => e.type === "agent_start")).toBe(false);
+  });
+
+  it("서브에이전트 진행 요약 옵션을 SDK에 전달한다", async () => {
+    messages = [{ type: "result", subtype: "success", result: "" }];
+    await collect();
+    const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
+      query: jest.Mock;
+    };
+    expect(sdk.query.mock.calls[0][0].options).toMatchObject({
+      agentProgressSummaries: true,
+    });
+  });
+});
+
+describe("AgentService.runStream — 재시도·사용량 한도 알림", () => {
+  let service: AgentService;
+  let messages: unknown[];
+
+  function fakeQueryFrom(seq: unknown[]) {
+    async function* gen() {
+      for (const m of seq) yield m;
+    }
+    return Object.assign(gen(), {
+      interrupt: jest.fn(),
+      setModel: jest.fn(),
+      supportedCommands: jest.fn(),
+      getContextUsage: jest.fn(),
+    });
+  }
+
+  beforeEach(async () => {
+    const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
+      query: jest.Mock;
+    };
+    sdk.query.mockImplementation(() => fakeQueryFrom(messages));
+
+    const prisma = {
+      project: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: "p1",
+          gitTokenEnc: null,
+          claudeAccountId: null,
+          ownerId: "u1",
+        }),
+      },
+      projectMcpServer: { findMany: jest.fn().mockResolvedValue([]) },
+      projectSkill: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    service = new AgentService(
+      prisma as unknown as PrismaService,
+      { decryptOptional: () => null } as unknown as CryptoService,
+      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+      {
+        getModelConfig: jest.fn().mockResolvedValue({
+          model: "claude-opus-5",
+          effort: null,
+          effortSupported: false,
+        }),
+        getActiveToken: jest.fn().mockResolvedValue(null),
+        getActiveAccountId: jest.fn().mockResolvedValue(null),
+        getTokenById: jest.fn().mockResolvedValue(null),
+      } as unknown as ClaudeAccountService,
+    );
+  });
+
+  async function collect() {
+    const out: AgentStreamEvent[] = [];
+    await service.runStream("p1", { prompt: "hi", cwd: "/wt" }, (e) =>
+      out.push(e),
+    );
+    return out;
+  }
+
+  it("api_retry를 시도 횟수·사유와 함께 방출한다", async () => {
+    messages = [
+      {
+        type: "system",
+        subtype: "api_retry",
+        attempt: 2,
+        max_retries: 3,
+        retry_delay_ms: 1500,
+        error: "overloaded",
+        error_status: 529,
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    expect(events).toEqual(
+      expect.arrayContaining([
+        {
+          type: "api_retry",
+          attempt: 2,
+          maxRetries: 3,
+          delayMs: 1500,
+          reason: "overloaded",
+        },
+      ]),
+    );
+  });
+
+  it("rate_limit_event의 epoch 초를 ISO로 변환해 방출한다", async () => {
+    messages = [
+      {
+        type: "rate_limit_event",
+        rate_limit_info: {
+          status: "allowed_warning",
+          utilization: 0.91,
+          resetsAt: 1800000000,
+          rateLimitType: "five_hour",
+        },
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    const ev = events.find((e) => e.type === "rate_limit");
+    expect(ev).toMatchObject({
+      status: "allowed_warning",
+      utilization: 0.91,
+      limitType: "five_hour",
+      resetsAt: new Date(1800000000 * 1000).toISOString(),
+    });
+  });
+
+  it("status=allowed인 한도 이벤트는 흘리지 않는다(알릴 게 없음)", async () => {
+    messages = [
+      {
+        type: "rate_limit_event",
+        rate_limit_info: { status: "allowed", utilization: 0.1 },
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    expect(events.some((e) => e.type === "rate_limit")).toBe(false);
+  });
+
+  it("알림 이벤트만 온 뒤 result 없이 끝나면 중단으로 처리한다", async () => {
+    // 재시도·한도 알림은 내용이 아니므로 sawContent를 올려선 안 된다.
+    messages = [
+      {
+        type: "system",
+        subtype: "api_retry",
+        attempt: 1,
+        max_retries: 3,
+        error: "rate_limit",
+      },
+    ];
+    const events = await collect();
+    expect(events.at(-1)?.type).toBe("error");
+  });
+});
+
+describe("AgentService.runStream — 서브에이전트 중첩 트랜스크립트", () => {
+  let service: AgentService;
+  let messages: unknown[];
+
+  function fakeQueryFrom(seq: unknown[]) {
+    async function* gen() {
+      for (const m of seq) yield m;
+    }
+    return Object.assign(gen(), {
+      interrupt: jest.fn(),
+      setModel: jest.fn(),
+      supportedCommands: jest.fn(),
+      getContextUsage: jest.fn(),
+    });
+  }
+
+  beforeEach(async () => {
+    const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
+      query: jest.Mock;
+    };
+    sdk.query.mockImplementation(() => fakeQueryFrom(messages));
+
+    const prisma = {
+      project: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: "p1",
+          gitTokenEnc: null,
+          claudeAccountId: null,
+          ownerId: "u1",
+        }),
+      },
+      projectMcpServer: { findMany: jest.fn().mockResolvedValue([]) },
+      projectSkill: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    service = new AgentService(
+      prisma as unknown as PrismaService,
+      { decryptOptional: () => null } as unknown as CryptoService,
+      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+      {
+        getModelConfig: jest.fn().mockResolvedValue({
+          model: "claude-opus-5",
+          effort: null,
+          effortSupported: false,
+        }),
+        getActiveToken: jest.fn().mockResolvedValue(null),
+        getActiveAccountId: jest.fn().mockResolvedValue(null),
+        getTokenById: jest.fn().mockResolvedValue(null),
+      } as unknown as ClaudeAccountService,
+    );
+  });
+
+  async function collect() {
+    const out: AgentStreamEvent[] = [];
+    await service.runStream("p1", { prompt: "hi", cwd: "/wt" }, (e) =>
+      out.push(e),
+    );
+    return out;
+  }
+
+  it("forwardSubagentText 옵션을 SDK에 전달한다", async () => {
+    messages = [{ type: "result", subtype: "success", result: "" }];
+    await collect();
+    const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
+      query: jest.Mock;
+    };
+    expect(sdk.query.mock.calls[0][0].options).toMatchObject({
+      forwardSubagentText: true,
+    });
+  });
+
+  it("서브에이전트 텍스트에 parentId를 붙여 방출한다", async () => {
+    messages = [
+      {
+        type: "assistant",
+        parent_tool_use_id: "tu_parent",
+        message: { content: [{ type: "text", text: "서브 결과" }] },
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    const end = events.find((e) => e.type === "text_end");
+    expect(end).toMatchObject({ text: "서브 결과", parentId: "tu_parent" });
+  });
+
+  it("메인 스레드 텍스트에는 parentId가 없다", async () => {
+    messages = [
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { content: [{ type: "text", text: "메인 답변" }] },
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    const end = events.find((e) => e.type === "text_end") as {
+      parentId?: string;
+    };
+    expect(end.parentId).toBeUndefined();
+  });
+
+  it("같은 블록 인덱스여도 메인·서브 텍스트 id가 겹치지 않는다", async () => {
+    // 같은 turn·index면 예전 규칙에서는 둘 다 "1:0" → 서로를 덮어썼다.
+    messages = [
+      { type: "stream_event", event: { type: "message_start" } },
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { content: [{ type: "text", text: "메인" }] },
+      },
+      {
+        type: "assistant",
+        parent_tool_use_id: "tu_parent",
+        message: { content: [{ type: "text", text: "서브" }] },
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    const ids = events
+      .filter((e) => e.type === "text_end")
+      .map((e) => (e as { id: string }).id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it("서브에이전트 도구 호출·결과에도 parentId가 붙는다", async () => {
+    messages = [
+      {
+        type: "assistant",
+        parent_tool_use_id: "tu_parent",
+        message: {
+          content: [
+            { type: "tool_use", id: "tu_child", name: "Grep", input: { pattern: "x" } },
+          ],
+        },
+      },
+      {
+        type: "user",
+        parent_tool_use_id: "tu_parent",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "tu_child", content: "3건" },
+          ],
+        },
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    expect(events.find((e) => e.type === "tool")).toMatchObject({
+      id: "tu_child",
+      parentId: "tu_parent",
+    });
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({
+      id: "tu_child",
+      parentId: "tu_parent",
+    });
   });
 });

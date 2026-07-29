@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import { Bot, Menu } from "lucide-react";
 import { useAuth } from "@/lib/auth";
+import { cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/ui-store";
 import Sidebar from "./Sidebar";
 import LoginForm from "./LoginForm";
@@ -28,7 +29,13 @@ function LoadingShell() {
   );
 }
 
-function AuthedShell({ children }: { children: React.ReactNode }) {
+function AuthedShell({
+  children,
+  fullBleed,
+}: {
+  children: React.ReactNode;
+  fullBleed: boolean;
+}) {
   const { user, loading, logout } = useAuth();
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
   const setSidebarOpen = useUiStore((s) => s.setSidebarOpen);
@@ -37,7 +44,7 @@ function AuthedShell({ children }: { children: React.ReactNode }) {
   if (!user) return <LoginForm />;
 
   return (
-    <div className="flex min-h-dvh">
+    <div className={cn("flex", fullBleed ? "h-dvh overflow-hidden" : "min-h-dvh")}>
       {/* 데스크톱 고정 사이드바 (>=lg) */}
       <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 border-r border-sidebar-border lg:block">
         <Sidebar user={user} onLogout={logout} />
@@ -51,7 +58,7 @@ function AuthedShell({ children }: { children: React.ReactNode }) {
         </DialogContent>
       </Dialog>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 min-h-0 flex-1 flex-col">
         {/* 모바일 상단 앱바 */}
         <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur lg:hidden">
           <Button
@@ -68,8 +75,16 @@ function AuthedShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        {/* 콘텐츠는 항상 가용 폭 100% + 모든 페이지 동일 padding */}
-        <main className="w-full min-w-0 flex-1 p-4 sm:p-6 lg:p-8">
+        {/*
+          콘텐츠는 항상 가용 폭 100% + 모든 페이지 동일 padding.
+          fullBleed(채팅)만 예외 — 화면을 꽉 채우고 스크롤을 내부에 맡긴다.
+        */}
+        <main
+          className={cn(
+            "w-full min-w-0 flex-1",
+            fullBleed ? "min-h-0" : "p-4 sm:p-6 lg:p-8",
+          )}
+        >
           {children}
         </main>
       </div>
@@ -81,7 +96,9 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   // 공유 링크 페이지는 로그인 없이 접근 (사이드바/게이트 없음)
   const isPublic = pathname?.startsWith("/share");
+  // 채팅은 CLI처럼 화면을 꽉 채우고 트랜스크립트만 스크롤한다(모바일 필수).
+  const fullBleed = pathname?.startsWith("/chat") ?? false;
 
   if (isPublic) return <>{children}</>;
-  return <AuthedShell>{children}</AuthedShell>;
+  return <AuthedShell fullBleed={fullBleed}>{children}</AuthedShell>;
 }

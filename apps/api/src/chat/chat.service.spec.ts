@@ -24,7 +24,7 @@ describe("ChatService", () => {
   };
   let projects: { assertAccess: jest.Mock };
   let agent: { runStream: jest.Mock };
-  let repos: { prepareForProject: jest.Mock };
+  let repos: { prepareForProject: jest.Mock; currentBranch: jest.Mock };
   let usage: { record: jest.Mock };
 
   beforeEach(() => {
@@ -43,7 +43,10 @@ describe("ChatService", () => {
     };
     projects = { assertAccess: jest.fn().mockResolvedValue("owner") };
     agent = { runStream: jest.fn() };
-    repos = { prepareForProject: jest.fn().mockResolvedValue("/repos/p1") };
+    repos = {
+      prepareForProject: jest.fn().mockResolvedValue("/repos/p1"),
+      currentBranch: jest.fn().mockResolvedValue("master"),
+    };
     usage = { record: jest.fn().mockResolvedValue(undefined) };
     service = new ChatService(
       db as unknown as PrismaService,
@@ -52,6 +55,32 @@ describe("ChatService", () => {
       repos as unknown as RepoManagerService,
       usage as unknown as UsageService,
     );
+  });
+
+  describe("getSession", () => {
+    beforeEach(() => {
+      db.chatSession.findFirst.mockResolvedValue({
+        id: "s1",
+        projectId: "p1",
+        title: null,
+        sdkSessionId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        messages: [],
+      });
+    });
+
+    it("관리 clone의 실제 브랜치를 함께 내린다", async () => {
+      const s = await service.getSession("u1", "s1");
+      expect(repos.currentBranch).toHaveBeenCalledWith("p1");
+      expect(s.branch).toBe("master");
+    });
+
+    it("clone이 없으면 branch는 null이다(오류 아님)", async () => {
+      repos.currentBranch.mockResolvedValue(null);
+      const s = await service.getSession("u1", "s1");
+      expect(s.branch).toBeNull();
+    });
   });
 
   describe("createSession", () => {
@@ -127,6 +156,127 @@ describe("ChatService", () => {
         "text_delta",
         "text_end",
         "done",
+      ]);
+    });
+
+    it("tool_result는 같은 id의 tool 파트에 결과로 병합된다", async () => {
+      agent.runStream.mockImplementation(
+        async (
+          _pid: string,
+          _opts: unknown,
+          onEvent: (e: AgentStreamEvent) => void,
+        ) => {
+          onEvent({ type: "tool", id: "tu_1", name: "Bash", input: '{"command":"ls"}' });
+          onEvent({ type: "tool_result", id: "tu_1", content: "a.ts\nb.ts" });
+          onEvent({ type: "tool", id: "tu_2", name: "Read" });
+          onEvent({ type: "tool_result", id: "tu_2", content: "없음", isError: true });
+          onEvent({ type: "done", text: "완료" });
+        },
+      );
+
+      await service.streamMessage("u1", "s1", "hi", () => {});
+
+      const assistant = db.chatMessage.create.mock.calls[1][0].data;
+      // 새 파트가 늘지 않고 기존 tool 파트에 result가 붙는다
+      expect(assistant.parts).toEqual([
+        {
+          type: "tool",
+          id: "tu_1",
+          name: "Bash",
+          input: '{"command":"ls"}',
+          result: "a.ts\nb.ts",
+          resultIsError: undefined,
+        },
+        {
+          type: "tool",
+          id: "tu_2",
+          name: "Read",
+          input: undefined,
+          result: "없음",
+          resultIsError: true,
+        },
+      ]);
+    });
+
+    it("진행 이벤트(tool_progress·thinking_tokens)는 저장하지 않는다", async () => {
+      agent.runStream.mockImplementation(
+        async (
+          _pid: string,
+          _opts: unknown,
+          onEvent: (e: AgentStreamEvent) => void,
+        ) => {
+          onEvent({ type: "tool", id: "tu_1", name: "Bash", input: "{}" });
+          onEvent({ type: "tool_progress", id: "tu_1", elapsedSeconds: 3 });
+          onEvent({ type: "thinking_tokens", tokens: 1200 });
+          onEvent({ type: "tool_result", id: "tu_1", content: "ok" });
+          onEvent({ type: "done", text: "완료" });
+        },
+      );
+
+      const seen: string[] = [];
+      await service.streamMessage("u1", "s1", "hi", (e) => seen.push(e.type));
+
+      // 클라이언트에는 전달된다(진행 표시용)
+      expect(seen).toContain("tool_progress");
+      expect(seen).toContain("thinking_tokens");
+
+      // 그러나 parts에는 남지 않는다 — tool 파트 1개, elapsed 필드 없음
+      const assistant = db.chatMessage.create.mock.calls[1][0].data;
+      expect(assistant.parts).toEqual([
+        {
+          type: "tool",
+          id: "tu_1",
+          name: "Bash",
+          input: "{}",
+          result: "ok",
+          resultIsError: undefined,
+        },
+      ]);
+    });
+
+    it("서브에이전트 파트(parentId 있음)는 저장하지 않는다", async () => {
+      agent.runStream.mockImplementation(
+        async (
+          _pid: string,
+          _opts: unknown,
+          onEvent: (e: AgentStreamEvent) => void,
+        ) => {
+          // 메인 스레드: Task 도구 호출
+          onEvent({ type: "tool", id: "tu_parent", name: "Task", input: "{}" });
+          // 서브에이전트 내부 활동 — 저장 대상이 아니다
+          onEvent({ type: "text_start", id: "tu_parent#1:0", parentId: "tu_parent" });
+          onEvent({
+            type: "text_end",
+            id: "tu_parent#1:0",
+            text: "서브 결과",
+            parentId: "tu_parent",
+          });
+          onEvent({
+            type: "tool",
+            id: "tu_child",
+            name: "Grep",
+            parentId: "tu_parent",
+          });
+          onEvent({
+            type: "tool_result",
+            id: "tu_child",
+            content: "3건",
+            parentId: "tu_parent",
+          });
+          // 메인 스레드 최종 답변(agent.service는 text_end 전에 항상 start를 보낸다)
+          onEvent({ type: "text_start", id: "1:0" });
+          onEvent({ type: "text_end", id: "1:0", text: "완료했습니다" });
+          onEvent({ type: "done", text: "완료했습니다" });
+        },
+      );
+
+      await service.streamMessage("u1", "s1", "hi", () => {});
+
+      // 저장된 parts에는 메인 스레드 것만 남는다(서브 파트 4건 제외).
+      const assistant = db.chatMessage.create.mock.calls[1][0].data;
+      expect(assistant.parts).toEqual([
+        { type: "tool", id: "tu_parent", name: "Task", input: "{}" },
+        { type: "text", id: "1:0", text: "완료했습니다" },
       ]);
     });
 

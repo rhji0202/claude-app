@@ -61,6 +61,27 @@ export class RepoManagerService {
   }
 
   /**
+   * 관리 clone이 현재 체크아웃한 브랜치명. **읽기 전용** — clone/fetch를 유발하지 않는다.
+   *
+   * clone이 아직 없거나(지연 clone) git 명령이 실패하면 null. 표시 용도이므로
+   * 호출측은 null을 정상 상태로 다뤄야 한다. detached HEAD면 rev-parse가 "HEAD"를
+   * 반환하는데, 브랜치명이 아니므로 짧은 커밋 해시로 대체한다.
+   *
+   * 주의: prepareForProject를 쓰면 안 된다 — 그쪽은 clone/fetch(수 분)를 유발한다.
+   */
+  async currentBranch(projectId: string): Promise<string | null> {
+    const base = this.baseDir(projectId);
+    if (!(await this.exists(path.join(base, ".git")))) return null;
+    const res = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: base });
+    if (res.code !== 0) return null;
+    const branch = res.stdout.trim();
+    if (!branch) return null;
+    if (branch !== "HEAD") return branch;
+    const head = await runGit(["rev-parse", "--short", "HEAD"], { cwd: base });
+    return head.code === 0 && head.stdout.trim() ? head.stdout.trim() : null;
+  }
+
+  /**
    * 프로젝트별 임계구역 직렬화. 같은 projectId 호출을 순차 실행한다.
    * clone/fetch·worktree add/remove가 모두 같은 base .git을 잠그므로 공유한다.
    */

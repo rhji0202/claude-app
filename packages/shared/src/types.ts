@@ -170,6 +170,14 @@ export type IssueCategory =
   | "needs-info"
   | "question";
 
+/** 이미지가 아닌 이슈 첨부 파일(엑셀·PDF 등) 한 건 */
+export interface IssueAttachment {
+  /** 서명된 업로드 상대경로(브라우저 다운로드용) */
+  url: string;
+  /** 원본 파일명(확장자 포함) */
+  name: string;
+}
+
 export interface IssueTask {
   id: ID;
   projectId: ID;
@@ -184,6 +192,12 @@ export interface IssueTask {
   prompt?: string | null;
   /** 첨부 이미지 저장 상대경로 목록 (UPLOADS_DIR 기준) */
   images: string[];
+  /**
+   * 이미지가 아닌 첨부 파일(엑셀·PDF·CSV 등).
+   * url은 서명된 업로드 상대경로(다운로드용), name은 원본 파일명.
+   * 실행 시 worktree의 `첨부파일/`로 복사돼 에이전트가 직접 열어본다.
+   */
+  files: IssueAttachment[];
   /**
    * 본문(body) 안 이미지의 원본 URL → 서명된 업로드 상대경로 매핑.
    * GitHub import한 이슈에만 존재. 본문의 외부 URL은 인증이 필요해 브라우저에서
