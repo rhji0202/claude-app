@@ -131,6 +131,74 @@ describe("AgentService.buildEnv (자격증명 라우팅)", () => {
     }
   });
 
+  /**
+   * 화이트리스트 방식의 핵심: 목록에 없는 호스트 변수는 이름을 몰라도 차단된다.
+   * 블랙리스트(envSchema 키 제거)로는 셸에 export된 임의 시크릿이 그대로 샜다.
+   */
+  it("화이트리스트에 없는 호스트 변수는 넘기지 않는다", async () => {
+    process.env.GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_SHELL";
+    process.env.MY_COMPANY_DB_PASSWORD = "secret";
+    process.env.AWS_SECRET_ACCESS_KEY = "aws-secret";
+    try {
+      const { env } = await buildEnv("u1", null);
+      expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBeUndefined();
+      expect(env.MY_COMPANY_DB_PASSWORD).toBeUndefined();
+      expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    } finally {
+      delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+      delete process.env.MY_COMPANY_DB_PASSWORD;
+      delete process.env.AWS_SECRET_ACCESS_KEY;
+    }
+  });
+
+  it("툴체인 경로 변수(NVM·pnpm·JAVA_HOME 등)는 상속한다", async () => {
+    process.env.NVM_HOME = "C:/nvm";
+    process.env.PNPM_HOME = "C:/pnpm";
+    process.env.JAVA_HOME = "C:/java";
+    try {
+      const { env } = await buildEnv("u1", null);
+      // 에이전트가 clone에서 node·pnpm·gradle을 실행하는 데 필요하다.
+      expect(env.NVM_HOME).toBe("C:/nvm");
+      expect(env.PNPM_HOME).toBe("C:/pnpm");
+      expect(env.JAVA_HOME).toBe("C:/java");
+    } finally {
+      delete process.env.NVM_HOME;
+      delete process.env.PNPM_HOME;
+      delete process.env.JAVA_HOME;
+    }
+  });
+
+  it("Linux 컨테이너(운영) 필수 변수를 상속한다", async () => {
+    process.env.HOME = "/root";
+    process.env.USER = "root";
+    process.env.XDG_CONFIG_HOME = "/root/.config";
+    process.env.NODE_EXTRA_CA_CERTS = "/etc/ssl/ca.pem";
+    try {
+      const { env } = await buildEnv("u1", null);
+      // 운영은 node:22-slim 컨테이너 — 이 값들이 빠지면 CLI가 설정·인증서를 못 찾는다.
+      expect(env.HOME).toBe("/root");
+      expect(env.USER).toBe("root");
+      expect(env.XDG_CONFIG_HOME).toBe("/root/.config");
+      expect(env.NODE_EXTRA_CA_CERTS).toBe("/etc/ssl/ca.pem");
+    } finally {
+      delete process.env.USER;
+      delete process.env.XDG_CONFIG_HOME;
+      delete process.env.NODE_EXTRA_CA_CERTS;
+    }
+  });
+
+  it("Windows 필수 변수는 대소문자가 달라도 상속한다", async () => {
+    // Windows는 env 이름이 대소문자 무관이라 SystemRoot/SYSTEMROOT가 섞여 온다.
+    // 이게 빠지면 서브프로세스의 node가 기동하지 못한다.
+    process.env.SystemRoot = "C:/Windows";
+    try {
+      const { env } = await buildEnv("u1", null);
+      expect(env.SystemRoot ?? env.SYSTEMROOT).toBe("C:/Windows");
+    } finally {
+      delete process.env.SystemRoot;
+    }
+  });
+
   it("gitToken은 GITHUB_TOKEN·GH_TOKEN으로 주입", async () => {
     const { env } = await buildEnv("u1", "ghp_TOKEN");
     expect(env.GITHUB_TOKEN).toBe("ghp_TOKEN");

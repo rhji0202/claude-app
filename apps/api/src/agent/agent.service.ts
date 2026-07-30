@@ -4,10 +4,95 @@ import pLimit from "p-limit";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
 import { ClaudeAccountService } from "../claude-account/claude-account.service";
-import { envSchema } from "../config/env.validation";
 import type { AgentUsage } from "@claude-app/shared";
 // 타입 전용 import — 컴파일 시 지워지므로 SDK 런타임 동적 로드에 영향 없다.
 import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
+
+/**
+ * 에이전트 서브프로세스에 넘길 환경변수 화이트리스트(대문자 비교).
+ *
+ * 여기 없는 호스트 변수는 서브프로세스에 보이지 않는다 — claude-app의 설정과
+ * 셸에 export된 임의 시크릿이 clone 프로젝트로 새는 것을 막는다.
+ *
+ * 운영은 Linux 컨테이너(node:22-slim)이고 개발은 Windows다. 두 쪽 필수 변수를
+ * 모두 담되, 이름 비교는 대문자로 한다 — Windows는 env 이름이 대소문자를
+ * 구분하지 않아 SystemRoot/SYSTEMROOT가 섞여 온다.
+ *
+ * 자격증명(ANTHROPIC_*·GITHUB_TOKEN 등)은 의도적으로 제외했다 — buildEnv가
+ * 계정 라우팅으로만 주입해야 하고, 호스트 값이 섞이면 출처가 모호해진다.
+ */
+const AGENT_ENV_PASSTHROUGH = new Set(
+  [
+    // --- 공통 필수(빠지면 서브프로세스가 기동조차 못 한다) ---
+    "PATH",
+    // --- Linux/컨테이너(운영) ---
+    "HOSTNAME",
+    "USER",
+    "LOGNAME",
+    "SHLVL",
+    "PWD",
+    // XDG 경로. 미설정 시 CLI·도구가 $HOME 하위 기본값을 쓴다.
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_DATA_HOME",
+    "XDG_RUNTIME_DIR",
+    // Node/OpenSSL(prisma 엔진이 컨테이너에서 참조)
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+    // --- Windows(개발) ---
+    "PATHEXT",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "HOME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "USERPROFILE",
+    "USERNAME",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "COMMONPROGRAMFILES",
+    "PUBLIC",
+    "ALLUSERSPROFILE",
+    "PROCESSOR_ARCHITECTURE",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PSMODULEPATH",
+    // --- 로케일·셸 ---
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "TERM",
+    "SHELL",
+    // --- 네트워크(사내 프록시 등 실행에 필요) ---
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    // GitHub Enterprise 등 커스텀 API 엔드포인트. 토큰이 아니라 주소다.
+    "GITHUB_API_URL",
+    // --- 툴체인 경로(에이전트가 clone에서 빌드·테스트를 돌리는 데 필요) ---
+    "NVM_HOME",
+    "NVM_SYMLINK",
+    "PNPM_HOME",
+    "COREPACK_ENABLE_AUTO_PIN",
+    "JAVA_HOME",
+    "PYENV",
+    "PYENV_HOME",
+    "PYENV_ROOT",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "GOPATH",
+    "GOROOT",
+  ].map((k) => k.toUpperCase()),
+);
 
 export interface AgentImage {
   /** base64 인코딩 이미지 데이터 */
@@ -210,7 +295,7 @@ export class AgentService {
 
   /**
    * SDK 서브프로세스로 전달할 env 조립.
-   * - claude-app 자신의 설정(envSchema 키)은 제거한다 — 아래 상세.
+   * - env는 화이트리스트로 새로 만든다(호스트 값 상속 차단) — 아래 상세.
    * - Anthropic 자격증명 우선순위: 프로젝트 지정 계정 → 실행 사용자 활성 계정 → .env 폴백.
    * - git 토큰: 프로젝트 gitToken → GITHUB_TOKEN/GH_TOKEN.
    */
@@ -225,19 +310,23 @@ export class AgentService {
     /** 실제 자격증명을 제공한 계정 id. 사용자 활성 계정 폴백도 반영. .env 폴백이면 null. */
     accountId: string | null;
   }> {
-    const env: Record<string, string | undefined> = { ...process.env };
-
-    // claude-app 자신의 설정을 서브프로세스에서 지운다.
+    // 서브프로세스 env는 화이트리스트로 새로 만든다(호스트 env 복사 아님).
     //
     // 에이전트는 clone 프로젝트를 cwd로 실행되고, 그 안에서 서버·마이그레이션을
     // 띄우면 이 env를 손자 프로세스로 물려받는다. dotenv는 이미 설정된 값을
     // 덮어쓰지 않으므로(override:false 기본) clone의 .env가 지고, 남의 프로젝트가
-    // claude-app의 DATABASE_URL·PORT·JWT_SECRET을 가리킨다(실측 확인).
+    // claude-app의 DATABASE_URL을 가리켰다(실측 확인).
     //
-    // 화이트리스트가 아니라 블랙리스트인 이유: PATH·SystemRoot·프록시 등 실행에
-    // 필요한 OS·툴체인 변수를 빠뜨리면 서브프로세스가 조용히 깨진다. 지울 대상은
-    // envSchema에서 뽑으므로 .env 키가 추가돼도 자동으로 반영된다.
-    for (const key of Object.keys(envSchema.shape)) delete env[key];
+    // 블랙리스트(envSchema 키 제거)로는 부족했다 — 셸에 export된 임의 시크릿
+    // (GITHUB_PERSONAL_ACCESS_TOKEN 등)은 스키마에 없어 그대로 샜다. 넘길 키를
+    // 명시적으로 고르면 이름을 모르는 변수까지 차단된다.
+    //
+    // 목록에서 빠진 변수는 조용히 사라지므로 추가는 신중히. 자격증명은 여기
+    // 넣지 말 것 — 아래에서 계정 라우팅으로만 주입한다.
+    const env: Record<string, string | undefined> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (AGENT_ENV_PASSTHROUGH.has(key.toUpperCase())) env[key] = value;
+    }
 
     // 실행 자격증명 우선순위: 프로젝트 지정 계정 → 사용자 활성 계정 → .env 폴백.
     // 사용량 귀속을 위해 토큰뿐 아니라 실제로 쓰인 계정 id도 함께 확정한다.
