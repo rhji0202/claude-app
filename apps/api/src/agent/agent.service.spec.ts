@@ -1050,4 +1050,120 @@ describe("AgentService.runStream — 서브에이전트 중첩 트랜스크립�
       parentId: "tu_parent",
     });
   });
+
+  /**
+   * 텍스트 세그먼트 id는 SDK assistant 메시지 id(message.id)에 묶인다.
+   * 예전 규칙(`${turn}:${index}`)은 turn이 가변 카운터라, 다음 턴의
+   * message_start가 앞 턴의 assistant 메시지보다 먼저 도착하면 delta와
+   * text_end의 id가 갈라져 같은 답변이 두 파트로 렌더됐다(중복 출력).
+   */
+  it("delta와 text_end가 같은 id로 수렴한다(같은 메시지)", async () => {
+    messages = [
+      {
+        type: "stream_event",
+        event: { type: "message_start", message: { id: "msg_1" } },
+      },
+      {
+        type: "stream_event",
+        event: { type: "content_block_start", index: 0, content_block: { type: "text" } },
+      },
+      {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "안녕" },
+        },
+      },
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { id: "msg_1", content: [{ type: "text", text: "안녕하세요" }] },
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    const idOf = (t: string) =>
+      events.filter((e) => e.type === t).map((e) => (e as { id: string }).id);
+    // start는 1회만, delta와 end는 동일 id
+    expect(idOf("text_start")).toHaveLength(1);
+    expect(idOf("text_delta")[0]).toBe(idOf("text_start")[0]);
+    expect(idOf("text_end")[0]).toBe(idOf("text_start")[0]);
+  });
+
+  it("다음 턴 message_start가 먼저 와도 텍스트 파트가 중복되지 않는다", async () => {
+    // 회귀 재현: msg_1의 델타 뒤에 msg_2의 message_start가 끼어들고,
+    // 그 다음 msg_1의 완결 assistant 메시지가 도착하는 순서.
+    messages = [
+      {
+        type: "stream_event",
+        event: { type: "message_start", message: { id: "msg_1" } },
+      },
+      {
+        type: "stream_event",
+        event: { type: "content_block_start", index: 0, content_block: { type: "text" } },
+      },
+      {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "부분 답변" },
+        },
+      },
+      // 다음 턴이 열린다 — 예전 규칙에서는 여기서 turn이 2로 올라갔다.
+      {
+        type: "stream_event",
+        event: { type: "message_start", message: { id: "msg_2" } },
+      },
+      // 앞 턴(msg_1)의 완결 메시지가 뒤늦게 도착.
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { id: "msg_1", content: [{ type: "text", text: "부분 답변 완성" }] },
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    // 텍스트 파트는 하나뿐이어야 한다 → text_start 1회.
+    expect(events.filter((e) => e.type === "text_start")).toHaveLength(1);
+    const startId = (events.find((e) => e.type === "text_start") as { id: string }).id;
+    const end = events.find((e) => e.type === "text_end") as {
+      id: string;
+      text: string;
+    };
+    expect(end.id).toBe(startId);
+    expect(end.text).toBe("부분 답변 완성");
+  });
+
+  it("연속된 두 턴의 텍스트는 서로 다른 파트가 된다", async () => {
+    messages = [
+      {
+        type: "stream_event",
+        event: { type: "message_start", message: { id: "msg_1" } },
+      },
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { id: "msg_1", content: [{ type: "text", text: "첫 턴" }] },
+      },
+      {
+        type: "stream_event",
+        event: { type: "message_start", message: { id: "msg_2" } },
+      },
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { id: "msg_2", content: [{ type: "text", text: "둘째 턴" }] },
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    const ends = events.filter((e) => e.type === "text_end") as Array<{
+      id: string;
+      text: string;
+    }>;
+    expect(ends).toHaveLength(2);
+    expect(new Set(ends.map((e) => e.id)).size).toBe(2);
+  });
 });

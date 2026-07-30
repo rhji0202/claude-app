@@ -400,8 +400,14 @@ export class AgentService {
 
     let sessionId: string | undefined;
     let finalText = "";
-    // 턴 경계 카운터 — 텍스트 세그먼트 id를 `${turn}:${blockIndex}`로 만든다.
-    let turn = 0;
+    /**
+     * 스트리밍 중인 assistant 메시지 id. message_start에서 걸어두고 그 뒤의
+     * content_block_* 이벤트가 읽는다(델타 이벤트에는 메시지 id가 없다).
+     * 서브에이전트는 스트림이 메인과 섞여 오므로 parent별로 따로 보관한다.
+     */
+    const streamingMsgId = new Map<string, string>();
+    // 메시지 id가 없는 SDK 이벤트를 위한 폴백 카운터.
+    let fallbackSeq = 0;
     // content_block_start로 열린 텍스트 블록의 id (index → true). text_start 중복 방지.
     let openedText = new Set<string>();
     // 클라이언트에 실제 내용(text/tool/done)을 방출했는가. resume 실패 폴백 판단용
@@ -411,11 +417,19 @@ export class AgentService {
     let resumeInFlight = Boolean(opts.resume);
 
     /**
-     * 텍스트 세그먼트 id. 서브에이전트(parent 있음)는 별도 이름공간을 쓴다 —
-     * 메인 스레드와 turn·blockIndex가 같아도 id가 겹치면 서로의 텍스트를 덮어쓴다.
+     * 텍스트 세그먼트 id = `${assistant 메시지 id}:${blockIndex}`.
+     * 가변 카운터가 아니라 SDK가 주는 메시지 id에 묶으므로, 다음 턴의
+     * message_start가 앞 턴의 완결 assistant 메시지보다 먼저 도착해도
+     * 델타와 text_end가 같은 파트로 수렴한다(중복 렌더 방지).
+     *
+     * 서브에이전트(parent 있음)는 별도 이름공간을 쓴다 — 메시지 id가 겹칠 때
+     * 메인 스레드의 텍스트를 덮어쓰지 않게 한다.
      */
-    const segId = (index: number, parent?: string | null) =>
-      parent ? `${parent}#${turn}:${index}` : `${turn}:${index}`;
+    const segId = (msgId: string, index: number, parent?: string | null) =>
+      parent ? `${parent}#${msgId}:${index}` : `${msgId}:${index}`;
+
+    /** parent별 스트리밍 메시지 id 키(메인은 빈 문자열). */
+    const msgKey = (parent?: string | null) => parent ?? "";
 
     // 실제 SDK 스트림 1회. done/error를 onEvent로 방출하면 true 반환(정상 종료),
     // 내용 방출 전 예외가 나면 throw(호출측이 resume 폴백 여부 판단).
@@ -493,10 +507,13 @@ export class AgentService {
           event?: {
             type?: string;
             index?: number;
+            // message_start에만 있다 — 텍스트 세그먼트 id의 기준.
+            message?: { id?: string };
             content_block?: { type?: string };
             delta?: { type?: string; text?: string };
           };
           message?: {
+            id?: string;
             content?: Array<{
               type: string;
               text?: string;
@@ -603,29 +620,42 @@ export class AgentService {
           // 서브에이전트 소속이면 그 Task 파트 안쪽에 렌더된다.
           const parent = m.parent_tool_use_id ?? undefined;
           if (ev.type === "message_start") {
-            turn += 1;
+            // 이 메시지의 후속 블록 이벤트가 쓸 id를 걸어둔다. id가 없으면
+            // 폴백 시퀀스로 대체해 최소한 메시지 간 충돌은 막는다.
+            streamingMsgId.set(
+              msgKey(parent),
+              ev.message?.id ?? `seq${(fallbackSeq += 1)}`,
+            );
           } else if (
             ev.type === "content_block_start" &&
             ev.content_block?.type === "text" &&
             typeof ev.index === "number"
           ) {
-            const id = segId(ev.index, parent);
-            openedText.add(id);
-            sawContent = true;
-            onEvent({ type: "text_start", id, parentId: parent });
+            const msgId = streamingMsgId.get(msgKey(parent));
+            // message_start를 놓쳤으면 이 블록의 소속을 알 수 없다 — 뒤늦게 오는
+            // 완결 메시지가 파트를 만들도록 넘긴다(중복 생성 방지).
+            if (msgId) {
+              const id = segId(msgId, ev.index, parent);
+              openedText.add(id);
+              sawContent = true;
+              onEvent({ type: "text_start", id, parentId: parent });
+            }
           } else if (
             ev.type === "content_block_delta" &&
             ev.delta?.type === "text_delta" &&
             ev.delta.text &&
             typeof ev.index === "number"
           ) {
-            sawContent = true;
-            onEvent({
-              type: "text_delta",
-              id: segId(ev.index, parent),
-              delta: ev.delta.text,
-              parentId: parent,
-            });
+            const msgId = streamingMsgId.get(msgKey(parent));
+            if (msgId) {
+              sawContent = true;
+              onEvent({
+                type: "text_delta",
+                id: segId(msgId, ev.index, parent),
+                delta: ev.delta.text,
+                parentId: parent,
+              });
+            }
           }
         }
 
@@ -633,9 +663,13 @@ export class AgentService {
         if (m.type === "assistant" && m.message?.content) {
           sawContent = true;
           const parent = m.parent_tool_use_id ?? undefined;
+          // 완결 메시지는 자기 id를 갖고 온다 — 스트리밍 중 걸어둔 값에
+          // 의존하지 않으므로 메시지 순서가 뒤바뀌어도 id가 갈라지지 않는다.
+          const msgId =
+            m.message.id ?? streamingMsgId.get(msgKey(parent)) ?? `seq${(fallbackSeq += 1)}`;
           m.message.content.forEach((block, index) => {
             if (block.type === "text" && block.text) {
-              const id = segId(index, parent);
+              const id = segId(msgId, index, parent);
               // 델타가 없었던(스트리밍 안 된) 텍스트면 start도 보내 프론트가 파트를 만들게 함
               if (!openedText.has(id))
                 onEvent({ type: "text_start", id, parentId: parent });
@@ -649,7 +683,7 @@ export class AgentService {
               }
               onEvent({
                 type: "tool",
-                id: block.id ?? segId(index, parent),
+                id: block.id ?? segId(msgId, index, parent),
                 name: block.name,
                 input,
                 parentId: parent,
@@ -718,9 +752,10 @@ export class AgentService {
         this.logger.warn(
           `resume(${opts.resume}) 실패 — 새 세션으로 재시도: ${String(err)}`,
         );
-        // 재시도 전 파트 상태 초기화(새 세션은 turn=0부터, id 충돌 방지).
+        // 재시도 전 파트 상태 초기화. 메시지 id는 새 세션에서도 새로 발급되므로
+        // 카운터 되돌림은 필요 없고, 걸어둔 스트리밍 id만 비운다.
         resumeInFlight = false;
-        turn = 0;
+        streamingMsgId.clear();
         openedText = new Set<string>();
         try {
           await runOnce(undefined);
