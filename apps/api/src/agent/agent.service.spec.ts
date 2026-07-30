@@ -88,10 +88,66 @@ describe("AgentService.buildEnv (자격증명 라우팅)", () => {
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
   });
 
+  /**
+   * claude-app 자신의 설정이 에이전트 서브프로세스로 새면, 에이전트가 clone
+   * 프로젝트에서 서버를 띄울 때 그 값을 상속한다. dotenv는 이미 설정된 env를
+   * 덮어쓰지 않으므로(override:false 기본) clone의 .env가 져서, 남의 프로젝트가
+   * claude-app DB·포트·시크릿을 가리킨다.
+   */
+  it("claude-app 전용 env(DATABASE_URL·PORT·JWT_SECRET 등)는 넘기지 않는다", async () => {
+    process.env.DATABASE_URL = "postgresql://claude-app-db";
+    process.env.PORT = "6001";
+    process.env.JWT_SECRET = "claude-app-secret";
+    process.env.ENCRYPTION_KEY = "claude-app-key";
+    process.env.ANTHROPIC_OAUTH_TOKEN = "sk-ant-oat01-HOST";
+    try {
+      const { env } = await buildEnv("u1", null);
+      expect(env.DATABASE_URL).toBeUndefined();
+      expect(env.PORT).toBeUndefined();
+      expect(env.JWT_SECRET).toBeUndefined();
+      expect(env.ENCRYPTION_KEY).toBeUndefined();
+      // 자격증명도 호스트 값이 그대로 흘러가면 안 된다(계정 라우팅이 유일한 출처).
+      expect(env.ANTHROPIC_OAUTH_TOKEN).toBeUndefined();
+    } finally {
+      delete process.env.DATABASE_URL;
+      delete process.env.PORT;
+      delete process.env.JWT_SECRET;
+      delete process.env.ENCRYPTION_KEY;
+      delete process.env.ANTHROPIC_OAUTH_TOKEN;
+    }
+  });
+
+  it("OS·툴체인 env(PATH 등)는 그대로 상속한다", async () => {
+    process.env.PATH = "/usr/bin";
+    process.env.HTTPS_PROXY = "http://proxy:8080";
+    try {
+      const { env } = await buildEnv("u1", null);
+      // 이게 빠지면 서브프로세스에서 node·git이 실행되지 않는다.
+      expect(env.PATH).toBe("/usr/bin");
+      // 사내 프록시 등 실행에 필요한 값은 계속 상속돼야 한다.
+      expect(env.HTTPS_PROXY).toBe("http://proxy:8080");
+    } finally {
+      delete process.env.HTTPS_PROXY;
+    }
+  });
+
   it("gitToken은 GITHUB_TOKEN·GH_TOKEN으로 주입", async () => {
     const { env } = await buildEnv("u1", "ghp_TOKEN");
     expect(env.GITHUB_TOKEN).toBe("ghp_TOKEN");
     expect(env.GH_TOKEN).toBe("ghp_TOKEN");
+  });
+
+  it("프로젝트 gitToken이 없으면 호스트 GITHUB_TOKEN도 넘기지 않는다", async () => {
+    process.env.GITHUB_TOKEN = "ghp_HOST";
+    process.env.GH_TOKEN = "ghp_HOST";
+    try {
+      const { env } = await buildEnv("u1", null);
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+      expect(env.GH_TOKEN).toBeUndefined();
+    } finally {
+      delete process.env.GITHUB_TOKEN;
+      delete process.env.GH_TOKEN;
+    }
   });
 
   it("userId 없으면 계정 조회를 건너뛴다", async () => {

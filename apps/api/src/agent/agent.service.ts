@@ -4,6 +4,7 @@ import pLimit from "p-limit";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
 import { ClaudeAccountService } from "../claude-account/claude-account.service";
+import { envSchema } from "../config/env.validation";
 import type { AgentUsage } from "@claude-app/shared";
 // 타입 전용 import — 컴파일 시 지워지므로 SDK 런타임 동적 로드에 영향 없다.
 import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
@@ -209,6 +210,7 @@ export class AgentService {
 
   /**
    * SDK 서브프로세스로 전달할 env 조립.
+   * - claude-app 자신의 설정(envSchema 키)은 제거한다 — 아래 상세.
    * - Anthropic 자격증명 우선순위: 프로젝트 지정 계정 → 실행 사용자 활성 계정 → .env 폴백.
    * - git 토큰: 프로젝트 gitToken → GITHUB_TOKEN/GH_TOKEN.
    */
@@ -224,6 +226,18 @@ export class AgentService {
     accountId: string | null;
   }> {
     const env: Record<string, string | undefined> = { ...process.env };
+
+    // claude-app 자신의 설정을 서브프로세스에서 지운다.
+    //
+    // 에이전트는 clone 프로젝트를 cwd로 실행되고, 그 안에서 서버·마이그레이션을
+    // 띄우면 이 env를 손자 프로세스로 물려받는다. dotenv는 이미 설정된 값을
+    // 덮어쓰지 않으므로(override:false 기본) clone의 .env가 지고, 남의 프로젝트가
+    // claude-app의 DATABASE_URL·PORT·JWT_SECRET을 가리킨다(실측 확인).
+    //
+    // 화이트리스트가 아니라 블랙리스트인 이유: PATH·SystemRoot·프록시 등 실행에
+    // 필요한 OS·툴체인 변수를 빠뜨리면 서브프로세스가 조용히 깨진다. 지울 대상은
+    // envSchema에서 뽑으므로 .env 키가 추가돼도 자동으로 반영된다.
+    for (const key of Object.keys(envSchema.shape)) delete env[key];
 
     // 실행 자격증명 우선순위: 프로젝트 지정 계정 → 사용자 활성 계정 → .env 폴백.
     // 사용량 귀속을 위해 토큰뿐 아니라 실제로 쓰인 계정 id도 함께 확정한다.
@@ -254,6 +268,10 @@ export class AgentService {
       else env.ANTHROPIC_API_KEY = token;
     }
 
+    // git 자격증명도 프로젝트 설정이 유일한 출처다. 호스트에 남은 값이 상속되면
+    // 프로젝트 토큰이 없을 때 claude-app의 토큰으로 남의 저장소에 접근하게 된다.
+    delete env.GITHUB_TOKEN;
+    delete env.GH_TOKEN;
     if (gitToken) {
       env.GITHUB_TOKEN = gitToken;
       env.GH_TOKEN = gitToken;
