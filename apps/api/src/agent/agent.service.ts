@@ -401,11 +401,20 @@ export class AgentService {
     let sessionId: string | undefined;
     let finalText = "";
     /**
-     * 스트리밍 중인 assistant 메시지 id. message_start에서 걸어두고 그 뒤의
-     * content_block_* 이벤트가 읽는다(델타 이벤트에는 메시지 id가 없다).
+     * 가장 최근에 열린 assistant 메시지 id. message_start에서 걸어두고
+     * content_block_start가 읽는다(블록 이벤트에는 메시지 id가 없다).
      * 서브에이전트는 스트림이 메인과 섞여 오므로 parent별로 따로 보관한다.
      */
     const streamingMsgId = new Map<string, string>();
+    /**
+     * 열려 있는 텍스트 블록의 소속 메시지 id (`${parent}#${index}` → msgId).
+     *
+     * 델타는 streamingMsgId를 직접 읽지 않고 이 값을 읽는다. 앞 메시지가
+     * 완결되기 전에 다음 message_start가 오면 streamingMsgId는 덮어써지는데,
+     * 그때도 이미 열린 블록의 남은 델타는 원래 메시지 파트에 붙어야 한다.
+     * (덮어쓴 값을 읽으면 같은 텍스트가 두 파트로 갈려 중복 렌더된다.)
+     */
+    let blockMsgId = new Map<string, string>();
     // 메시지 id가 없는 SDK 이벤트를 위한 폴백 카운터.
     let fallbackSeq = 0;
     // content_block_start로 열린 텍스트 블록의 id (index → true). text_start 중복 방지.
@@ -430,6 +439,10 @@ export class AgentService {
 
     /** parent별 스트리밍 메시지 id 키(메인은 빈 문자열). */
     const msgKey = (parent?: string | null) => parent ?? "";
+
+    /** 열린 텍스트 블록 키 — parent와 블록 인덱스로 소속 메시지를 찾는다. */
+    const blockKey = (index: number, parent?: string | null) =>
+      `${parent ?? ""}#${index}`;
 
     // 실제 SDK 스트림 1회. done/error를 onEvent로 방출하면 true 반환(정상 종료),
     // 내용 방출 전 예외가 나면 throw(호출측이 resume 폴백 여부 판단).
@@ -635,6 +648,9 @@ export class AgentService {
             // message_start를 놓쳤으면 이 블록의 소속을 알 수 없다 — 뒤늦게 오는
             // 완결 메시지가 파트를 만들도록 넘긴다(중복 생성 방지).
             if (msgId) {
+              // 이 블록의 소속을 고정한다. 뒤이어 다른 message_start가 와도
+              // 남은 델타는 이 값을 읽어 같은 파트에 머문다.
+              blockMsgId.set(blockKey(ev.index, parent), msgId);
               const id = segId(msgId, ev.index, parent);
               openedText.add(id);
               sawContent = true;
@@ -646,7 +662,9 @@ export class AgentService {
             ev.delta.text &&
             typeof ev.index === "number"
           ) {
-            const msgId = streamingMsgId.get(msgKey(parent));
+            // content_block_start에서 고정한 소속을 읽는다 — streamingMsgId를
+            // 읽으면 뒤에 온 message_start에 오염돼 파트가 갈라진다.
+            const msgId = blockMsgId.get(blockKey(ev.index, parent));
             if (msgId) {
               sawContent = true;
               onEvent({
@@ -656,6 +674,13 @@ export class AgentService {
                 parentId: parent,
               });
             }
+          } else if (
+            ev.type === "content_block_stop" &&
+            typeof ev.index === "number"
+          ) {
+            // 블록이 닫혔으니 고정을 푼다 — 다음 메시지가 같은 인덱스를
+            // 다시 쓸 때 앞 메시지의 소속이 남아 있지 않게 한다.
+            blockMsgId.delete(blockKey(ev.index, parent));
           }
         }
 
@@ -756,6 +781,7 @@ export class AgentService {
         // 카운터 되돌림은 필요 없고, 걸어둔 스트리밍 id만 비운다.
         resumeInFlight = false;
         streamingMsgId.clear();
+        blockMsgId = new Map<string, string>();
         openedText = new Set<string>();
         try {
           await runOnce(undefined);

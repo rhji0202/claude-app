@@ -1136,6 +1136,69 @@ describe("AgentService.runStream — 서브에이전트 중첩 트랜스크립�
     expect(end.text).toBe("부분 답변 완성");
   });
 
+  /**
+   * 회귀 재현: 앞 메시지가 완결되기 전에 다음 message_start가 끼어들고,
+   * **그 뒤에도 앞 메시지의 델타가 계속 오는** 경우.
+   *
+   * streamingMsgId가 parent별 슬롯 1개라 msg_2가 슬롯을 덮어쓰면, msg_1의
+   * 남은 델타가 `${msg_2}:0`이라는 두 번째 파트를 열고 같은 텍스트 뒷부분을
+   * 흘려 넣는다. msg_1의 완결 메시지는 `${msg_1}:0`만 확정하므로 두 번째
+   * 파트가 사본을 든 채 남아 같은 답변이 두 번 렌더된다.
+   */
+  it("message_start가 끼어든 뒤 이어진 델타도 원래 파트에 붙는다", async () => {
+    messages = [
+      {
+        type: "stream_event",
+        event: { type: "message_start", message: { id: "msg_1" } },
+      },
+      {
+        type: "stream_event",
+        event: { type: "content_block_start", index: 0, content_block: { type: "text" } },
+      },
+      {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "서버를 " },
+        },
+      },
+      // 앞 메시지가 아직 완결되지 않은 채 다음 메시지가 열린다 — 슬롯 덮어쓰기.
+      {
+        type: "stream_event",
+        event: { type: "message_start", message: { id: "msg_2" } },
+      },
+      // msg_1의 남은 델타. 슬롯이 msg_2라 두 번째 파트로 갈라진다.
+      {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "재시작하겠습니다" },
+        },
+      },
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          id: "msg_1",
+          content: [{ type: "text", text: "서버를 재시작하겠습니다" }],
+        },
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    // 텍스트 파트는 하나뿐 — 갈라진 두 번째 파트가 생기면 안 된다.
+    expect(events.filter((e) => e.type === "text_start")).toHaveLength(1);
+    const startId = (events.find((e) => e.type === "text_start") as { id: string }).id;
+    // 두 델타 모두 그 파트에 붙어야 한다.
+    const deltas = events.filter((e) => e.type === "text_delta") as Array<{
+      id: string;
+    }>;
+    expect(deltas).toHaveLength(2);
+    expect(new Set(deltas.map((d) => d.id))).toEqual(new Set([startId]));
+  });
+
   it("연속된 두 턴의 텍스트는 서로 다른 파트가 된다", async () => {
     messages = [
       {
