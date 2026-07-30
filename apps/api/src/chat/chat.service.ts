@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { ChatRole, UsageKind } from "@prisma/client";
 import type { AgentUsage } from "@claude-app/shared";
 import { PrismaService } from "../prisma/prisma.service";
@@ -77,6 +78,7 @@ export class ChatService {
     private readonly agent: AgentService,
     private readonly repos: RepoManagerService,
     private readonly usage: UsageService,
+    private readonly config: ConfigService,
   ) {}
 
   async listSessions(userId: string): Promise<ChatSessionDto[]> {
@@ -177,6 +179,7 @@ export class ChatService {
         cwd,
         systemPrompt:
           "당신은 이 프로젝트 컨텍스트에서 사용자를 돕는 코딩 에이전트입니다.",
+        maxTurns: this.config.get<number>("CHAT_MAX_TURNS") ?? 300,
         onQuery: onControl,
       },
       (e) => {

@@ -35,6 +35,9 @@ export const envSchema = z.object({
   UPLOADS_DIR: z.string().optional(),
   // 동시에 실행할 에이전트 수 상한 (에이전트 1개 = CLI 서브프로세스 1개)
   AGENT_CONCURRENCY: z.coerce.number().int().positive().default(3),
+  // 채팅 실행 최대 턴 수(에이전트 왕복). 이슈와 같은 수준으로 잡아
+  // 대화 중 조사+수정이 턴 한도에 걸려 끊기지 않게 한다.
+  CHAT_MAX_TURNS: z.coerce.number().int().positive().default(300),
   // ---- 이슈 큐/워커 ----
   // 워커 폴링 주기(ms). 0 이하면 폴링 비활성.
   ISSUE_WORKER_POLL_MS: z.coerce.number().int().nonnegative().default(5000),

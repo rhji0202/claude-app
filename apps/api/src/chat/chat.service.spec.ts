@@ -1,4 +1,5 @@
 import { ChatRole } from "@prisma/client";
+import { ConfigService } from "@nestjs/config";
 import { ChatService } from "./chat.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { ProjectsService } from "../projects/projects.service";
@@ -54,6 +55,8 @@ describe("ChatService", () => {
       agent as unknown as AgentService,
       repos as unknown as RepoManagerService,
       usage as unknown as UsageService,
+      // get()이 undefined를 돌려주면 코드가 기본값 300으로 폴백한다.
+      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
     );
   });
 
@@ -122,6 +125,13 @@ describe("ChatService", () => {
           onEvent({ type: "done", text: "안녕하세요", sessionId: "sdk-123" });
         },
       );
+    });
+
+    // 예전에는 maxTurns를 넘기지 않아 runStream 기본값 20이 걸렸다 — 조사·수정이
+    // 긴 대화가 턴 한도에서 끊겼다. 이슈(ISSUE_MAX_TURNS)와 같은 수준으로 맞춘다.
+    it("maxTurns를 CHAT_MAX_TURNS(기본 300)로 넘긴다", async () => {
+      await service.streamMessage("u1", "s1", "hi", () => {});
+      expect(agent.runStream.mock.calls[0][1]).toMatchObject({ maxTurns: 300 });
     });
 
     it("user 메시지 저장 → parts 누적 → assistant 저장 + sdkSessionId 갱신", async () => {
