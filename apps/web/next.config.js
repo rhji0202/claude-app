@@ -10,10 +10,18 @@ const nextConfig = {
   output: "standalone",
   outputFileTracingRoot: path.join(__dirname, "../../"),
   async rewrites() {
+    // 같은 오리진으로 온 /api/* 를 API 서버로 넘긴다(nginx 없이 web만 노출할 때).
+    // 브라우저는 보통 NEXT_PUBLIC_API_URL로 API를 직접 호출하므로 이 경로는
+    // 폴백이지만, 포트가 어긋나면 그 경로만 조용히 502가 된다.
+    //
+    // 포트를 박아두면 환경마다 이 파일을 고쳐야 한다(개발 6001·운영 7100처럼).
+    // 실제로 서버에서 이 줄만 수정한 채 커밋되지 않고 남아 있었다.
+    // API_PROXY_TARGET으로 덮어쓰고, 없으면 기존 기본값을 그대로 쓴다.
+    const target = process.env.API_PROXY_TARGET ?? "http://127.0.0.1:3001";
     return [
       {
         source: "/api/:path*",
-        destination: "http://127.0.0.1:3001/api/:path*",
+        destination: `${target.replace(/\/+$/, "")}/api/:path*`,
       },
     ];
   },
