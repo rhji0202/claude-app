@@ -140,6 +140,9 @@ model ChatSession {
   // 전용 worktree에서 실행할지. true면 clone base가 아니라
   // `chat/<세션id>` 브랜치의 worktree를 cwd로 쓴다(세션 삭제 시 함께 정리).
   useWorktree  Boolean       @default(false)
+  // worktree를 만들 기준 브랜치. 이슈에서 이어받은 대화는 그 이슈의
+  // `issue/<이슈id>`를 가리켜 작업물을 그대로 이어받는다. null이면 프로젝트 기본.
+  baseBranch   String?
   messages     ChatMessage[]
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt

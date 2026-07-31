@@ -1,4 +1,9 @@
-import { HttpException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  HttpException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { ChatRole, UsageKind } from "@prisma/client";
 import type { AgentUsage } from "@claude-app/shared";
@@ -107,6 +112,8 @@ function reduceParts(parts: ChatPart[], e: AgentStreamEvent): ChatPart[] {
 
 @Injectable()
 export class ChatService {
+  private readonly logger = new Logger(ChatService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly projects: ProjectsService,
@@ -170,11 +177,18 @@ export class ChatService {
 
     // 세션 행을 먼저 만든다 — worktree 경로가 세션 id에 묶여 있어, 트랜스크립트를
     // 어디로 옮길지 정하려면 id가 필요하다.
+    //
+    // worktree 모드면 이슈가 작업하던 `issue/<이슈id>` 브랜치를 기준으로 삼는다.
+    // 이슈 worktree 디렉터리는 실행 후 지워지지만 브랜치는 clone에 남으므로,
+    // 그 지점에서 새 `chat/<세션id>`를 분기하면 작업물을 그대로 이어받는다.
+    // (원본 issue 브랜치를 공유하지는 않는다 — 이슈를 재실행하면 worktree add -B가
+    //  그 브랜치를 기준점으로 리셋해 대화 작업물이 사라지기 때문이다.)
     const s = await this.prisma.chatSession.create({
       data: {
         userId,
         projectId: issue.projectId,
         useWorktree,
+        baseBranch: useWorktree ? `issue/${issue.id}` : null,
         title: `이슈: ${issue.title}`.slice(0, 60),
       },
     });
@@ -364,6 +378,7 @@ export class ChatService {
     projectId: string,
     sessionId: string,
     useWorktree: boolean,
+    baseBranch?: string | null,
   ): Promise<string> {
     // clone 준비는 두 경우 모두 필요하다(worktree는 이 clone을 base로 만든다).
     const base = await this.repos.prepareForProject(projectId);
@@ -376,13 +391,33 @@ export class ChatService {
       where: { id: projectId },
       select: { gitBranch: true },
     });
-    const wt = await this.worktrees.create(
-      projectId,
-      sessionId,
-      project?.gitBranch,
-      "chat",
-    );
-    return wt.path;
+    // 이슈에서 이어받은 대화면 그 이슈 브랜치를, 아니면 프로젝트 기본을 기준으로.
+    // 이슈 브랜치는 push 전이면 로컬에만 있으므로 로컬 ref 조회를 허용한다.
+    const wanted = baseBranch?.trim() || null;
+    try {
+      const wt = await this.worktrees.create(
+        projectId,
+        sessionId,
+        wanted ?? project?.gitBranch,
+        "chat",
+        Boolean(wanted),
+      );
+      return wt.path;
+    } catch (err) {
+      if (!wanted) throw err;
+      // 이어받으려던 이슈 브랜치가 사라진 경우(정리·강제 삭제 등)까지 실패로
+      // 끝내면 대화 자체를 못 연다. 기준만 프로젝트 기본으로 낮춰 계속한다.
+      this.logger.warn(
+        `기준 브랜치 '${wanted}'로 worktree 생성 실패 — 기본 브랜치로 진행: ${String(err)}`,
+      );
+      const wt = await this.worktrees.create(
+        projectId,
+        sessionId,
+        project?.gitBranch,
+        "chat",
+      );
+      return wt.path;
+    }
   }
 
   /**
@@ -436,7 +471,12 @@ export class ChatService {
 
     // 실행 디렉터리 결정(설계 12.5). gitRepo 없으면 BadRequest.
     // 기본은 관리 clone base, worktree 모드면 이 세션 전용 worktree.
-    const cwd = await this.resolveCwd(session.projectId, session.id, session.useWorktree);
+    const cwd = await this.resolveCwd(
+      session.projectId,
+      session.id,
+      session.useWorktree,
+      session.baseBranch,
+    );
 
     // 이미지는 멀티모달 블록으로 모델에 직접 보여준다.
     const images: { data: string; mediaType: string }[] = [];

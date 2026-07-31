@@ -78,12 +78,18 @@ export class WorktreeService {
    *
    * @param key    worktree 식별자(이슈=issueId, 채팅=sessionId)
    * @param prefix 브랜치 접두사. 기본 `issue` — 이슈 호출측은 그대로 둔다.
+   * @param allowLocalBase 기준 브랜치를 로컬 ref에서도 찾을지.
+   *   기본은 origin 전용이다 — 프로젝트 설정 브랜치는 원격에 있어야 하고,
+   *   오타를 조용히 로컬 브랜치로 흡수하면 잘못된 기준으로 작업이 나간다.
+   *   이슈 브랜치를 이어받는 채팅처럼 **로컬에만 있는 게 정상인** 경우에만 켠다
+   *   (autoPr가 꺼져 있으면 issue/<id>는 push되지 않는다).
    */
   async create(
     projectId: string,
     key: string,
     baseBranch?: string | null,
     prefix = "issue",
+    allowLocalBase = false,
   ): Promise<Worktree> {
     const base = this.repos.baseDir(projectId);
     const wt = this.dir(projectId, key);
@@ -99,10 +105,20 @@ export class WorktreeService {
         { cwd: base },
       );
       if (check.code !== 0) {
-        throw new Error(
-          `프로젝트에 설정된 기준 브랜치 '${wanted}'를 원격에서 찾을 수 없습니다. ` +
-            `브랜치명을 확인하세요(origin/${wanted} 없음).`,
-        );
+        // 원격에 없다. 허용된 경우에만 로컬 ref로 한 번 더 찾는다.
+        const local =
+          allowLocalBase &&
+          (await runGit(
+            ["rev-parse", "--verify", "--quiet", `refs/heads/${wanted}`],
+            { cwd: base },
+          )).code === 0;
+        if (!local) {
+          throw new Error(
+            `기준 브랜치 '${wanted}'를 찾을 수 없습니다. ` +
+              `브랜치명을 확인하세요(origin/${wanted} 없음).`,
+          );
+        }
+        startPoint = wanted;
       }
     } else {
       const def = await this.repos.defaultBranch(projectId);

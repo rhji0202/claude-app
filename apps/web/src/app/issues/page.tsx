@@ -382,8 +382,11 @@ function RerunDialog({
         await api.post(`/issues/${id}/notes`, { content: memo.trim() });
         setMemo("");
       }
+      // 전용 worktree에서 연다 — 이슈가 작업하던 브랜치를 기준으로 삼아
+      // 그 결과물을 보면서 이어갈 수 있다(clone base는 건드리지 않는다).
       const s = await api.post<{ id: string }>("/chat/sessions", {
         fromIssueId: id,
+        useWorktree: true,
       });
       setOpen(false);
       onChanged?.();
@@ -476,8 +479,8 @@ function RerunDialog({
               {question}
               <div className="mt-2 border-t border-[var(--accent)]/20 pt-2 text-xs text-muted-foreground">
                 답을 정하기 어려우면 <b>대화로 이어가기</b>로 에이전트와 상의할 수
-                있습니다. 대화 맥락만 이어받고 작업 디렉터리는 공유하지 않으므로,
-                결론을 낸 뒤 이곳에서 재실행하세요.
+                있습니다. 이슈가 작업하던 브랜치를 이어받은 전용 작업 공간에서
+                열리므로, 고친 내용을 보면서 물어볼 수 있습니다.
               </div>
             </div>
           )}
@@ -529,7 +532,7 @@ function RerunDialog({
                   variant="secondary"
                   onClick={continueInChat}
                   disabled={busy}
-                  title="이슈의 대화 맥락을 이어받아 채팅을 시작합니다. 작업 디렉터리는 다르므로(이슈 worktree는 실행 후 정리됨) 결론을 낸 뒤 이슈를 재개해 수정하세요."
+                  title="이슈의 대화 맥락과 작업 브랜치를 이어받아 전용 작업 공간에서 채팅을 시작합니다. 이슈 브랜치는 그대로 두고 별도 브랜치로 분기하므로, 대화에서 무엇을 고치든 이슈 재실행에 영향이 없습니다."
                 >
                   대화로 이어가기
                 </Button>

@@ -227,6 +227,35 @@ describe("ChatService", () => {
         expect(db.chatSession.update).not.toHaveBeenCalled();
       });
 
+      it("worktree 모드면 이슈 브랜치를 기준으로 기록한다", async () => {
+        db.issueTask.findUnique.mockResolvedValue({
+          id: "i1",
+          projectId: "p-issue",
+          title: "t",
+          sessionId: null,
+        });
+        await service.createSession("u1", "", "i1", true);
+        expect(db.chatSession.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({
+            useWorktree: true,
+            baseBranch: "issue/i1",
+          }),
+        });
+      });
+
+      it("worktree를 안 쓰면 기준 브랜치를 남기지 않는다", async () => {
+        db.issueTask.findUnique.mockResolvedValue({
+          id: "i1",
+          projectId: "p-issue",
+          title: "t",
+          sessionId: null,
+        });
+        await service.createSession("u1", "", "i1", false);
+        expect(db.chatSession.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({ useWorktree: false, baseBranch: null }),
+        });
+      });
+
       it("프로젝트는 이슈의 것을 쓴다(클라이언트 값 무시)", async () => {
         db.issueTask.findUnique.mockResolvedValue({
           id: "i1",
@@ -301,6 +330,8 @@ describe("ChatService", () => {
         "s1",
         "master-qa",
         "chat",
+        // baseBranch 미지정(일반 대화) → 로컬 ref 허용 안 함
+        false,
       );
       expect(cwd).toBe("/worktrees/p1/s1");
     });
@@ -314,6 +345,65 @@ describe("ChatService", () => {
       const cwd = await run(true);
       expect(worktrees.create).not.toHaveBeenCalled();
       expect(cwd).toBe("/worktrees/p1/s1");
+    });
+
+    /**
+     * 이슈에서 이어받은 대화는 그 이슈가 작업하던 브랜치를 기준으로 삼아야
+     * 고친 결과를 보면서 이어갈 수 있다. 이슈 브랜치는 push 전이면 로컬에만
+     * 있으므로 로컬 ref 조회를 허용해야 한다.
+     */
+    it("baseBranch가 있으면 그 브랜치를 기준으로(로컬 ref 허용) 만든다", async () => {
+      worktrees.exists.mockResolvedValue(false);
+      db.project.findUnique.mockResolvedValue({ gitBranch: "master-qa" });
+      db.chatSession.findFirst.mockResolvedValue({
+        id: "s1",
+        userId: "u1",
+        projectId: "p1",
+        title: "t",
+        sdkSessionId: null,
+        useWorktree: true,
+        baseBranch: "issue/i1",
+      });
+      await service.streamMessage("u1", "s1", "안녕", () => {});
+      expect(worktrees.create).toHaveBeenCalledWith(
+        "p1",
+        "s1",
+        "issue/i1",
+        "chat",
+        true,
+      );
+    });
+
+    /**
+     * 이어받으려던 이슈 브랜치가 사라졌다고 대화 자체를 못 열면 안 된다.
+     * 기준만 프로젝트 기본으로 낮춰 계속한다.
+     */
+    it("기준 브랜치가 없으면 프로젝트 기본으로 폴백한다", async () => {
+      worktrees.exists.mockResolvedValue(false);
+      db.project.findUnique.mockResolvedValue({ gitBranch: "master-qa" });
+      db.chatSession.findFirst.mockResolvedValue({
+        id: "s1",
+        userId: "u1",
+        projectId: "p1",
+        title: "t",
+        sdkSessionId: null,
+        useWorktree: true,
+        baseBranch: "issue/사라진브랜치",
+      });
+      worktrees.create
+        .mockRejectedValueOnce(new Error("기준 브랜치를 찾을 수 없습니다."))
+        .mockResolvedValueOnce({ path: "/worktrees/p1/s1", branch: "chat/s1" });
+
+      await service.streamMessage("u1", "s1", "안녕", () => {});
+      expect(worktrees.create).toHaveBeenCalledTimes(2);
+      // 2회차는 프로젝트 기본 브랜치로, 로컬 ref 허용 없이.
+      expect(worktrees.create).toHaveBeenLastCalledWith(
+        "p1",
+        "s1",
+        "master-qa",
+        "chat",
+      );
+      expect(agent.runStream.mock.calls[0][1].cwd).toBe("/worktrees/p1/s1");
     });
 
     it("세션 삭제 시 worktree도 정리한다", async () => {

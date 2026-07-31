@@ -76,9 +76,55 @@ describe("WorktreeService.create 기준 브랜치", () => {
     setupRunGit(false);
 
     await expect(service.create("p1", "i1", "develp")).rejects.toThrow(
-      /기준 브랜치 'develp'를 원격에서 찾을 수 없습니다/,
+      /기준 브랜치 'develp'를 찾을 수 없습니다/,
     );
     // worktree add까지 가지 않는다.
+    expect(gitMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 채팅이 이슈 브랜치를 이어받는 경로. autoPr가 꺼져 있으면 issue/<id>는
+   * push되지 않아 로컬에만 있으므로, 그 경우에만 로컬 ref를 기준으로 허용한다.
+   */
+  it("allowLocalBase면 원격에 없어도 로컬 ref를 start point로 쓴다", async () => {
+    // 원격(refs/remotes/…)은 없고 로컬(refs/heads/…)만 있는 상황.
+    runGitMock.mockImplementation(async (args) => {
+      if (args[0] === "rev-parse" && args.includes("--verify")) {
+        const ref = args[args.length - 1] as string;
+        return ref.startsWith("refs/heads/") ? ok("abc123") : fail("없음");
+      }
+      return ok();
+    });
+
+    const wt = await service.create("p1", "s1", "issue/i1", "chat", true);
+
+    expect(wt.branch).toBe("chat/s1");
+    const addCall = gitMock.mock.calls.find((c) => c[0][0] === "worktree");
+    // origin/ 접두사 없이 로컬 브랜치를 그대로 기준점으로 쓴다.
+    expect(addCall?.[0]).toEqual([
+      "worktree",
+      "add",
+      "-B",
+      "chat/s1",
+      expect.stringContaining("s1"),
+      "issue/i1",
+    ]);
+  });
+
+  it("allowLocalBase가 꺼져 있으면 로컬에만 있어도 실패한다(기본 동작)", async () => {
+    runGitMock.mockImplementation(async (args) => {
+      if (args[0] === "rev-parse" && args.includes("--verify")) {
+        const ref = args[args.length - 1] as string;
+        return ref.startsWith("refs/heads/") ? ok("abc123") : fail("없음");
+      }
+      return ok();
+    });
+
+    // 이슈 경로는 원격 전용을 유지해야 한다 — 오타를 로컬 브랜치로 흡수하면
+    // 잘못된 기준으로 작업이 나간다.
+    await expect(service.create("p1", "i1", "develp")).rejects.toThrow(
+      /기준 브랜치 'develp'를 찾을 수 없습니다/,
+    );
     expect(gitMock).not.toHaveBeenCalled();
   });
 
