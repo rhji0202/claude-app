@@ -7,8 +7,6 @@ import {
   OnModuleInit,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { promises as fs } from "node:fs";
-import * as path from "node:path";
 import type { Project } from "@prisma/client";
 import {
   Prisma,
@@ -29,7 +27,7 @@ import {
 } from "../agent/agent.service";
 import { GithubService } from "../github/github.service";
 import { ProjectsService } from "../projects/projects.service";
-import { UploadsService } from "../uploads/uploads.service";
+import { ATTACHMENT_DIR, UploadsService } from "../uploads/uploads.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
 import { WorktreeService } from "../repo/worktree.service";
 import { NotifyService } from "../notify/notify.service";
@@ -51,9 +49,6 @@ const NOTE_AUTHOR_TO_DTO: Record<IssueNoteAuthor, IssueNoteAuthorDto> = {
   AGENT: "agent",
   SYSTEM: "system",
 };
-
-/** 실행 시 첨부 파일을 복사해 넣는 worktree 하위 디렉터리명. */
-const ATTACHMENT_DIR = "첨부파일";
 
 /**
  * IssueTask.files 항목(`<상대경로>|<원본파일명>`)을 분해한다.
@@ -730,39 +725,19 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
   /**
    * 첨부 파일(엑셀·PDF 등)을 worktree의 `첨부파일/`로 복사하고, 담긴 파일명 목록을 반환.
    * 이미지처럼 프롬프트에 실을 수 없는 형식이라, 에이전트가 자기 도구로 직접 열어보게 한다.
-   * 이름이 겹치면 앞에 순번을 붙여 덮어쓰기를 막는다.
-   * 복사 실패는 실행을 막지 않는다(경고만 남기고 그 파일만 제외).
+   * 실제 복사 규칙(중복명·gitignore·실패 흡수)은 UploadsService.stageInto가 갖는다.
    */
   private async stageAttachments(
     task: PrismaIssue,
     cwd: string,
   ): Promise<string[]> {
-    const entries = task.files ?? [];
-    if (entries.length === 0) return [];
-    const dir = path.join(cwd, ATTACHMENT_DIR);
-    const staged: string[] = [];
-    const used = new Set<string>();
-    await fs.mkdir(dir, { recursive: true }).catch(() => undefined);
-    // 첨부 디렉터리 자체를 git에서 제외한다(참고 자료가 커밋·PR에 섞이지 않게).
-    await fs
-      .writeFile(path.join(dir, ".gitignore"), "*\n")
-      .catch(() => undefined);
-    for (const [i, entry] of entries.entries()) {
+    const files = (task.files ?? []).map((entry) => {
       const { relPath, fileName } = parseFileEntry(entry);
-      // 같은 이름이 이미 있으면 순번을 붙여 덮어쓰기를 막는다(인덱스라 항상 유일).
-      const name = used.has(fileName) ? `${i + 1}_${fileName}` : fileName;
-      used.add(name);
-      try {
-        await fs.writeFile(
-          path.join(dir, name),
-          await this.uploads.readFile(relPath),
-        );
-        staged.push(name);
-      } catch (err) {
-        this.logger.warn(`첨부 파일 복사 실패 ${relPath}: ${String(err)}`);
-      }
-    }
-    return staged;
+      return { relPath, name: fileName };
+    });
+    return this.uploads.stageInto(cwd, files, (relPath, err) =>
+      this.logger.warn(`첨부 파일 복사 실패 ${relPath}: ${String(err)}`),
+    );
   }
 
   /** GitHub 이슈 본문·코멘트를 가져와 에이전트 프롬프트를 구성 */
@@ -1171,7 +1146,11 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
         }
         const res = await this.runViaStream(task.id, project.id, {
           prompt,
-          resume: task.sessionId ?? undefined,
+          // 이미지가 있으면 세션 resume을 생략한다. buildPrompt가 재개 시 이전
+          // 메모·이력을 매번 전량 재주입하므로(설계 5.3), 세션까지 이으면 같은
+          // 내용이 두 번 들어가 컨텍스트·턴 예산만 축낸다. 채팅은 재주입 경로가
+          // 없어 resume이 유일한 맥락 수단이므로 반대로 유지한다.
+          resume: images.length > 0 ? undefined : (task.sessionId ?? undefined),
           userId: project.ownerId ?? undefined,
           images: images.length > 0 ? images : undefined,
           cwd: wt.path,

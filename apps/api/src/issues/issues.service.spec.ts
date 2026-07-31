@@ -99,6 +99,24 @@ describe("IssuesService (큐/워커)", () => {
     );
   }
 
+  /**
+   * UploadsService 스텁. 저장소 I/O(signRelPath·readAsBase64·readFile)는 스텁이지만
+   * stageInto는 실물을 빌려 쓴다 — 복사 규칙(중복명·gitignore)을 검증하는 테스트가
+   * 있으므로 여기서 흉내 내면 진짜 로직을 검증하지 못한다.
+   */
+  function makeUploads() {
+    const stub = {
+      signRelPath: (rel: string) => rel,
+      readAsBase64: (rel: string) =>
+        Promise.resolve({ data: `b64:${rel}`, mediaType: "image/png" }),
+      readFile: (rel: string) => Promise.resolve(Buffer.from(`bin:${rel}`)),
+    };
+    return {
+      ...stub,
+      stageInto: UploadsService.prototype.stageInto.bind(stub),
+    };
+  }
+
   function makeService(cfg: Record<string, unknown> = {}): IssuesService {
     return new IssuesService(
       prisma as unknown as PrismaService,
@@ -108,12 +126,7 @@ describe("IssuesService (큐/워커)", () => {
       projects as unknown as ProjectsService,
       // signRelPath는 toDto가 images를 서명 URL로 변환할 때 호출 → 통과 스텁 제공.
       // readAsBase64는 실행 시 images[]를 첨부로 싣는 경로에서 호출.
-      {
-        signRelPath: (rel: string) => rel,
-        readAsBase64: (rel: string) =>
-          Promise.resolve({ data: `b64:${rel}`, mediaType: "image/png" }),
-        readFile: (rel: string) => Promise.resolve(Buffer.from(`bin:${rel}`)),
-      } as unknown as UploadsService,
+      makeUploads() as unknown as UploadsService,
       repos as unknown as RepoManagerService,
       worktrees as unknown as WorktreeService,
       makeConfig(cfg),
@@ -345,6 +358,46 @@ describe("IssuesService (큐/워커)", () => {
       expect(opts.prompt).toContain("이 화면처럼 고쳐줘");
       expect(opts.prompt).toContain("(첨부 이미지: screen.png)");
       expect(opts.prompt).not.toContain("sig=ab");
+    });
+
+    // buildPrompt가 재개 시 이전 메모·이력을 매번 전량 재주입하므로, 이미지가 있어
+    // 세션까지 이으면 같은 내용이 두 번 들어간다. 이미지 실행은 새 세션으로 돌린다.
+    it("이미지가 있으면 sessionId가 있어도 resume하지 않는다", async () => {
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      const resumed = {
+        ...(task as object),
+        sessionId: "prev-session",
+        images: ["issue-images/i1/a.png"],
+      } as never;
+      mockAgentResult({ status: "ok", sessionId: "s2", text: "done" });
+      await service.executeClaimed(resumed);
+
+      expect(agent.runStream.mock.calls[0][1].resume).toBeUndefined();
+    });
+
+    it("이미지가 없으면 sessionId로 resume한다", async () => {
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      const resumed = {
+        ...(task as object),
+        sessionId: "prev-session",
+        images: [],
+      } as never;
+      mockAgentResult({ status: "ok", sessionId: "s2", text: "done" });
+      await service.executeClaimed(resumed);
+
+      expect(agent.runStream.mock.calls[0][1].resume).toBe("prev-session");
     });
 
     it("첨부 파일을 worktree로 복사하고 프롬프트에 경로를 알려준다", async () => {
