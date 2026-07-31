@@ -411,6 +411,30 @@ function RerunDialog({
     }
   }
 
+  /**
+   * 이슈의 실행 세션을 이어받는 대화를 만들고 채팅 화면으로 이동한다.
+   * 이슈 상태는 바꾸지 않는다 — 대화에서 결론이 나도 이슈 완료는 사람이 정한다.
+   */
+  async function continueInChat() {
+    setBusy(true);
+    try {
+      // 입력해 둔 지시가 있으면 이력에 남긴다(대화와 별개로 이슈에 기록되어야 한다).
+      if (memo.trim()) {
+        await api.post(`/issues/${id}/notes`, { content: memo.trim() });
+        setMemo("");
+      }
+      const s = await api.post<{ id: string }>("/chat/sessions", {
+        fromIssueId: id,
+      });
+      setOpen(false);
+      onChanged?.();
+      window.location.href = `/chat?session=${s.id}`;
+    } catch (e) {
+      toast.error((e as Error).message);
+      setBusy(false);
+    }
+  }
+
   async function rerun() {
     setBusy(true);
     try {
@@ -455,6 +479,11 @@ function RerunDialog({
                 에이전트 질문
               </div>
               {question}
+              <div className="mt-2 border-t border-[var(--accent)]/20 pt-2 text-xs text-muted-foreground">
+                답을 정하기 어려우면 <b>대화로 이어가기</b>로 에이전트와 상의할 수
+                있습니다. 대화 맥락만 이어받고 작업 디렉터리는 공유하지 않으므로,
+                결론을 낸 뒤 이곳에서 재실행하세요.
+              </div>
             </div>
           )}
           {/* 이력 타임라인 */}
@@ -481,7 +510,7 @@ function RerunDialog({
                 onChanged?.();
               }}
             />
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="secondary"
                 onClick={addMemo}
@@ -492,6 +521,18 @@ function RerunDialog({
               <Button onClick={rerun} disabled={busy}>
                 {memo.trim() ? "지시 반영해 재실행" : "재실행"}
               </Button>
+              {/* 결정 대기: 재큐 왕복 대신 그 자리에서 대화로 풀어간다.
+                  이슈 상태는 그대로 두므로 대화 뒤에도 재실행·재개가 가능하다. */}
+              {isDecision && (
+                <Button
+                  variant="secondary"
+                  onClick={continueInChat}
+                  disabled={busy}
+                  title="이슈의 대화 맥락을 이어받아 채팅을 시작합니다. 작업 디렉터리는 다르므로(이슈 worktree는 실행 후 정리됨) 결론을 낸 뒤 이슈를 재개해 수정하세요."
+                >
+                  대화로 이어가기
+                </Button>
+              )}
             </div>
           </div>
         </div>

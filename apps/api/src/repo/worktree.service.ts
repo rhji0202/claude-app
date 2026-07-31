@@ -13,14 +13,19 @@ export interface Worktree {
 }
 
 /**
- * per-run worktree 격리 (설계 11절).
+ * worktree 격리 (설계 11절).
  *
- * 관리 clone(RepoManagerService)을 base로, 실행마다 독립 작업 디렉터리를 만든다.
- * 같은 프로젝트 이슈를 병렬 실행해도 파일/git 충돌이 없다.
+ * 관리 clone(RepoManagerService)을 base로 독립 작업 디렉터리를 만든다.
+ * 같은 프로젝트를 병렬로 다뤄도 파일/git 충돌이 없다.
  *
- * - 경로: `<WORKTREE_ROOT>/<projectId>/<issueId>`
+ * - 경로: `<WORKTREE_ROOT>/<projectId>/<키>`
  * - worktree add/remove는 base .git을 공유하므로 **프로젝트별 직렬화**(RepoManager 락 재사용).
- * - 브랜치: `issue/<issueId>` (재개 시 같은 이름으로 고정).
+ * - 브랜치: `<prefix>/<키>` (재개 시 같은 이름으로 고정).
+ *
+ * 두 가지 용법이 있다:
+ *  - **이슈 실행**: 키=issueId, prefix=`issue`. 실행마다 만들고 끝나면 지운다.
+ *  - **채팅 세션**: 키=sessionId, prefix=`chat`. 세션이 사는 동안 유지한다 —
+ *    대화형이라 앞 턴에서 고친 파일이 남아 있어야 한다.
  */
 @Injectable()
 export class WorktreeService {
@@ -37,8 +42,27 @@ export class WorktreeService {
       path.join(process.cwd(), "worktrees");
   }
 
-  private dir(projectId: string, issueId: string): string {
-    return path.join(this.root, projectId, issueId);
+  private dir(projectId: string, key: string): string {
+    return path.join(this.root, projectId, key);
+  }
+
+  /**
+   * worktree 경로. 디렉터리가 실제로 있는지는 보장하지 않는다 — 이슈 실행은
+   * 끝나면 지워지기 때문이다. CLI 세션은 cwd로 식별되므로, 지워진 뒤에도 그
+   * 세션을 찾으려면 이 경로가 필요하다.
+   */
+  pathFor(projectId: string, key: string): string {
+    return this.normalize(this.dir(projectId, key));
+  }
+
+  /** worktree 디렉터리가 실제로 존재하는가(채팅 세션 재사용 판단용). */
+  async exists(projectId: string, key: string): Promise<boolean> {
+    try {
+      await fs.access(path.join(this.dir(projectId, key), ".git"));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** SDK cwd로 넘길 절대경로(posix 슬래시 정규화). */
@@ -47,19 +71,23 @@ export class WorktreeService {
   }
 
   /**
-   * 이슈용 worktree를 생성한다. base clone은 호출 전에 준비돼 있어야 한다.
+   * worktree를 생성한다. base clone은 호출 전에 준비돼 있어야 한다.
    * baseBranch가 있으면 origin/<baseBranch>를, 없으면 origin/HEAD를 기준으로 브랜치를 만든다.
    * 지정한 baseBranch가 원격에 없으면(오타·삭제된 브랜치) 명시적으로 실패한다 —
    * 조용히 다른 브랜치를 base로 삼으면 잘못된 기준으로 작업이 나간다.
+   *
+   * @param key    worktree 식별자(이슈=issueId, 채팅=sessionId)
+   * @param prefix 브랜치 접두사. 기본 `issue` — 이슈 호출측은 그대로 둔다.
    */
   async create(
     projectId: string,
-    issueId: string,
+    key: string,
     baseBranch?: string | null,
+    prefix = "issue",
   ): Promise<Worktree> {
     const base = this.repos.baseDir(projectId);
-    const wt = this.dir(projectId, issueId);
-    const branch = `issue/${issueId}`;
+    const wt = this.dir(projectId, key);
+    const branch = `${prefix}/${key}`;
 
     // 기준 브랜치 결정: 지정값 → origin/HEAD → 실패 시 지정 없이 add(현재 HEAD).
     const wanted = baseBranch?.trim();
@@ -95,10 +123,10 @@ export class WorktreeService {
     return { path: this.normalize(wt), branch };
   }
 
-  /** 이슈 worktree 제거(정리). 실패해도 throw하지 않음(finally에서 호출). */
-  async remove(projectId: string, issueId: string): Promise<void> {
+  /** worktree 제거(정리). 실패해도 throw하지 않음(finally에서 호출). */
+  async remove(projectId: string, key: string): Promise<void> {
     const base = this.repos.baseDir(projectId);
-    const wt = this.dir(projectId, issueId);
+    const wt = this.dir(projectId, key);
     try {
       await this.repos.withProjectLock(projectId, () => this.removeRaw(base, wt));
       this.logger.log(`worktree 제거: ${wt}`);
