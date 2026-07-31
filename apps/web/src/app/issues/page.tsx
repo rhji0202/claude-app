@@ -80,65 +80,22 @@ function IssueStatusCell({
     return <RunningCell row={row} badge={badge} progress={progress} />;
   }
 
-  // 결정 대기: 배지 클릭 → 에이전트 질문 + 이력 + 추가 지시 + 재개
-  if (status === "needs_decision") {
+  // 실행이 끝난 상태(결정 대기·완료·오류·중단)는 모두 같은 다이얼로그를 쓴다.
+  // 결과·이력을 보여주고 추가 지시·재실행·대화 이어가기를 한자리에서 제공한다.
+  // (완료 뒤 "이거 왜 이렇게 고쳤어?"를 물으려면 완료 상태에도 대화가 필요하다.)
+  if (
+    status === "needs_decision" ||
+    status === "done" ||
+    status === "error" ||
+    status === "interrupted"
+  ) {
     return <RerunDialog row={row} trigger={badge} onChanged={onChanged} />;
   }
 
   // 볼 내용이 없으면 배지만 (대기 등)
   if (!error && !result) return badge;
 
-  return (
-    <Dialog>
-      <DialogTrigger className="cursor-pointer" title="상세 보기">
-        {badge}
-      </DialogTrigger>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>
-            {status === "error"
-              ? "실행 오류"
-              : status === "interrupted"
-                ? "실행 중단됨"
-                : "실행 결과"}
-          </DialogTitle>
-          <DialogDescription>
-            {status === "interrupted"
-              ? "실행이 중간에 중단되었습니다. 다시 실행해 주세요."
-              : String(row.title ?? "")}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="max-h-[60vh] space-y-4 overflow-y-auto">
-          {error && (
-            <div className="space-y-1.5">
-              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {status === "interrupted" ? "중단 사유" : "오류 메시지"}
-              </div>
-              <pre
-                className={`whitespace-pre-wrap rounded-md bg-muted p-3 text-sm ${
-                  status === "error" ? "text-destructive" : ""
-                }`}
-              >
-                {error}
-              </pre>
-            </div>
-          )}
-          {result && (
-            <div className="space-y-1.5">
-              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                실행 결과
-              </div>
-              <div className="rounded-md bg-muted p-3">
-                <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
-                  {result}
-                </Markdown>
-              </div>
-            </div>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
+  return badge;
 }
 
 /**
@@ -363,6 +320,8 @@ function RerunDialog({
   const id = String(row.id);
   const status = String(row.status);
   const isDecision = status === "needs_decision";
+  const error = (row.error as string | null | undefined) ?? null;
+  const result = (row.result as string | null | undefined) ?? null;
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState<IssueNote[] | null>(null);
   const [memo, setMemo] = useState("");
@@ -468,11 +427,47 @@ function RerunDialog({
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {isDecision ? "사람 결정이 필요합니다" : "추가 지시 후 재실행"}
+            {isDecision
+              ? "사람 결정이 필요합니다"
+              : status === "done"
+                ? "실행 결과"
+                : status === "error"
+                  ? "실행 오류"
+                  : status === "interrupted"
+                    ? "실행 중단됨"
+                    : "추가 지시 후 재실행"}
           </DialogTitle>
           <DialogDescription>{String(row.title ?? "")}</DialogDescription>
         </DialogHeader>
         <div className="max-h-[60vh] space-y-4 overflow-y-auto">
+          {/* 오류·중단 사유 */}
+          {error && (
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                {status === "interrupted" ? "중단 사유" : "오류 메시지"}
+              </div>
+              <pre
+                className={`whitespace-pre-wrap rounded-md bg-muted p-3 text-sm ${
+                  status === "error" ? "text-destructive" : ""
+                }`}
+              >
+                {error}
+              </pre>
+            </div>
+          )}
+          {/* 실행 결과 — 완료 이슈에서 무엇을 했는지 확인하고 이어서 물어본다 */}
+          {result && (
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                실행 결과
+              </div>
+              <div className="rounded-md bg-muted p-3">
+                <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
+                  {result}
+                </Markdown>
+              </div>
+            </div>
+          )}
           {isDecision && question && (
             <div className="rounded-md border border-[var(--accent)]/40 bg-[var(--accent)]/5 p-3 text-sm">
               <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -519,11 +514,17 @@ function RerunDialog({
                 지시만 저장
               </Button>
               <Button onClick={rerun} disabled={busy}>
-                {memo.trim() ? "지시 반영해 재실행" : "재실행"}
+                {memo.trim()
+                  ? "지시 반영해 재실행"
+                  : isDecision
+                    ? "재개"
+                    : "재실행"}
               </Button>
-              {/* 결정 대기: 재큐 왕복 대신 그 자리에서 대화로 풀어간다.
-                  이슈 상태는 그대로 두므로 대화 뒤에도 재실행·재개가 가능하다. */}
-              {isDecision && (
+              {/* 실행이 끝난 이슈는 그 세션을 이어받아 대화로 풀어갈 수 있다.
+                  결정 대기는 답을 상의하고, 완료·오류는 "왜 이렇게 고쳤는지"를
+                  물어본다. 이슈 상태는 그대로 두므로 대화 뒤에도 재실행이 가능하다.
+                  실행된 적 없으면(sessionId 없음) 이어받을 맥락이 없어 감춘다. */}
+              {row.sessionId ? (
                 <Button
                   variant="secondary"
                   onClick={continueInChat}
@@ -532,7 +533,7 @@ function RerunDialog({
                 >
                   대화로 이어가기
                 </Button>
-              )}
+              ) : null}
             </div>
           </div>
         </div>
