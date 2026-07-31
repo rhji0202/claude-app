@@ -1,7 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUp, GitBranch, PanelLeft, Square } from "lucide-react";
+import {
+  ArrowUp,
+  FileText,
+  GitBranch,
+  PanelLeft,
+  Paperclip,
+  Square,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import {
   AssistantLine,
@@ -10,7 +18,7 @@ import {
   UserLine,
   formatTokens,
 } from "@/components/TerminalTranscript";
-import { api, streamPost } from "@/lib/api";
+import { api, streamPost, upload, uploadUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -53,11 +61,18 @@ type Part =
        */
       children?: Part[];
     };
+/** 업로드된 첨부. url은 서버가 내려준 서명 URL(상대경로+exp/sig). */
+interface Attachment {
+  kind: "image" | "file";
+  url: string;
+  name: string;
+}
 interface ChatMessage {
   id?: string;
   role: "user" | "assistant";
   content: string;
   parts?: Part[];
+  attachments?: Attachment[];
 }
 type StreamEvent =
   | { type: "session"; sessionId: string }
@@ -111,6 +126,8 @@ type StreamEvent =
       lastToolName?: string;
       summary?: string;
     }
+  | { type: "session_reset"; reason: string }
+  | { type: "context_usage"; usedTokens: number; percentage: number }
   | { type: "done"; text: string }
   | { type: "error"; error: string };
 
@@ -274,10 +291,20 @@ export default function ChatPage() {
    */
   const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [newProjectId, setNewProjectId] = useState("");
+  /** 새 대화를 전용 worktree에서 시작할지. 만들 때만 정할 수 있다. */
+  const [newUseWorktree, setNewUseWorktree] = useState(false);
   /** 관리 clone이 체크아웃한 브랜치. clone 전이면 null → 배너에서 생략. */
   const [branch, setBranch] = useState<string | null>(null);
   /** 이번 실행의 사고 토큰 누적 추정치(상태줄). 전송 시마다 초기화. */
   const [thinkingTokens, setThinkingTokens] = useState(0);
+  /**
+   * 마지막 턴 종료 시점의 컨텍스트 사용량(상태줄). 세션을 옮기면 그 세션의 값이
+   * 아니므로 비운다. SDK가 형태를 안 주면 이벤트 자체가 오지 않아 null로 남는다.
+   */
+  const [contextUsage, setContextUsage] = useState<{
+    usedTokens: number;
+    percentage: number;
+  } | null>(null);
   /** 실행 중 스트림 취소용. esc로 abort하면 서버가 interrupt()를 호출한다. */
   const abortRef = useRef<AbortController | null>(null);
   /** 진행 중인 재시도 알림. 다음 이벤트가 오면 사라진다(성공했다는 뜻). */
@@ -295,6 +322,13 @@ export default function ChatPage() {
   const histDraftRef = useRef("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  /** 이번 턴에 붙일 첨부. 업로드가 끝난 것만 담기며 전송 후 비운다. */
+  const [pending, setPending] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  /** 드래그 오버 표시. 여러 자식 위를 지날 때 깜빡이지 않게 카운터로 센다. */
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
   /**
    * 스트림 콜백이 읽는 "지금 열린 세션". 콜백은 send() 호출 시점의 activeId를
    * 클로저로 붙잡으므로, 최신 값을 보려면 ref가 필요하다.
@@ -351,6 +385,8 @@ export default function ChatPage() {
     setLoadingMsgs(true);
     setBranch(null);
     setHistIndex(-1); // 히스토리는 세션별 — 전환 시 커서를 되돌린다
+    setPending([]); // 첨부도 세션별 — 다른 대화로 딸려가지 않게 비운다
+    setContextUsage(null); // 컨텍스트 사용량도 세션별 값이다
     try {
       const s = await api.get<{
         messages: ChatMessage[];
@@ -374,6 +410,18 @@ export default function ChatPage() {
       setLoadingMsgs(false);
     }
   }, []);
+
+  /**
+   * `?session=<id>`로 들어오면 그 대화를 연다(이슈에서 '대화로 이어가기').
+   * 한 번 열고 나면 쿼리를 지운다 — 남겨두면 다른 대화를 고른 뒤 새로고침했을 때
+   * 여기로 되돌아온다.
+   */
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("session");
+    if (!id) return;
+    window.history.replaceState(null, "", "/chat");
+    openSession(id);
+  }, [openSession]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -406,12 +454,14 @@ export default function ChatPage() {
     try {
       const s = await api.post<ChatSession>("/chat/sessions", {
         projectId: newProjectId,
+        useWorktree: newUseWorktree,
       });
       setSessions((prev) => [s, ...prev]);
       setActiveId(s.id);
       activeIdRef.current = s.id; // openSession과 동일한 이유로 즉시 반영
       setListOpen(false);
       setMessages([]);
+      setPending([]);
       // 새 세션은 아직 실행 이력이 없어 clone도 없을 수 있다. 첫 전송 후 갱신된다.
       setBranch(null);
     } catch (e) {
@@ -434,20 +484,64 @@ export default function ChatPage() {
     }
   }
 
+  /**
+   * 선택·붙여넣기·드롭한 파일을 세션에 업로드한다.
+   * 세션이 없으면 올릴 곳이 없으므로 먼저 세션을 만들도록 안내한다.
+   */
+  const uploadFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      const sessionId = activeIdRef.current;
+      if (!sessionId) {
+        toast.error("먼저 세션을 시작하세요.");
+        return;
+      }
+      const form = new FormData();
+      for (const f of files) form.append("files", f);
+      setUploading(true);
+      try {
+        const { saved, failed } = await upload<{
+          saved: Attachment[];
+          failed: { name: string; reason: string }[];
+        }>(`/chat/sessions/${sessionId}/attachments`, form);
+        // 업로드 도중 세션을 바꿨다면 남의 대화에 첨부가 딸려가지 않게 버린다.
+        if (activeIdRef.current !== sessionId) return;
+        setPending((prev) => [...prev, ...saved]);
+        // 일부만 실패했으면 성공분은 그대로 두고 실패한 파일만 알린다.
+        for (const f of failed) toast.error(`${f.name}: ${f.reason}`);
+      } catch (e) {
+        toast.error((e as Error).message);
+      } finally {
+        setUploading(false);
+      }
+    },
+    [],
+  );
+
   async function send() {
     const prompt = input.trim();
     // 실행 중인 세션이 있으면(그 세션이 무엇이든) 새 실행을 받지 않는다 —
     // 스트림 핸들(abortRef)이 하나뿐이라 동시 실행은 중단 대상을 잃는다.
-    if (!prompt || !activeId || runningSessionId !== null) return;
+    // 첨부만 보내는 것도 허용한다(이미지 한 장 + 빈 문장은 흔한 사용 방식).
+    // 다만 서버 DTO가 빈 프롬프트를 막으므로 기본 문구를 채운다.
+    if ((!prompt && pending.length === 0) || !activeId) return;
+    if (runningSessionId !== null) return;
     // 이 실행이 속한 세션을 고정한다. 도중에 activeId가 바뀌어도 이 값은 그대로다.
     const sessionId = activeId;
+    const attachments = pending;
+    const text = prompt || "첨부한 파일을 확인해 주세요.";
+    setPending([]);
     setInput("");
     setThinkingTokens(0);
     setRetrying(null);
     setHistIndex(-1);
     setMessages((m) => [
       ...m,
-      { role: "user", content: prompt },
+      {
+        role: "user",
+        content: text,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      },
       // assistant 자리 확보 (parts를 스트리밍으로 채움)
       { role: "assistant", content: "", parts: [] },
     ]);
@@ -461,7 +555,10 @@ export default function ChatPage() {
     try {
       await streamPost(
         `/chat/sessions/${sessionId}/messages`,
-        { prompt },
+        {
+          prompt: text,
+          ...(attachments.length > 0 ? { attachments } : {}),
+        },
         (raw) => {
           const e = raw as StreamEvent;
           const isPart =
@@ -518,6 +615,25 @@ export default function ChatPage() {
           } else if (e.type === "thinking_tokens") {
             // 파트가 아닌 세션 단위 값 — 상태줄에만 쓴다.
             setThinkingTokens(e.tokens);
+          } else if (e.type === "context_usage") {
+            setContextUsage({
+              usedTokens: e.usedTokens,
+              percentage: e.percentage,
+            });
+          } else if (e.type === "session_reset") {
+            // 맥락이 사라진 채 답변이 이어지는 이유를 트랜스크립트에 남긴다.
+            // 저장되지 않으므로 재로드하면 사라진다(실행 중 알림 전용).
+            patchLast((m) => ({
+              ...m,
+              parts: [
+                ...(m.parts ?? []),
+                {
+                  type: "text",
+                  id: `reset:${Date.now()}`,
+                  text: `⚠️ ${e.reason} 새 세션으로 이어서 진행합니다.`,
+                },
+              ],
+            }));
           } else if (e.type === "api_retry") {
             // 재시도 중임을 상태줄에 노출한다(예전엔 조용히 멈춘 것처럼 보였다).
             setRetrying({
@@ -639,6 +755,8 @@ export default function ChatPage() {
       onDeleteSession={(id) =>
         setPendingDelete(sessions.find((s) => s.id === id) ?? null)
       }
+      newUseWorktree={newUseWorktree}
+      onNewUseWorktreeChange={setNewUseWorktree}
     />
   );
 
@@ -669,6 +787,15 @@ export default function ChatPage() {
             <DialogDescription>
               &ldquo;{pendingDelete?.title || "새 대화"}&rdquo;의 대화 내역이
               삭제됩니다. 되돌릴 수 없습니다.
+              {pendingDelete?.useWorktree && (
+                <>
+                  <br />
+                  <span className="text-warning">
+                    전용 작업 공간(<code>chat/{pendingDelete.id.slice(0, 8)}…</code>)도
+                    함께 지워집니다. 커밋하지 않은 변경은 사라집니다.
+                  </span>
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -748,7 +875,35 @@ export default function ChatPage() {
                   // 순수 인덱스만 쓰면 세션을 옮길 때 React가 같은 위치의
                   // 컴포넌트를 재사용해 도구 줄의 펼침 상태가 엉뚱한 줄로 옮겨간다.
                   m.role === "user" ? (
-                    <UserLine key={m.id ?? `${activeId}:${i}`} text={m.content} />
+                    <div key={m.id ?? `${activeId}:${i}`} className="min-w-0">
+                      <UserLine text={m.content} />
+                      {m.attachments && m.attachments.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-2 pl-4">
+                          {m.attachments.map((a) =>
+                            a.kind === "image" ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                key={a.url}
+                                src={uploadUrl(a.url)}
+                                alt={a.name}
+                                className="max-h-40 rounded border border-border object-contain"
+                              />
+                            ) : (
+                              <a
+                                key={a.url}
+                                href={uploadUrl(a.url)}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-xs hover:border-accent"
+                              >
+                                <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                                <span className="max-w-48 truncate">{a.name}</span>
+                              </a>
+                            ),
+                          )}
+                        </div>
+                      )}
+                    </div>
                   ) : (
                     <div
                       key={m.id ?? `${activeId}:${i}`}
@@ -776,7 +931,74 @@ export default function ChatPage() {
                 send();
               }}
             >
-              <div className="flex items-end gap-2 rounded-lg border border-border bg-card px-3 py-2 focus-within:border-accent">
+              {/* 대기 중인 첨부 — 전송 전까지 여기서 뺄 수 있다 */}
+              {(pending.length > 0 || uploading) && (
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  {pending.map((a) => (
+                    <span
+                      key={a.url}
+                      className="flex items-center gap-1.5 rounded-md border border-border bg-card py-1 pl-1.5 pr-1 text-xs"
+                    >
+                      {a.kind === "image" ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={uploadUrl(a.url)}
+                          alt={a.name}
+                          className="size-8 rounded object-cover"
+                        />
+                      ) : (
+                        <FileText className="size-4 shrink-0 text-muted-foreground" />
+                      )}
+                      <span className="max-w-40 truncate">{a.name}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPending((prev) =>
+                            prev.filter((x) => x.url !== a.url),
+                          )
+                        }
+                        className="rounded p-0.5 text-muted-foreground hover:text-destructive"
+                        aria-label={`${a.name} 첨부 제거`}
+                      >
+                        <X className="size-3.5" />
+                      </button>
+                    </span>
+                  ))}
+                  {uploading && (
+                    <span className="text-xs text-muted-foreground">
+                      업로드 중…
+                    </span>
+                  )}
+                </div>
+              )}
+              <div
+                className={`flex items-end gap-2 rounded-lg border bg-card px-3 py-2 focus-within:border-accent ${
+                  dragging ? "border-accent border-dashed" : "border-border"
+                }`}
+                onDragEnter={(e) => {
+                  if (!e.dataTransfer.types.includes("Files")) return;
+                  dragDepth.current += 1;
+                  setDragging(true);
+                }}
+                onDragOver={(e) => {
+                  // preventDefault를 해야 브라우저 기본 열기 동작을 막고 drop이 뜬다.
+                  if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+                }}
+                onDragLeave={() => {
+                  dragDepth.current -= 1;
+                  if (dragDepth.current <= 0) {
+                    dragDepth.current = 0;
+                    setDragging(false);
+                  }
+                }}
+                onDrop={(e) => {
+                  if (!e.dataTransfer.types.includes("Files")) return;
+                  e.preventDefault();
+                  dragDepth.current = 0;
+                  setDragging(false);
+                  uploadFiles(Array.from(e.dataTransfer.files));
+                }}
+              >
                 <span className="select-none pb-1.5 text-accent">&gt;</span>
                 <Textarea
                   ref={textareaRef}
@@ -785,6 +1007,14 @@ export default function ChatPage() {
                     setInput(e.target.value);
                     // 직접 타이핑하면 히스토리 탐색을 벗어난다.
                     if (histIndex !== -1) setHistIndex(-1);
+                  }}
+                  onPaste={(e) => {
+                    // 스크린샷 붙여넣기 — 클립보드에 파일이 있을 때만 가로챈다.
+                    // (텍스트 붙여넣기는 기본 동작을 그대로 둔다)
+                    const files = Array.from(e.clipboardData.files);
+                    if (files.length === 0) return;
+                    e.preventDefault();
+                    uploadFiles(files);
                   }}
                   onKeyDown={(e) => {
                     // 모바일은 Enter=줄바꿈(전송은 버튼으로). 데스크톱만 Enter 전송.
@@ -815,6 +1045,29 @@ export default function ChatPage() {
                   className="max-h-40 min-h-7 flex-1 resize-none border-0 bg-transparent px-0 py-1 font-mono text-base shadow-none focus-visible:ring-0 lg:text-[13px]"
                   rows={1}
                 />
+                {/* 첨부 — 숨은 file input을 대신 연다 */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    uploadFiles(Array.from(e.target.files ?? []));
+                    // 같은 파일을 연속으로 고를 수 있게 값을 비운다.
+                    e.target.value = "";
+                  }}
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!activeId || uploading}
+                  className="size-9 shrink-0 text-muted-foreground"
+                  aria-label="파일 첨부"
+                >
+                  <Paperclip className="size-4" />
+                </Button>
                 {/* 실행 중에는 중단 버튼 — 터치에는 esc가 없다 */}
                 {streaming ? (
                   <Button
@@ -831,7 +1084,7 @@ export default function ChatPage() {
                   <Button
                     type="submit"
                     size="icon"
-                    disabled={!input.trim()}
+                    disabled={(!input.trim() && pending.length === 0) || uploading}
                     className="size-9 shrink-0"
                     aria-label="전송"
                   >
@@ -859,6 +1112,17 @@ export default function ChatPage() {
                 {thinkingTokens > 0 && (
                   <span className="ml-auto tabular-nums">
                     사고 {formatTokens(thinkingTokens)} 토큰
+                  </span>
+                )}
+                {/* 컨텍스트 잔량 — 턴이 끝날 때 갱신된다. 80% 넘으면 경고색으로. */}
+                {contextUsage && (
+                  <span
+                    className={`tabular-nums ${
+                      thinkingTokens > 0 ? "" : "ml-auto"
+                    } ${contextUsage.percentage >= 80 ? "text-warning" : ""}`}
+                    title={`컨텍스트 ${formatTokens(contextUsage.usedTokens)} 토큰 사용 중`}
+                  >
+                    컨텍스트 {Math.round(contextUsage.percentage)}%
                   </span>
                 )}
               </div>

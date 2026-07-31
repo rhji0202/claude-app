@@ -1,6 +1,6 @@
 "use client";
 
-import { FolderGit2, MessageSquare, Plus, Trash2 } from "lucide-react";
+import { FolderGit2, GitBranch, MessageSquare, Plus, Trash2 } from "lucide-react";
 import { cn, formatAbsolute, formatRelative } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,6 +26,8 @@ export interface ChatSession {
   id: string;
   projectId: string;
   title: string | null;
+  /** 전용 worktree에서 도는 대화. 목록에 배지로 표시한다. */
+  useWorktree?: boolean;
   updatedAt: string;
 }
 
@@ -56,6 +58,8 @@ export function SessionList({
   onNewSession,
   onOpenSession,
   onDeleteSession,
+  newUseWorktree,
+  onNewUseWorktreeChange,
 }: {
   projects: Project[];
   sessions: ChatSession[];
@@ -65,26 +69,44 @@ export function SessionList({
   onNewSession: () => void;
   onOpenSession: (id: string) => void;
   onDeleteSession: (id: string) => void;
+  newUseWorktree: boolean;
+  onNewUseWorktreeChange: (v: boolean) => void;
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* 새 대화 — 목록이 길어도 항상 보이도록 상단 고정 */}
-      <div className="flex shrink-0 gap-2 border-b border-border p-3">
-        <Select value={newProjectId} onValueChange={onNewProjectIdChange}>
-          <SelectTrigger className="flex-1">
-            <SelectValue placeholder="프로젝트" />
-          </SelectTrigger>
-          <SelectContent>
-            {projects.map((p) => (
-              <SelectItem key={p.id} value={p.id}>
-                {p.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Button size="icon" onClick={onNewSession} aria-label="새 대화">
-          <Plus className="size-4" />
-        </Button>
+      <div className="shrink-0 space-y-2 border-b border-border p-3">
+        <div className="flex gap-2">
+          <Select value={newProjectId} onValueChange={onNewProjectIdChange}>
+            <SelectTrigger className="flex-1">
+              <SelectValue placeholder="프로젝트" />
+            </SelectTrigger>
+            <SelectContent>
+              {projects.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button size="icon" onClick={onNewSession} aria-label="새 대화">
+            <Plus className="size-4" />
+          </Button>
+        </div>
+        {/* 전용 worktree 여부는 만들 때만 정할 수 있다(도중에 못 바꾼다). */}
+        <label
+          className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground"
+          title="clone을 공유하지 않고 chat/<대화id> 브랜치의 전용 작업 디렉터리에서 실행합니다. 대화를 삭제하면 그 디렉터리도 함께 지워집니다."
+        >
+          <input
+            type="checkbox"
+            checked={newUseWorktree}
+            onChange={(e) => onNewUseWorktreeChange(e.target.checked)}
+            className="size-3.5 accent-[var(--accent)]"
+          />
+          <GitBranch className="size-3.5" />
+          전용 작업 공간(worktree)
+        </label>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -120,7 +142,16 @@ export function SessionList({
                     >
                       <MessageSquare className="size-4 shrink-0" />
                       <span className="flex min-w-0 flex-1 flex-col">
-                        <span className="truncate">{s.title || "새 대화"}</span>
+                        <span className="flex min-w-0 items-center gap-1">
+                          <span className="truncate">{s.title || "새 대화"}</span>
+                          {/* 전용 worktree 대화 — 삭제 시 작업물이 사라지므로 눈에 띄게 둔다 */}
+                          {s.useWorktree && (
+                            <GitBranch
+                              className="size-3 shrink-0 text-muted-foreground"
+                              aria-label="전용 작업 공간"
+                            />
+                          )}
+                        </span>
                         <span
                           className="text-xs text-muted-foreground"
                           title={formatAbsolute(s.updatedAt)}

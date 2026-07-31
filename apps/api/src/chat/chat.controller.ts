@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -6,23 +7,51 @@ import {
   Param,
   Post,
   Res,
+  UploadedFiles,
+  UseInterceptors,
 } from "@nestjs/common";
+import { FilesInterceptor } from "@nestjs/platform-express";
 import type { Response } from "express";
-import { IsString, MinLength } from "class-validator";
-import { ChatService } from "./chat.service";
+import { IsArray, IsBoolean, IsOptional, IsString, MinLength } from "class-validator";
+import { ChatService, type ChatAttachmentDto } from "./chat.service";
 import type { AgentControl } from "../agent/agent.service";
 import { CurrentUser, type AuthUser } from "../auth/current-user.decorator";
+import { MAX_FILE_BYTES } from "../uploads/uploads.service";
 
 class CreateSessionDto {
+  /** fromIssueId로 만들 때는 이슈에서 프로젝트를 가져오므로 생략할 수 있다. */
+  @IsOptional()
   @IsString()
   @MinLength(1)
-  projectId!: string;
+  projectId?: string;
+
+  /**
+   * 이 이슈의 실행 세션을 이어받아 대화를 시작한다(결정 대기 이슈 → 대화).
+   * 지정하면 projectId는 무시하고 이슈의 프로젝트를 쓴다.
+   */
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  fromIssueId?: string;
+
+  /**
+   * 전용 worktree(`chat/<세션id>` 브랜치)에서 실행할지.
+   * 켜면 clone base를 건드리지 않고 격리된 작업 디렉터리를 쓴다.
+   */
+  @IsOptional()
+  @IsBoolean()
+  useWorktree?: boolean;
 }
 
 class SendMessageDto {
   @IsString()
   @MinLength(1)
   prompt!: string;
+
+  /** 업로드 응답(`POST :id/attachments`)을 그대로 되돌려준 값. 서버가 재검증한다. */
+  @IsOptional()
+  @IsArray()
+  attachments?: ChatAttachmentDto[];
 }
 
 @Controller("chat")
@@ -36,7 +65,14 @@ export class ChatController {
 
   @Post("sessions")
   createSession(@Body() dto: CreateSessionDto, @CurrentUser() user: AuthUser) {
-    return this.chat.createSession(user.userId, dto.projectId);
+    if (!dto.projectId && !dto.fromIssueId)
+      throw new BadRequestException("projectId 또는 fromIssueId가 필요합니다.");
+    return this.chat.createSession(
+      user.userId,
+      dto.projectId ?? "",
+      dto.fromIssueId,
+      dto.useWorktree ?? false,
+    );
   }
 
   @Get("sessions/:id")
@@ -48,6 +84,23 @@ export class ChatController {
   async deleteSession(@Param("id") id: string, @CurrentUser() user: AuthUser) {
     await this.chat.deleteSession(user.userId, id);
     return { ok: true };
+  }
+
+  /**
+   * 세션에 첨부 업로드(이미지·파일 혼합, 다중). multipart field name: files
+   * 응답의 첨부 목록을 그대로 다음 메시지 전송에 실어 보내면 된다.
+   */
+  @Post("sessions/:id/attachments")
+  @UseInterceptors(
+    FilesInterceptor("files", 10, { limits: { fileSize: MAX_FILE_BYTES } }),
+  )
+  uploadAttachments(
+    @Param("id") id: string,
+    @UploadedFiles()
+    files: Array<{ buffer: Buffer; mimetype: string; originalname: string }>,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.chat.uploadAttachments(user.userId, id, files ?? []);
   }
 
   /**
@@ -104,6 +157,7 @@ export class ChatController {
         dto.prompt,
         (e) => send(e),
         (c) => (control = c),
+        dto.attachments,
       );
     } catch (err) {
       send({ type: "error", error: (err as Error).message });

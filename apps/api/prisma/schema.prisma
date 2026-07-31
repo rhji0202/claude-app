@@ -137,6 +137,9 @@ model ChatSession {
   project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   title        String?
   sdkSessionId String?
+  // 전용 worktree에서 실행할지. true면 clone base가 아니라
+  // `chat/<세션id>` 브랜치의 worktree를 cwd로 쓴다(세션 삭제 시 함께 정리).
+  useWorktree  Boolean       @default(false)
   messages     ChatMessage[]
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
@@ -153,6 +156,9 @@ model ChatMessage {
   content   String
   // 순서 있는 파트 타임라인(text/tool). assistant 메시지에만 존재.
   parts     Json?
+  // 첨부(이미지·파일) 메타. user 메시지에만 존재.
+  // [{ kind: "image"|"file", relPath, name }] 형태로 저장하고 응답 시 서명 URL로 변환한다.
+  attachments Json?
   createdAt DateTime    @default(now())
 
   @@index([sessionId])

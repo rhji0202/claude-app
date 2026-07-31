@@ -1,4 +1,5 @@
 import { ChatRole } from "@prisma/client";
+import { BadRequestException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { ChatService } from "./chat.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -8,7 +9,9 @@ import {
   type AgentStreamEvent,
 } from "../agent/agent.service";
 import { RepoManagerService } from "../repo/repo-manager.service";
+import { WorktreeService } from "../repo/worktree.service";
 import { UsageService } from "../usage/usage.service";
+import { UploadsService } from "../uploads/uploads.service";
 
 describe("ChatService", () => {
   let service: ChatService;
@@ -22,11 +25,31 @@ describe("ChatService", () => {
     };
     chatMessage: { create: jest.Mock };
     project: { findUnique: jest.Mock };
+    issueTask: { findUnique: jest.Mock };
   };
   let projects: { assertAccess: jest.Mock };
-  let agent: { runStream: jest.Mock };
-  let repos: { prepareForProject: jest.Mock; currentBranch: jest.Mock };
+  let agent: { runStream: jest.Mock; transferSession: jest.Mock };
+  let repos: {
+    prepareForProject: jest.Mock;
+    currentBranch: jest.Mock;
+    baseDir: jest.Mock;
+  };
+  let worktrees: {
+    pathFor: jest.Mock;
+    exists: jest.Mock;
+    create: jest.Mock;
+    remove: jest.Mock;
+  };
   let usage: { record: jest.Mock };
+  let uploads: {
+    signRelPath: jest.Mock;
+    removeChatDir: jest.Mock;
+    readAsBase64: jest.Mock;
+    readFile: jest.Mock;
+    saveChatImage: jest.Mock;
+    saveChatFile: jest.Mock;
+    stageInto: jest.Mock;
+  };
 
   beforeEach(() => {
     db = {
@@ -41,14 +64,45 @@ describe("ChatService", () => {
       project: {
         findUnique: jest.fn().mockResolvedValue({ claudeAccountId: null }),
       },
+      issueTask: { findUnique: jest.fn() },
     };
     projects = { assertAccess: jest.fn().mockResolvedValue("owner") };
-    agent = { runStream: jest.fn() };
+    agent = {
+      runStream: jest.fn(),
+      transferSession: jest.fn().mockResolvedValue(true),
+    };
     repos = {
       prepareForProject: jest.fn().mockResolvedValue("/repos/p1"),
       currentBranch: jest.fn().mockResolvedValue("master"),
+      baseDir: jest.fn((pid: string) => `/repos/${pid}`),
+    };
+    worktrees = {
+      pathFor: jest.fn((pid: string, key: string) => `/worktrees/${pid}/${key}`),
+      exists: jest.fn().mockResolvedValue(false),
+      create: jest.fn((pid: string, key: string) =>
+        Promise.resolve({ path: `/worktrees/${pid}/${key}`, branch: `chat/${key}` }),
+      ),
+      remove: jest.fn().mockResolvedValue(undefined),
     };
     usage = { record: jest.fn().mockResolvedValue(undefined) };
+    uploads = {
+      signRelPath: jest.fn((rel: string) => `${rel}?exp=1&sig=x`),
+      removeChatDir: jest.fn().mockResolvedValue(undefined),
+      readAsBase64: jest
+        .fn()
+        .mockResolvedValue({ data: "BASE64", mediaType: "image/png" }),
+      readFile: jest.fn().mockResolvedValue(Buffer.from("data")),
+      saveChatImage: jest.fn(),
+      saveChatFile: jest.fn(),
+      // 복사 규칙(중복명·gitignore)은 실물이 갖고 있으므로 빌려 쓴다.
+      // readFile 스텁을 통해 동작하므로 실제 업로드 저장소는 건드리지 않는다.
+      stageInto: jest.fn(function (
+        this: void,
+        ...args: Parameters<UploadsService["stageInto"]>
+      ) {
+        return UploadsService.prototype.stageInto.apply(uploads, args);
+      }),
+    };
     service = new ChatService(
       db as unknown as PrismaService,
       projects as unknown as ProjectsService,
@@ -57,6 +111,8 @@ describe("ChatService", () => {
       usage as unknown as UsageService,
       // get()이 undefined를 돌려주면 코드가 기본값 300으로 폴백한다.
       { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+      uploads as unknown as UploadsService,
+      worktrees as unknown as WorktreeService,
     );
   });
 
@@ -98,6 +154,227 @@ describe("ChatService", () => {
       await service.createSession("u1", "p1");
       expect(projects.assertAccess).toHaveBeenCalledWith("p1", "u1");
       expect(db.chatSession.create).toHaveBeenCalled();
+    });
+
+    describe("fromIssueId (이슈 → 대화 이어가기)", () => {
+      beforeEach(() => {
+        const row = {
+          id: "s9",
+          projectId: "p-issue",
+          title: "이슈: 로그인 실패",
+          useWorktree: false,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        // 세션 행을 먼저 만들고(worktree 경로가 세션 id에 묶임) 이관 성공 시 update.
+        db.chatSession.create.mockResolvedValue(row);
+        db.chatSession.update.mockImplementation(
+          ({ data }: { data: Record<string, unknown> }) =>
+            Promise.resolve({ ...row, ...data }),
+        );
+      });
+
+      it("이슈의 SDK 세션을 이어받아 대화를 만든다", async () => {
+        db.issueTask.findUnique.mockResolvedValue({
+          id: "i1",
+          projectId: "p-issue",
+          title: "로그인 실패",
+          sessionId: "sdk-issue-1",
+        });
+        await service.createSession("u1", "", "i1");
+        expect(db.chatSession.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({
+            projectId: "p-issue",
+            title: "이슈: 로그인 실패",
+          }),
+        });
+        // 세션 id가 있어야 이관 대상 경로를 정할 수 있어, sdkSessionId는 이관 뒤 붙는다.
+        expect(db.chatSession.update).toHaveBeenCalledWith({
+          where: { id: "s9" },
+          data: { sdkSessionId: "sdk-issue-1" },
+        });
+      });
+
+      /**
+       * CLI 세션은 작업 디렉터리별로 저장된다. 이슈 worktree에서 만든 세션을
+       * 채팅의 clone base로 옮기지 않으면 resume이 "No conversation found"로 깨진다.
+       */
+      it("이슈 worktree의 세션을 채팅 cwd로 이관한다", async () => {
+        db.issueTask.findUnique.mockResolvedValue({
+          id: "i1",
+          projectId: "p-issue",
+          title: "t",
+          sessionId: "sdk-issue-1",
+        });
+        await service.createSession("u1", "", "i1");
+        expect(agent.transferSession).toHaveBeenCalledWith(
+          "sdk-issue-1",
+          "/worktrees/p-issue/i1",
+          "/repos/p-issue",
+        );
+      });
+
+      it("세션 이관에 실패하면 맥락 없이 새 세션으로 시작한다", async () => {
+        db.issueTask.findUnique.mockResolvedValue({
+          id: "i1",
+          projectId: "p-issue",
+          title: "t",
+          sessionId: "sdk-죽은세션",
+        });
+        agent.transferSession.mockResolvedValue(false);
+        await service.createSession("u1", "", "i1");
+        // 죽은 세션 id를 물려주면 첫 메시지가 통째로 실패한다 → 붙이지 않는다.
+        expect(db.chatSession.update).not.toHaveBeenCalled();
+      });
+
+      it("프로젝트는 이슈의 것을 쓴다(클라이언트 값 무시)", async () => {
+        db.issueTask.findUnique.mockResolvedValue({
+          id: "i1",
+          projectId: "p-issue",
+          title: "t",
+          sessionId: null,
+        });
+        // 남의 프로젝트 id를 실어 보내도 권한 검사는 이슈의 프로젝트로 이뤄져야 한다.
+        await service.createSession("u1", "p-남의것", "i1");
+        expect(projects.assertAccess).toHaveBeenCalledWith("p-issue", "u1");
+        expect(projects.assertAccess).not.toHaveBeenCalledWith(
+          "p-남의것",
+          "u1",
+        );
+      });
+
+      it("실행된 적 없는 이슈면 새 세션으로 시작한다", async () => {
+        db.issueTask.findUnique.mockResolvedValue({
+          id: "i1",
+          projectId: "p-issue",
+          title: "t",
+          sessionId: null,
+        });
+        await service.createSession("u1", "", "i1");
+        // 이어받을 세션이 없으므로 이관도, sdkSessionId 갱신도 하지 않는다.
+        expect(agent.transferSession).not.toHaveBeenCalled();
+        expect(db.chatSession.update).not.toHaveBeenCalled();
+      });
+
+      it("없는 이슈면 404", async () => {
+        db.issueTask.findUnique.mockResolvedValue(null);
+        await expect(service.createSession("u1", "", "없음")).rejects.toThrow(
+          "이슈를 찾을 수 없습니다.",
+        );
+        expect(db.chatSession.create).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe("worktree 모드", () => {
+    beforeEach(() => {
+      db.chatSession.update.mockResolvedValue({});
+      db.chatMessage.create.mockResolvedValue({});
+      agent.runStream.mockResolvedValue(undefined);
+    });
+
+    /** useWorktree 값으로 세션을 열어두고 streamMessage를 한 번 돌린다. */
+    async function run(useWorktree: boolean) {
+      db.chatSession.findFirst.mockResolvedValue({
+        id: "s1",
+        userId: "u1",
+        projectId: "p1",
+        title: "t",
+        sdkSessionId: null,
+        useWorktree,
+      });
+      await service.streamMessage("u1", "s1", "안녕", () => {});
+      return agent.runStream.mock.calls[0][1].cwd as string;
+    }
+
+    it("기본(off)은 관리 clone base에서 실행한다", async () => {
+      expect(await run(false)).toBe("/repos/p1");
+      expect(worktrees.create).not.toHaveBeenCalled();
+    });
+
+    it("worktree 모드는 chat 접두사로 전용 worktree를 만들어 실행한다", async () => {
+      worktrees.exists.mockResolvedValue(false);
+      db.project.findUnique.mockResolvedValue({ gitBranch: "master-qa" });
+      const cwd = await run(true);
+      expect(worktrees.create).toHaveBeenCalledWith(
+        "p1",
+        "s1",
+        "master-qa",
+        "chat",
+      );
+      expect(cwd).toBe("/worktrees/p1/s1");
+    });
+
+    /**
+     * 대화형이라 앞 턴에서 고친 파일이 남아 있어야 한다. 이슈 실행처럼 매번
+     * 새로 만들면 대화가 성립하지 않는다.
+     */
+    it("이미 있으면 재사용한다(턴마다 새로 만들지 않는다)", async () => {
+      worktrees.exists.mockResolvedValue(true);
+      const cwd = await run(true);
+      expect(worktrees.create).not.toHaveBeenCalled();
+      expect(cwd).toBe("/worktrees/p1/s1");
+    });
+
+    it("세션 삭제 시 worktree도 정리한다", async () => {
+      db.chatSession.findFirst.mockResolvedValue({
+        id: "s1",
+        userId: "u1",
+        projectId: "p1",
+        useWorktree: true,
+      });
+      db.chatSession.delete.mockResolvedValue({});
+      await service.deleteSession("u1", "s1");
+      expect(worktrees.remove).toHaveBeenCalledWith("p1", "s1");
+    });
+
+    it("worktree를 안 쓰는 세션은 삭제해도 worktree를 건드리지 않는다", async () => {
+      db.chatSession.findFirst.mockResolvedValue({
+        id: "s1",
+        userId: "u1",
+        projectId: "p1",
+        useWorktree: false,
+      });
+      db.chatSession.delete.mockResolvedValue({});
+      await service.deleteSession("u1", "s1");
+      expect(worktrees.remove).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("uploadAttachments", () => {
+    beforeEach(() => {
+      db.chatSession.findFirst.mockResolvedValue({ id: "s1", userId: "u1" });
+    });
+
+    it("일부가 실패해도 나머지는 올리고 실패 목록을 함께 돌려준다", async () => {
+      uploads.saveChatFile
+        .mockRejectedValueOnce(
+          new BadRequestException("지원하지 않는 파일 형식입니다: exe"),
+        )
+        .mockResolvedValueOnce({ relPath: "chat-files/s1/b.md", fileName: "b.md" });
+
+      const res = await service.uploadAttachments("u1", "s1", [
+        { buffer: Buffer.from("x"), mimetype: "application/x-msdownload", originalname: "bad.exe" },
+        { buffer: Buffer.from("y"), mimetype: "text/markdown", originalname: "b.md" },
+      ]);
+
+      expect(res.saved).toHaveLength(1);
+      expect(res.saved[0].name).toBe("b.md");
+      expect(res.failed).toEqual([
+        { name: "bad.exe", reason: "지원하지 않는 파일 형식입니다: exe" },
+      ]);
+    });
+
+    it("모두 성공하면 failed는 비어 있다", async () => {
+      uploads.saveChatFile.mockResolvedValue({
+        relPath: "chat-files/s1/a.md",
+        fileName: "a.md",
+      });
+      const res = await service.uploadAttachments("u1", "s1", [
+        { buffer: Buffer.from("x"), mimetype: "text/markdown", originalname: "a.md" },
+      ]);
+      expect(res.failed).toEqual([]);
+      expect(res.saved).toHaveLength(1);
     });
   });
 
@@ -353,6 +630,89 @@ describe("ChatService", () => {
       expect(usage.record).toHaveBeenCalledWith(
         expect.objectContaining({ claudeAccountId: "acc-proj" }),
       );
+    });
+  });
+
+  describe("첨부", () => {
+    beforeEach(() => {
+      db.chatSession.findFirst.mockResolvedValue({
+        id: "s1",
+        userId: "u1",
+        projectId: "p1",
+        title: "t",
+        sdkSessionId: "sdk-prev",
+      });
+      agent.runStream.mockImplementation(
+        async (
+          _pid: string,
+          _opts: unknown,
+          onEvent: (e: AgentStreamEvent) => void,
+        ) => {
+          onEvent({ type: "done", text: "ok", sessionId: "sdk-prev" });
+        },
+      );
+    });
+
+    const image = (rel = "chat-files/s1/a.png") => ({
+      kind: "image" as const,
+      url: `${rel}?exp=1&sig=x`,
+      name: "a.png",
+    });
+
+    it("이미지는 base64 블록으로 에이전트에 전달한다", async () => {
+      await service.streamMessage("u1", "s1", "이거 봐줘", () => {}, undefined, [
+        image(),
+      ]);
+      expect(uploads.readAsBase64).toHaveBeenCalledWith("chat-files/s1/a.png");
+      expect(agent.runStream.mock.calls[0][1]).toMatchObject({
+        images: [{ data: "BASE64", mediaType: "image/png" }],
+      });
+    });
+
+    // 이미지를 붙여도 대화가 이어져야 한다(멀티턴 채팅의 핵심 요구사항).
+    it("이미지가 있어도 resume을 유지한다", async () => {
+      await service.streamMessage("u1", "s1", "이거 봐줘", () => {}, undefined, [
+        image(),
+      ]);
+      expect(agent.runStream.mock.calls[0][1]).toMatchObject({
+        resume: "sdk-prev",
+      });
+    });
+
+    it("첨부 메타를 user 메시지에 저장한다", async () => {
+      await service.streamMessage("u1", "s1", "hi", () => {}, undefined, [
+        image(),
+      ]);
+      expect(db.chatMessage.create.mock.calls[0][0].data.attachments).toEqual([
+        { kind: "image", relPath: "chat-files/s1/a.png", name: "a.png" },
+      ]);
+    });
+
+    it("다른 세션·traversal 경로의 첨부는 무시한다", async () => {
+      await service.streamMessage("u1", "s1", "hi", () => {}, undefined, [
+        image("chat-files/s2/secret.png"), // 남의 세션
+        image("chat-files/s1/../s2/x.png"), // traversal
+        image("issue-images/i1/x.png"), // 다른 기능 영역
+      ]);
+      expect(uploads.readAsBase64).not.toHaveBeenCalled();
+      expect(
+        db.chatMessage.create.mock.calls[0][0].data.attachments,
+      ).toBeUndefined();
+    });
+
+    it("파일 첨부는 실행 디렉터리에 복사하고 프롬프트에 경로를 알린다", async () => {
+      await service.streamMessage("u1", "s1", "정리해줘", () => {}, undefined, [
+        { kind: "file", url: "chat-files/s1/b.xlsx?exp=1&sig=x", name: "b.xlsx" },
+      ]);
+      expect(uploads.readFile).toHaveBeenCalledWith("chat-files/s1/b.xlsx");
+      const prompt = agent.runStream.mock.calls[0][1].prompt as string;
+      expect(prompt).toContain("정리해줘");
+      expect(prompt).toContain("첨부파일/b.xlsx");
+    });
+
+    it("세션 삭제 시 첨부 디렉터리도 지운다", async () => {
+      await service.deleteSession("u1", "s1");
+      expect(uploads.removeChatDir).toHaveBeenCalledWith("s1");
     });
   });
 });
