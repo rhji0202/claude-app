@@ -510,6 +510,91 @@ describe("AgentService.resolveModel / clearEffortEnv", () => {
 });
 
 /**
+ * transferSession: CLI 세션은 작업 디렉터리별로 저장되므로, 이슈 worktree에서
+ * 만든 세션을 채팅 cwd로 옮겨야 resume이 된다. 실제 파일을 다루므로 HOME을
+ * 임시 디렉터리로 돌려 실 사용자 ~/.claude를 건드리지 않는다.
+ */
+describe("AgentService.transferSession (세션 이관)", () => {
+  const os = require("node:os") as typeof import("node:os");
+  const fsp = require("node:fs").promises as typeof import("node:fs").promises;
+  const nodePath = require("node:path") as typeof import("node:path");
+
+  let service: AgentService;
+  let home: string;
+  let homeSpy: jest.SpyInstance;
+
+  /** cwd → CLI 세션 디렉터리(구분자를 -로 바꾼 인코딩). */
+  const sessionDir = (cwd: string) =>
+    nodePath.join(
+      home,
+      ".claude",
+      "projects",
+      nodePath.resolve(cwd).replace(/[\\/:]/g, "-"),
+    );
+
+  beforeEach(async () => {
+    home = await fsp.mkdtemp(nodePath.join(os.tmpdir(), "agent-session-"));
+    homeSpy = jest.spyOn(os, "homedir").mockReturnValue(home);
+    service = new AgentService(
+      {} as unknown as PrismaService,
+      {} as unknown as CryptoService,
+      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+      {} as unknown as ClaudeAccountService,
+    );
+  });
+
+  afterEach(async () => {
+    homeSpy.mockRestore();
+    await fsp.rm(home, { recursive: true, force: true });
+  });
+
+  const fromCwd = nodePath.join("E:", "wt", "issue-1");
+  const toCwd = nodePath.join("E:", "repos", "p1");
+
+  async function seedSession(id: string, body = '{"type":"user"}') {
+    const dir = sessionDir(fromCwd);
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(nodePath.join(dir, `${id}.jsonl`), body);
+  }
+
+  it("원본 세션을 대상 cwd 디렉터리로 복사한다", async () => {
+    await seedSession("sess-1", '{"hello":1}');
+    const ok = await service.transferSession("sess-1", fromCwd, toCwd);
+    expect(ok).toBe(true);
+    const copied = await fsp.readFile(
+      nodePath.join(sessionDir(toCwd), "sess-1.jsonl"),
+      "utf8",
+    );
+    expect(copied).toBe('{"hello":1}');
+  });
+
+  it("원본이 없으면 false(맥락 없이 새 세션으로 시작)", async () => {
+    const ok = await service.transferSession("없음", fromCwd, toCwd);
+    expect(ok).toBe(false);
+  });
+
+  it("대상에 이미 있으면 덮어쓰지 않는다(진행된 대화 보호)", async () => {
+    await seedSession("sess-1", '{"old":true}');
+    const destDir = sessionDir(toCwd);
+    await fsp.mkdir(destDir, { recursive: true });
+    await fsp.writeFile(nodePath.join(destDir, "sess-1.jsonl"), '{"new":true}');
+
+    const ok = await service.transferSession("sess-1", fromCwd, toCwd);
+    expect(ok).toBe(true);
+    const kept = await fsp.readFile(
+      nodePath.join(destDir, "sess-1.jsonl"),
+      "utf8",
+    );
+    expect(kept).toBe('{"new":true}');
+  });
+
+  it("같은 디렉터리면 복사 없이 true", async () => {
+    const ok = await service.transferSession("sess-1", toCwd, toCwd);
+    expect(ok).toBe(true);
+  });
+});
+
+/**
  * onQuery(제어 핸들 전달) 검증. SDK는 런타임 동적 import이므로 모듈을 목으로 바꿔
  * query()가 제어 메서드를 가진 async generator를 반환하게 만든다.
  */
@@ -546,6 +631,9 @@ describe("AgentService.runStream — Query 제어 핸들", () => {
     const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
       query: jest.Mock;
     };
+    // 호출 이력까지 비운다 — 테스트가 calls[0]/calls[1]로 인자를 검증하므로
+    // 앞 테스트의 호출이 남아 있으면 엉뚱한 호출을 보게 된다.
+    sdk.query.mockReset();
     sdk.query.mockImplementation(() => fakeQuery());
 
     prisma = {
@@ -614,6 +702,166 @@ describe("AgentService.runStream — Query 제어 핸들", () => {
       events.push(e.type),
     );
     expect(events).toContain("done");
+  });
+
+  /**
+   * 회귀: executeStream이 opts.images를 무시해 채팅 첨부 이미지가 조용히
+   * 버려졌다(문자열 prompt만 SDK로 넘겼다). 이슈 경로(execute)는 정상이었기에
+   * 스트리밍 경로만 이미지를 잃었다.
+   */
+  it("이미지가 있으면 멀티모달 블록으로 SDK에 전달한다", async () => {
+    const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
+      query: jest.Mock;
+    };
+    await service.runStream(
+      "p1",
+      {
+        prompt: "이 스크린샷 봐줘",
+        cwd: "/wt",
+        images: [{ data: "BASE64DATA", mediaType: "image/png" }],
+      },
+      () => {},
+    );
+
+    // prompt는 문자열이 아니라 AsyncIterable이어야 한다.
+    const { prompt } = sdk.query.mock.calls[0][0];
+    expect(typeof prompt).not.toBe("string");
+    const messages = [];
+    for await (const msg of prompt as AsyncIterable<unknown>) messages.push(msg);
+    expect(messages).toHaveLength(1);
+    const content = (
+      messages[0] as { message: { content: Array<Record<string, unknown>> } }
+    ).message.content;
+    expect(content[0]).toEqual({ type: "text", text: "이 스크린샷 봐줘" });
+    expect(content[1]).toEqual({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: "image/png",
+        data: "BASE64DATA",
+      },
+    });
+  });
+
+  it("이미지가 없으면 prompt는 문자열 그대로 넘긴다", async () => {
+    const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
+      query: jest.Mock;
+    };
+    await service.runStream("p1", { prompt: "hi", cwd: "/wt" }, () => {});
+    expect(sdk.query.mock.calls[0][0].prompt).toBe("hi");
+  });
+
+  /**
+   * 회귀: makePrompt가 만드는 제너레이터는 1회용이라, resume 폴백 재시도에서
+   * 재사용하면 빈 프롬프트로 나간다. runOnce 안에서 매번 새로 만들어야 한다.
+   */
+  it("resume 실패 후 재시도에도 이미지가 살아있다", async () => {
+    const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
+      query: jest.Mock;
+    };
+    // 1회차(resume): init 직후 죽는다 → 내용 없이 종료되어 폴백 대상.
+    sdk.query.mockImplementationOnce(() =>
+      Object.assign(
+        (async function* () {
+          throw new Error("resume 실패");
+        })(),
+        { interrupt, setModel },
+      ),
+    );
+
+    const events: AgentStreamEvent[] = [];
+    await service.runStream(
+      "p1",
+      {
+        prompt: "이거 봐줘",
+        cwd: "/wt",
+        resume: "죽은세션",
+        images: [{ data: "IMG", mediaType: "image/png" }],
+      },
+      (e) => events.push(e),
+    );
+
+    // 2회차(새 세션)의 prompt에도 이미지가 실려 있어야 한다.
+    expect(sdk.query).toHaveBeenCalledTimes(2);
+    const retryPrompt = sdk.query.mock.calls[1][0].prompt;
+    expect(typeof retryPrompt).not.toBe("string");
+    const messages = [];
+    for await (const msg of retryPrompt as AsyncIterable<unknown>)
+      messages.push(msg);
+    const content = (
+      messages[0] as { message: { content: Array<Record<string, unknown>> } }
+    ).message.content;
+    expect(content).toHaveLength(2);
+    expect(content[1]).toMatchObject({ type: "image" });
+    // 재시도는 resume 없이 새 세션으로 간다.
+    expect(sdk.query.mock.calls[1][0].options.resume).toBeUndefined();
+  });
+
+  it("resume 실패 시 맥락 소실을 session_reset으로 알린다", async () => {
+    const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
+      query: jest.Mock;
+    };
+    sdk.query.mockImplementationOnce(() =>
+      Object.assign(
+        (async function* () {
+          throw new Error("resume 실패");
+        })(),
+        { interrupt, setModel },
+      ),
+    );
+
+    const events: AgentStreamEvent[] = [];
+    await service.runStream(
+      "p1",
+      { prompt: "hi", cwd: "/wt", resume: "죽은세션" },
+      (e) => events.push(e),
+    );
+
+    const reset = events.find((e) => e.type === "session_reset");
+    expect(reset).toBeDefined();
+    // 폴백이 성공했으므로 대화는 계속된다.
+    expect(events.some((e) => e.type === "done")).toBe(true);
+  });
+
+  it("턴이 끝나면 컨텍스트 사용량을 방출한다", async () => {
+    const events: AgentStreamEvent[] = [];
+    await service.runStream("p1", { prompt: "hi", cwd: "/wt" }, (e) =>
+      events.push(e),
+    );
+    // fakeQuery의 getContextUsage는 { percentage: 12 }만 준다 —
+    // usedTokens가 없으므로 형태 검증에 걸려 방출되지 않아야 한다.
+    expect(events.some((e) => e.type === "context_usage")).toBe(false);
+  });
+
+  it("컨텍스트 사용량 형태가 온전하면 방출한다", async () => {
+    const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
+      query: jest.Mock;
+    };
+    sdk.query.mockImplementationOnce(() =>
+      Object.assign(
+        (async function* () {
+          yield { type: "system", subtype: "init", session_id: "sdk-1" };
+          yield { type: "result", subtype: "success", result: "완료" };
+        })(),
+        {
+          interrupt,
+          setModel,
+          getContextUsage: jest
+            .fn()
+            .mockResolvedValue({ usedTokens: 41000, percentage: 21 }),
+        },
+      ),
+    );
+
+    const events: AgentStreamEvent[] = [];
+    await service.runStream("p1", { prompt: "hi", cwd: "/wt" }, (e) =>
+      events.push(e),
+    );
+    expect(events).toContainEqual({
+      type: "context_usage",
+      usedTokens: 41000,
+      percentage: 21,
+    });
   });
 });
 
@@ -967,6 +1215,114 @@ describe("AgentService.runStream — 재시도·사용량 한도 알림", () => 
     );
   });
 
+  /**
+   * 회귀(실사용 재현): thinking 블록이 앞서면 같은 답변이 두 번 렌더됐다.
+   *
+   * SDK는 한 논리적 메시지를 **같은 message.id를 가진 여러 assistant 메시지**로
+   * 쪼개 보내고, 각 메시지의 블록 인덱스는 0부터 다시 시작한다. 반면 스트림
+   * 이벤트의 index는 메시지 전체 기준이라 thinking 다음 텍스트가 1이다.
+   *   - 스트리밍: `msg_x:1` 로 파트를 연다
+   *   - 완결 메시지: 배열 위치(0)로 `msg_x:0` 을 만든다
+   * 두 id가 갈리면서 같은 텍스트가 두 파트로 저장·렌더됐다.
+   */
+  it("thinking 블록이 앞서도 텍스트 파트가 중복되지 않는다", async () => {
+    messages = [
+      {
+        type: "stream_event",
+        event: { type: "message_start", message: { id: "msg_x" } },
+      },
+      // index 0 = thinking (텍스트가 아니므로 파트를 열지 않는다)
+      {
+        type: "stream_event",
+        event: { type: "content_block_start", index: 0, content_block: { type: "thinking" } },
+      },
+      { type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+      // index 1 = 실제 텍스트
+      {
+        type: "stream_event",
+        event: { type: "content_block_start", index: 1, content_block: { type: "text" } },
+      },
+      {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "text_delta", text: "같은 요약을" },
+        },
+      },
+      { type: "stream_event", event: { type: "content_block_stop", index: 1 } },
+      // SDK는 블록별로 assistant 메시지를 쪼개 보낸다(전부 같은 message.id, 각 index 0).
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { id: "msg_x", content: [{ type: "thinking", thinking: "" }] },
+      },
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { id: "msg_x", content: [{ type: "text", text: "같은 요약을 두 번 드렸습니다." }] },
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    const starts = events.filter((e) => e.type === "text_start") as Array<{ id: string }>;
+    const ends = events.filter((e) => e.type === "text_end") as Array<{ id: string }>;
+    // 텍스트는 하나뿐이므로 파트도 하나여야 한다.
+    expect(starts).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+    expect(ends[0].id).toBe(starts[0].id);
+  });
+
+  /**
+   * 실사용 재현: 텍스트 한 블록 뒤에 도구 호출이 이어지는 턴.
+   * 화면에서 텍스트만 두 번 찍히고 도구는 한 번씩 나오는 증상을 조사한다.
+   */
+  it("텍스트+도구 턴에서 text_start가 한 번만 나온다", async () => {
+    messages = [
+      {
+        type: "stream_event",
+        event: { type: "message_start", message: { id: "msg_1" } },
+      },
+      {
+        type: "stream_event",
+        event: { type: "content_block_start", index: 0, content_block: { type: "text" } },
+      },
+      {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "조사 내용을 정리하기 전에," },
+        },
+      },
+      { type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+      // 같은 메시지에 tool_use 블록이 이어진다(index 1).
+      {
+        type: "stream_event",
+        event: { type: "content_block_start", index: 1, content_block: { type: "tool_use" } },
+      },
+      { type: "stream_event", event: { type: "content_block_stop", index: 1 } },
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          id: "msg_1",
+          content: [
+            { type: "text", text: "조사 내용을 정리하기 전에, 근거를 확인하겠습니다." },
+            { type: "tool_use", id: "tu_1", name: "Bash", input: { command: "ls" } },
+          ],
+        },
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    const starts = events.filter((e) => e.type === "text_start");
+    const ends = events.filter((e) => e.type === "text_end");
+    expect(starts).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+    expect((ends[0] as { id: string }).id).toBe((starts[0] as { id: string }).id);
+  });
+
   it("rate_limit_event의 epoch 초를 ISO로 변환해 방출한다", async () => {
     messages = [
       {
@@ -1213,6 +1569,79 @@ describe("AgentService.runStream — 서브에이전트 중첩 트랜스크립�
     expect(idOf("text_start")).toHaveLength(1);
     expect(idOf("text_delta")[0]).toBe(idOf("text_start")[0]);
     expect(idOf("text_end")[0]).toBe(idOf("text_start")[0]);
+  });
+
+  /**
+   * 회귀: message_start에 message.id가 없으면 스트리밍은 폴백 id(seq1)로 파트를
+   * 열지만, 완결 assistant 메시지는 자기 message.id를 우선 쓴다. 두 id가 갈려
+   * openedText 검사를 빗나가면서 같은 텍스트가 두 파트로 렌더됐다.
+   */
+  it("message_start에 id가 없어도 완결 메시지와 같은 파트로 수렴한다", async () => {
+    messages = [
+      // id 없는 message_start (SDK가 항상 id를 주지는 않는다)
+      { type: "stream_event", event: { type: "message_start", message: {} } },
+      {
+        type: "stream_event",
+        event: { type: "content_block_start", index: 0, content_block: { type: "text" } },
+      },
+      {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "게시판 기능을" },
+        },
+      },
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          id: "msg_real",
+          content: [{ type: "text", text: "게시판 기능을 조사하겠습니다." }],
+        },
+      },
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    const idOf = (t: string) =>
+      events.filter((e) => e.type === t).map((e) => (e as { id: string }).id);
+    // 파트는 하나여야 한다 — start가 2번 나오면 화면에 같은 답변이 두 번 찍힌다.
+    expect(idOf("text_start")).toHaveLength(1);
+    expect(idOf("text_end")).toHaveLength(1);
+    expect(idOf("text_end")[0]).toBe(idOf("text_start")[0]);
+    expect(idOf("text_delta")[0]).toBe(idOf("text_start")[0]);
+  });
+
+  /**
+   * 폴백 id 인계는 그 메시지 한 건으로 끝나야 한다. 남겨두면 다음 턴의 완결
+   * 메시지가 앞 턴 id를 물려받아 서로 다른 답변이 한 파트로 합쳐진다.
+   */
+  it("id 없는 두 턴이 연달아 와도 서로 다른 파트가 된다", async () => {
+    const turn = (text: string, msgId: string) => [
+      { type: "stream_event", event: { type: "message_start", message: {} } },
+      {
+        type: "stream_event",
+        event: { type: "content_block_start", index: 0, content_block: { type: "text" } },
+      },
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { id: msgId, content: [{ type: "text", text }] },
+      },
+    ];
+    messages = [
+      ...turn("첫 번째 답변", "msg_a"),
+      ...turn("두 번째 답변", "msg_b"),
+      { type: "result", subtype: "success", result: "" },
+    ];
+    const events = await collect();
+    const ends = events.filter((e) => e.type === "text_end") as Array<{
+      id: string;
+      text: string;
+    }>;
+    expect(ends).toHaveLength(2);
+    expect(ends[0].id).not.toBe(ends[1].id);
+    expect(ends.map((e) => e.text)).toEqual(["첫 번째 답변", "두 번째 답변"]);
   });
 
   it("다음 턴 message_start가 먼저 와도 텍스트 파트가 중복되지 않는다", async () => {

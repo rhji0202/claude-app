@@ -1,5 +1,8 @@
 import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { promises as fs } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import pLimit from "p-limit";
 import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
@@ -144,6 +147,17 @@ export interface RunResult {
  */
 export type AgentStreamEvent =
   | { type: "session"; sessionId: string }
+  /**
+   * resume 실패로 이전 대화 맥락을 잃고 새 세션으로 재시작했음을 알린다.
+   * 지금까지는 조용히 폴백해 사용자가 맥락 소실을 알 방법이 없었다.
+   * 알림 전용이라 DB에는 저장하지 않는다.
+   */
+  | { type: "session_reset"; reason: string }
+  /**
+   * 턴 종료 시점의 컨텍스트 사용량(CLI 상태줄). 남은 여유를 눈으로 보고
+   * 압축·새 세션 시점을 판단하는 용도다. 진행 표시 전용이라 저장하지 않는다.
+   */
+  | { type: "context_usage"; usedTokens: number; percentage: number }
   /**
    * text·tool 계열 이벤트의 parentId는 서브에이전트 소속을 뜻한다.
    * 값이 있으면 그 id를 가진 Task 도구 파트 **안쪽**에 렌더해야 한다(중첩 트랜스크립트).
@@ -405,6 +419,116 @@ export class AgentService {
     delete env.CLAUDE_CODE_EFFORT_LEVEL;
   }
 
+  /**
+   * CLI가 세션 트랜스크립트를 보관하는 디렉터리.
+   *
+   * CLI는 세션을 **작업 디렉터리별로** 저장한다(`~/.claude/projects/<cwd를 인코딩한 이름>/`).
+   * 경로 인코딩 규칙은 구분자(`:`·`\`·`/`)를 `-`로 바꾸는 것이다.
+   * 예) `E:\a\b` → `E--a-b`
+   */
+  private sessionDirFor(cwd: string): string {
+    const encoded = path.resolve(cwd).replace(/[\\/:]/g, "-");
+    return path.join(os.homedir(), ".claude", "projects", encoded);
+  }
+
+  /**
+   * 다른 작업 디렉터리에서 만들어진 세션을 지정한 cwd로 복사해 resume 가능하게 한다.
+   *
+   * CLI는 cwd로 세션을 찾으므로, 이슈 worktree에서 만든 세션은 채팅의 clone base에서
+   * 그대로 resume할 수 없다("No conversation found with session ID"). 트랜스크립트
+   * 파일을 대상 디렉터리로 복사하면 같은 세션 id로 이어받을 수 있다.
+   *
+   * 원본이 없거나(worktree 정리 후 CLI 세션까지 지워진 경우) 복사에 실패하면 false를
+   * 돌려준다 — 호출측은 맥락 없이 새 세션으로 시작하면 된다.
+   *
+   * @param sessionId 이어받을 SDK 세션 id
+   * @param fromCwd   그 세션이 만들어진 작업 디렉터리
+   * @param toCwd     이어서 실행할 작업 디렉터리
+   */
+  async transferSession(
+    sessionId: string,
+    fromCwd: string,
+    toCwd: string,
+  ): Promise<boolean> {
+    const src = path.join(this.sessionDirFor(fromCwd), `${sessionId}.jsonl`);
+    const destDir = this.sessionDirFor(toCwd);
+    const dest = path.join(destDir, `${sessionId}.jsonl`);
+    try {
+      if (src === dest) return true; // 같은 디렉터리면 할 일이 없다
+      await fs.access(src);
+      await fs.mkdir(destDir, { recursive: true });
+      // 이미 옮겨둔 세션이면 덮어쓰지 않는다 — 대화가 진행됐을 수 있다.
+      try {
+        await fs.access(dest);
+        return true;
+      } catch {
+        /* 없으면 아래에서 복사 */
+      }
+      await fs.copyFile(src, dest);
+      this.logger.log(`세션 이관: ${sessionId} → ${destDir}`);
+      return true;
+    } catch (err) {
+      this.logger.warn(`세션 이관 실패 ${sessionId}: ${String(err)}`);
+      return false;
+    }
+  }
+
+  /**
+   * SDK query()에 넘길 prompt를 만든다.
+   * 이미지가 없으면 문자열 그대로, 있으면 멀티모달 content block을 담은
+   * AsyncIterable(SDKUserMessage 1개)로 감싼다.
+   *
+   * 중요: 반환된 제너레이터는 1회용이다. resume 폴백으로 재시도할 때는 반드시
+   * 이 메서드를 다시 호출해야 한다 — 소비된 제너레이터를 재사용하면 재시도가
+   * 빈 프롬프트로 나간다.
+   */
+  private makePrompt(opts: RunAgentOptions): string | AsyncIterable<unknown> {
+    const images = opts.images ?? [];
+    if (images.length === 0) return opts.prompt;
+    const prompt = opts.prompt;
+    return (async function* () {
+      yield {
+        type: "user" as const,
+        parent_tool_use_id: null,
+        message: {
+          role: "user" as const,
+          content: [
+            { type: "text" as const, text: prompt },
+            ...images.map((im) => ({
+              type: "image" as const,
+              source: {
+                type: "base64" as const,
+                media_type: im.mediaType,
+                data: im.data,
+              },
+            })),
+          ],
+        },
+      };
+    })();
+  }
+
+  /**
+   * Query.getContextUsage()의 반환값에서 사용량을 뽑는다.
+   *
+   * SDK 타입이 unknown이라 형태를 신뢰할 수 없다. 기대 키가 없거나 숫자가
+   * 아니면 null을 돌려 호출측이 조용히 생략하게 한다 — 표시 전용 값이므로
+   * 여기서 실패해도 대화는 그대로 진행되어야 한다.
+   */
+  private parseContextUsage(
+    raw: unknown,
+  ): { usedTokens: number; percentage: number } | null {
+    if (!raw || typeof raw !== "object") return null;
+    const o = raw as Record<string, unknown>;
+    // SDK 버전에 따라 키 이름이 갈린다. 둘 다 받아준다.
+    const used = o.usedTokens ?? o.used_tokens ?? o.totalTokens ?? o.total_tokens;
+    const pct = o.percentage ?? o.percent ?? o.utilization;
+    if (typeof used !== "number" || !Number.isFinite(used)) return null;
+    if (typeof pct !== "number" || !Number.isFinite(pct)) return null;
+    // utilization은 0~1로 올 수 있다 — 백분율로 맞춘다.
+    return { usedTokens: used, percentage: pct <= 1 ? pct * 100 : pct };
+  }
+
   /** 프로젝트에 연결된 활성 MCP 서버를 SDK mcpServers 설정으로 변환 */
   private async resolveMcpServers(
     projectId: string,
@@ -524,6 +648,25 @@ export class AgentService {
     let blockMsgId = new Map<string, string>();
     // 메시지 id가 없는 SDK 이벤트를 위한 폴백 카운터.
     let fallbackSeq = 0;
+    /**
+     * message_start에 id가 없어 폴백 id로 연 스트림 (parent → 폴백 id).
+     *
+     * 완결 assistant 메시지는 자기 message.id를 우선 쓰는데, 스트리밍이 폴백
+     * id로 파트를 열었으면 둘이 갈려 같은 답변이 두 파트로 렌더된다. 폴백으로
+     * 열린 경우에만 완결 메시지가 그 id를 이어받도록 여기 기록한다.
+     */
+    let fallbackMsgId = new Map<string, string>();
+    /**
+     * 완결 assistant 메시지의 다음 블록 인덱스 (`${parent}#${msgId}` → 다음 index).
+     *
+     * SDK는 한 논리적 메시지를 **같은 message.id를 가진 여러 assistant 메시지**로
+     * 쪼개 보내고, 각 메시지의 content 배열은 0부터 다시 시작한다. 반면 스트림
+     * 이벤트의 index는 메시지 전체 기준이라(thinking=0, text=1 …) 배열 위치를
+     * 그대로 쓰면 id가 갈려 같은 텍스트가 두 파트로 렌더된다.
+     *
+     * 그래서 메시지별로 지금까지 받은 블록 수를 누적해 실제 인덱스를 복원한다.
+     */
+    let msgBlockOffset = new Map<string, number>();
     // content_block_start로 열린 텍스트 블록의 id (index → true). text_start 중복 방지.
     let openedText = new Set<string>();
     // 클라이언트에 실제 내용(text/tool/done)을 방출했는가. resume 실패 폴백 판단용
@@ -555,7 +698,9 @@ export class AgentService {
     // 내용 방출 전 예외가 나면 throw(호출측이 resume 폴백 여부 판단).
     const runOnce = async (resume?: string): Promise<boolean> => {
       const iterator = query({
-        prompt: opts.prompt,
+        // 이미지가 있으면 멀티모달 블록으로 감싼다. runOnce 안에서 만들어야
+        // resume 폴백 재시도가 새 제너레이터를 받는다(1회용이므로).
+        prompt: this.makePrompt(opts) as never,
         options: {
           // 실행 디렉터리는 항상 호출측이 주입한 worktree 경로(설계 12.5). project.cwd 미사용.
           cwd: opts.cwd,
@@ -742,10 +887,14 @@ export class AgentService {
           if (ev.type === "message_start") {
             // 이 메시지의 후속 블록 이벤트가 쓸 id를 걸어둔다. id가 없으면
             // 폴백 시퀀스로 대체해 최소한 메시지 간 충돌은 막는다.
-            streamingMsgId.set(
-              msgKey(parent),
-              ev.message?.id ?? `seq${(fallbackSeq += 1)}`,
-            );
+            const key = msgKey(parent);
+            const streamId = ev.message?.id ?? `seq${(fallbackSeq += 1)}`;
+            streamingMsgId.set(key, streamId);
+            // id 없이 연 스트림은 뒤에 오는 완결 메시지가 자기 message.id를 쓰면
+            // 파트가 갈린다(같은 답변이 두 번 렌더). 폴백으로 열었다는 사실을
+            // 남겨, 완결 메시지가 이 id를 그대로 이어받게 한다.
+            if (ev.message?.id) fallbackMsgId.delete(key);
+            else fallbackMsgId.set(key, streamId);
           } else if (
             ev.type === "content_block_start" &&
             ev.content_block?.type === "text" &&
@@ -797,9 +946,21 @@ export class AgentService {
           const parent = m.parent_tool_use_id ?? undefined;
           // 완결 메시지는 자기 id를 갖고 온다 — 스트리밍 중 걸어둔 값에
           // 의존하지 않으므로 메시지 순서가 뒤바뀌어도 id가 갈라지지 않는다.
+          //
+          // 단, 스트리밍이 폴백 id로 파트를 이미 열었다면 그 id를 이어받는다.
+          // 여기서 message.id로 갈아타면 같은 텍스트가 두 파트로 렌더된다.
           const msgId =
-            m.message.id ?? streamingMsgId.get(msgKey(parent)) ?? `seq${(fallbackSeq += 1)}`;
-          m.message.content.forEach((block, index) => {
+            fallbackMsgId.get(msgKey(parent)) ??
+            m.message.id ??
+            streamingMsgId.get(msgKey(parent)) ??
+            `seq${(fallbackSeq += 1)}`;
+          // 같은 메시지가 여러 번 쪼개져 오므로, 배열 위치가 아니라 누적 오프셋으로
+          // 실제 블록 인덱스를 복원한다(스트림 이벤트의 index와 맞추기 위함).
+          const offsetKey = `${parent ?? ""}#${msgId}`;
+          const base = msgBlockOffset.get(offsetKey) ?? 0;
+          msgBlockOffset.set(offsetKey, base + m.message.content.length);
+          m.message.content.forEach((block, i) => {
+            const index = base + i;
             if (block.type === "text" && block.text) {
               const id = segId(msgId, index, parent);
               // 델타가 없었던(스트리밍 안 된) 텍스트면 start도 보내 프론트가 파트를 만들게 함
@@ -822,6 +983,9 @@ export class AgentService {
               });
             }
           });
+          // 이 메시지는 끝났다 — 폴백 id 인계는 여기까지다. 남겨두면 다음 턴의
+          // 완결 메시지가 앞 턴 id를 물려받아 서로 다른 답변이 한 파트로 합쳐진다.
+          fallbackMsgId.delete(msgKey(parent));
         }
 
         // 도구 실행 결과 — SDK는 tool_result 블록을 user 메시지로 되돌려준다.
@@ -842,6 +1006,16 @@ export class AgentService {
         if (m.type === "result") {
           const usage = this.parseUsage(m);
           if (m.subtype === "success") {
+            // 컨텍스트 잔량을 상태줄에 남긴다. 표시 전용이므로 실패는 무시한다
+            // (SDK 버전에 따라 메서드가 없거나 형태가 다를 수 있다).
+            try {
+              const ctx = this.parseContextUsage(
+                await (iterator as unknown as AgentControl).getContextUsage(),
+              );
+              if (ctx) onEvent({ type: "context_usage", ...ctx });
+            } catch {
+              /* 컨텍스트 조회 실패는 대화에 영향을 주지 않는다 */
+            }
             onEvent({
               type: "done",
               text: m.result ?? finalText,
@@ -884,11 +1058,18 @@ export class AgentService {
         this.logger.warn(
           `resume(${opts.resume}) 실패 — 새 세션으로 재시도: ${String(err)}`,
         );
+        // 맥락이 사라진 채 답변이 오는 이유를 사용자가 알 수 있게 알린다.
+        onEvent({
+          type: "session_reset",
+          reason: "이전 대화 맥락을 불러오지 못했습니다.",
+        });
         // 재시도 전 파트 상태 초기화. 메시지 id는 새 세션에서도 새로 발급되므로
         // 카운터 되돌림은 필요 없고, 걸어둔 스트리밍 id만 비운다.
         resumeInFlight = false;
         streamingMsgId.clear();
         blockMsgId = new Map<string, string>();
+        fallbackMsgId = new Map<string, string>();
+        msgBlockOffset = new Map<string, number>();
         openedText = new Set<string>();
         try {
           await runOnce(undefined);
@@ -1059,41 +1240,18 @@ export class AgentService {
     // (init만 오고 서브프로세스가 죽으면 false → 새 세션 재시도 안전).
     let sawContent = false;
 
-    // 이미지가 있으면 멀티모달 프롬프트(AsyncIterable + image content block).
-    // AsyncIterable 프롬프트와 resume 병행은 불안정하므로 이미지 실행은 새 세션으로.
-    const hasImages = (opts.images?.length ?? 0) > 0;
-    // 현재 실행이 resume 사용 중인가(폴백 재시도 시 false로 낮춤). 이미지는 resume 없음.
-    let resumeInFlight = !hasImages && Boolean(opts.resume);
-    const makePrompt = () =>
-      hasImages
-        ? (async function* () {
-            yield {
-              type: "user" as const,
-              session_id: "",
-              parent_tool_use_id: null,
-              message: {
-                role: "user" as const,
-                content: [
-                  { type: "text" as const, text: opts.prompt },
-                  ...opts.images!.map((im) => ({
-                    type: "image" as const,
-                    source: {
-                      type: "base64" as const,
-                      media_type: im.mediaType,
-                      data: im.data,
-                    },
-                  })),
-                ],
-              },
-            };
-          })()
-        : opts.prompt;
+    // 현재 실행이 resume 사용 중인가(폴백 재시도 시 false로 낮춤).
+    let resumeInFlight = Boolean(opts.resume);
+    // 이미지 첨부에도 resume을 유지한다. 채팅은 멀티턴이라 이미지를 붙일 때마다
+    // 세션이 끊기면 앞 대화를 잃는다. 세션을 잇는 것은 options.resume 하나이며,
+    // SDKUserMessage의 session_id는 출력 메타 필드라 입력에서 지정하지 않는다.
 
     // SDK 스트림 1회. 결과가 나오면 RunResult 반환, 결과 없이 스트림이 끝나면 중단(interrupted).
     // 메시지 방출 전 예외는 그대로 throw(호출측이 resume 폴백 판단).
     const runOnce = async (resume?: string): Promise<RunResult> => {
       const iterator = query({
-        prompt: makePrompt() as never,
+        // runOnce 안에서 만들어야 resume 폴백 재시도가 새 제너레이터를 받는다(1회용).
+        prompt: this.makePrompt(opts) as never,
         options: {
           // 실행 디렉터리는 항상 호출측이 주입한 worktree 경로(설계 12.5). project.cwd 미사용.
           cwd: opts.cwd,
@@ -1177,8 +1335,8 @@ export class AgentService {
       };
     };
 
-    // 이미지 실행은 애초에 resume 없음. 그 외엔 resume 시도 → 내용 전 실패 시 새 세션 재시도.
-    const resume = hasImages ? undefined : opts.resume;
+    // resume 시도 → 내용 전 실패 시 새 세션 재시도(이미지 첨부도 동일 경로).
+    const resume = opts.resume;
     try {
       return await runOnce(resume);
     } catch (err) {
