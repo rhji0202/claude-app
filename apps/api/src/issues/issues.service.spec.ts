@@ -34,7 +34,7 @@ describe("IssuesService (큐/워커)", () => {
       count: jest.Mock;
       groupBy: jest.Mock;
     };
-    issueNote: { findMany: jest.Mock; create: jest.Mock };
+    issueNote: { findMany: jest.Mock; findFirst: jest.Mock; create: jest.Mock };
     project: { findUnique: jest.Mock };
     usageRecord: { aggregate: jest.Mock };
   };
@@ -150,6 +150,7 @@ describe("IssuesService (큐/워커)", () => {
       },
       issueNote: {
         findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue({}),
       },
       project: { findUnique: jest.fn() },
@@ -1267,6 +1268,87 @@ describe("IssuesService (큐/워커)", () => {
       expect(body).toBe("세션 만료 처리의 널 참조를 고쳤습니다.");
       expect(body).not.toContain("<<<RESULT");
       expect(body).not.toContain("장문의 서술");
+    });
+  });
+
+  describe("commentDecision (결정 질문 게시)", () => {
+    const raw = {
+      id: "i1",
+      projectId: "p1",
+      repo: "o/r",
+      issueNumber: 7,
+      images: [],
+      labels: [],
+      status: IssueStatus.NEEDS_DECISION,
+    };
+
+    beforeEach(() => {
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      prisma.issueTask.findUnique.mockResolvedValue(raw);
+      prisma.issueTask.update.mockResolvedValue({
+        ...raw,
+        source: "GITHUB",
+        title: "t",
+        decisionCommentUrl: "https://gh/c/1",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      github.createComment.mockResolvedValue({ html_url: "https://gh/c/1" });
+    });
+
+    it("마지막 AGENT 질문에 답글 안내를 붙여 게시하고 URL을 저장한다", async () => {
+      prisma.issueNote.findFirst.mockResolvedValue({
+        content: "질문: 알림을 즉시 보낼까요?\n추천: A",
+      });
+
+      const dto = await service.commentDecision("i1", "u1");
+
+      const [repo, number, body, token] = github.createComment.mock.calls[0];
+      expect([repo, number, token]).toEqual(["o/r", 7, "tok"]);
+      expect(body).toContain("질문: 알림을 즉시 보낼까요?");
+      expect(body).toContain("답글로 알려주시면");
+      expect(prisma.issueTask.update).toHaveBeenCalledWith({
+        where: { id: "i1" },
+        data: { decisionCommentUrl: "https://gh/c/1" },
+      });
+      expect(dto.decisionCommentUrl).toBe("https://gh/c/1");
+    });
+
+    it("결정 대기가 아니면 거부한다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        ...raw,
+        status: IssueStatus.DONE,
+      });
+
+      await expect(service.commentDecision("i1", "u1")).rejects.toThrow(
+        /결정 대기/,
+      );
+      expect(github.createComment).not.toHaveBeenCalled();
+    });
+
+    it("수동 이슈(issueNumber 없음)는 거부한다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        ...raw,
+        issueNumber: null,
+      });
+
+      await expect(service.commentDecision("i1", "u1")).rejects.toThrow(
+        /수동 이슈/,
+      );
+      expect(github.createComment).not.toHaveBeenCalled();
+    });
+
+    it("게시할 질문이 없으면 거부한다", async () => {
+      prisma.issueNote.findFirst.mockResolvedValue(null);
+
+      await expect(service.commentDecision("i1", "u1")).rejects.toThrow(
+        /질문이 없습니다/,
+      );
+      expect(github.createComment).not.toHaveBeenCalled();
     });
   });
 });

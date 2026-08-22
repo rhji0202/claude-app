@@ -245,6 +245,8 @@ model IssueTask {
   result      String?
   error       String?
   resultCommentUrl String?
+  // 결정 대기 질문을 GitHub 이슈 코멘트로 물어본 URL (있으면 중복 게시를 막고 링크 표시)
+  decisionCommentUrl String?
   // autoPr 실행 시 에이전트가 만든 PR URL (있으면 프론트에 링크 표시)
   prUrl       String?
   // triage 분류 결과: auto-fix | needs-decision | needs-info | question (미분류면 null)

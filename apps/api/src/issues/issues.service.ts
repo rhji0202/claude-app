@@ -80,6 +80,25 @@ const ISSUE_SYSTEM_PROMPT_PR =
   ISSUE_SYSTEM_PROMPT_BASE +
   "\n- 수정을 마친 뒤, 지시에 따라 브랜치를 push하고 Pull Request를 생성합니다.";
 
+/**
+ * 결정 대기 질문의 작성 형식. 이 질문은 코드를 모르는 사람이 읽고 바로 고르는 화면에
+ * 그대로 렌더되므로, 개발자용 장문이 아니라 고정된 다섯 줄 규약으로 쓰게 강제한다.
+ * needs-decision·needs-info·공통 결정 요청이 같은 항목(DECISION_NEEDED)에 쓰므로 형식을 공유한다.
+ */
+const DECISION_FORMAT = [
+  "아래 줄 형식을 정확히 따르세요(줄 순서·머리글자 그대로, 코드 블록으로 감싸지 마세요).",
+  "질문: <무엇을 정해야 하는지 한 문장>",
+  "이유: <왜 사람이 정해야 하는지 한 문장>",
+  "A) <선택지 이름> — <이걸 고르면 화면·동작이 어떻게 달라지는지 한 줄>",
+  "B) <선택지 이름> — <한 줄>",
+  "추천: <A 또는 B 중 하나, 판단이 서지 않으면 생략>",
+  "",
+  "작성 규칙:",
+  "- 읽는 사람은 코드를 모르는 비개발자입니다. 파일명·함수명·경로·라이브러리 이름·기술 용어를 쓰지 마세요.",
+  "- 각 선택지는 그것을 고르면 사용자가 화면에서 무엇을 겪게 되는지로만 설명합니다. 구현 방식·장단점·영향 범위는 적지 마세요.",
+  "- 선택지는 2~3개로 제한하고, 각 줄은 한 문장으로 끝냅니다.",
+].join("\n");
+
 /** 텍스트를 한 줄 미리보기로(개행 정리 + 길이 제한). */
 function preview(text: string, max = 140): string {
   const s = text.replace(/\s+/g, " ").trim();
@@ -261,6 +280,7 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
       result: i.result,
       error: i.error,
       resultCommentUrl: i.resultCommentUrl,
+      decisionCommentUrl: i.decisionCommentUrl,
       prUrl: i.prUrl,
       category: (i.category as IssueDto["category"]) ?? null,
       progress: i.progress,
@@ -850,8 +870,8 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
         "2단계 — 분류한 카테고리에 **해당하는 행동만** 수행하고, 다른 행동은 하지 마세요:",
         "- `auto-fix`인 경우에만: 관련 코드를 조사하고 최소한의 변경으로 해결한 뒤 변경을 요약합니다." +
           (pr ? " 이어서 아래 'PR 생성' 지시를 따릅니다." : ""),
-        "- `needs-decision`인 경우: **파일을 수정하지 마세요.** 이슈 코멘트를 남기지 말고, **관련 코드를 한 번 더 조사한 뒤** 어떤 결정이 필요한지 정리하고 가능한 선택지를 `A) … B) … C) …` 형식으로(각 선택지의 접근 방식·장단점·영향 범위를 붙여) 제시해 아래 '결과 보고' 블록의 `DECISION_NEEDED` 항목에만 기입합니다.",
-        "- `needs-info`인 경우: **파일을 수정하지 마세요.** 질문만 남기지 말고, **관련 코드를 한 번 더 조사한 뒤** 부족한 정보를 밝히고 가능한 구현방안을 `A) … B) … C) …` 형식으로(각 방안의 접근 방식·영향 범위를 붙여) 제시해 아래 '결과 보고' 블록의 `DECISION_NEEDED` 항목에 기입합니다.",
+        "- `needs-decision`인 경우: **파일을 수정하지 마세요.** 이슈 코멘트를 남기지 말고, **관련 코드를 한 번 더 조사한 뒤** 무엇을 결정해야 하는지와 선택지를 아래 '사람 결정이 필요할 때'의 형식대로 정리해 '결과 보고' 블록의 `DECISION_NEEDED` 항목에만 기입합니다.",
+        "- `needs-info`인 경우: **파일을 수정하지 마세요.** 질문만 남기지 말고, **관련 코드를 한 번 더 조사한 뒤** 부족한 정보와 가능한 방향을 아래 '사람 결정이 필요할 때'의 형식대로 정리해 '결과 보고' 블록의 `DECISION_NEEDED` 항목에 기입합니다.",
         "- `question`인 경우: **파일을 수정하지 마세요.** 질문에 답합니다." + ghComment,
         "",
         "분류 결과는 아래 '결과 보고' 블록의 `TRIAGE` 항목에 기입하세요.",
@@ -868,7 +888,8 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
     lines.push(
       "",
       "## 사람 결정이 필요할 때",
-      "스스로 결론 내릴 수 없거나 사람의 결정이 필요하면, 코드를 수정하지 말고 **관련 코드를 한 번 더 조사한 뒤** 무엇을 결정해야 하는지와 가능한 선택지를 `A) … B) … C) …` 형식으로(각 선택지의 접근 방식·장단점·영향 범위를 붙여) 정리해 아래 '결과 보고' 블록의 `DECISION_NEEDED` 항목에 기입하세요.",
+      "스스로 결론 내릴 수 없거나 사람의 결정이 필요하면, 코드를 수정하지 말고 **관련 코드를 한 번 더 조사한 뒤** 무엇을 결정해야 하는지를 정리해 아래 '결과 보고' 블록의 `DECISION_NEEDED` 항목에 기입하세요.",
+      DECISION_FORMAT,
     );
     if (pr) {
       // autoPr: 현재 작업 디렉터리는 issue/<id> 브랜치로 체크아웃된 git worktree다.
@@ -916,7 +937,9 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
     resultLines.push(
       "SUMMARY: <작업을 마쳤으면 무엇을 왜 어떻게 했는지 2~4문장으로 깔끔하게 요약. 완료가 아니면(결정 대기·정보 부족 등) none>",
     );
-    resultLines.push("DECISION_NEEDED: <사람에게 묻는 구체적 질문 또는 none>");
+    resultLines.push(
+      "DECISION_NEEDED: <'사람 결정이 필요할 때' 형식(질문·이유·선택지·추천)의 여러 줄 질문 또는 none>",
+    );
     lines.push(
       "",
       "## 결과 보고 (필수)",
@@ -1634,6 +1657,51 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
       await this.prisma.issueTask.update({
         where: { id },
         data: { resultCommentUrl: comment.html_url },
+      }),
+    );
+  }
+
+  /**
+   * 결정 대기 질문을 GitHub 이슈 코멘트로 물어본다 (외부 쓰기).
+   * 결정 권한이 없는 사람에게 물어보는 경로이므로, 질문 원문을 그대로 올리고
+   * 답을 어디에 남기면 되는지만 한 줄 덧붙인다(봇 머리말·이모지 없음).
+   * 답변 회수는 하지 않는다 — 사람이 답글을 읽고 추가 지시로 정리해 넣는다.
+   */
+  async commentDecision(id: string, userId: string): Promise<IssueDto> {
+    const task = await this.getRaw(id);
+    await this.projects.assertCanEdit(task.projectId, userId);
+    if (task.status !== IssueStatus.NEEDS_DECISION)
+      throw new BadRequestException(
+        "결정 대기 상태의 이슈만 질문을 게시할 수 있습니다.",
+      );
+    if (!task.issueNumber)
+      throw new BadRequestException("수동 이슈에는 코멘트를 게시할 수 없습니다.");
+    const project = await this.prisma.project.findUnique({
+      where: { id: task.projectId },
+    });
+    if (!project) throw new BadRequestException("프로젝트를 찾을 수 없습니다.");
+    const token = this.tokenOf(project);
+    if (!token)
+      throw new BadRequestException(
+        "프로젝트에 GitHub 토큰이 설정되어 있지 않습니다.",
+      );
+    // 결정 대기로 들어갈 때 남긴 마지막 AGENT 메모가 질문이다(화면과 같은 기준).
+    const note = await this.prisma.issueNote.findFirst({
+      where: { issueId: id, author: IssueNoteAuthor.AGENT },
+      orderBy: { createdAt: "desc" },
+    });
+    if (!note) throw new BadRequestException("게시할 질문이 없습니다.");
+
+    const comment = await this.github.createComment(
+      task.repo,
+      task.issueNumber,
+      `${note.content.trim()}\n\n답을 이 이슈에 답글로 알려주시면 반영하겠습니다.`,
+      token,
+    );
+    return this.toDto(
+      await this.prisma.issueTask.update({
+        where: { id },
+        data: { decisionCommentUrl: comment.html_url },
       }),
     );
   }

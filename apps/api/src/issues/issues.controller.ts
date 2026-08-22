@@ -207,4 +207,9 @@ export class IssuesController {
   comment(@Param("id") id: string, @CurrentUser() user: AuthUser) {
     return this.issues.commentResult(id, user.userId);
   }
+
+  @Post(":id/decision-comment")
+  decisionComment(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.issues.commentDecision(id, user.userId);
+  }
 }

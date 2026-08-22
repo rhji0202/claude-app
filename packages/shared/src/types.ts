@@ -209,6 +209,8 @@ export interface IssueTask {
   result?: string | null;
   error?: string | null;
   resultCommentUrl?: string | null;
+  /** 결정 대기 질문을 GitHub 이슈에 물어본 코멘트 URL (없으면 아직 안 물어봄) */
+  decisionCommentUrl?: string | null;
   /** autoPr 실행으로 생성된 PR URL (있으면 링크 표시) */
   prUrl?: string | null;
   /** triage 분류 결과(미분류면 null) */

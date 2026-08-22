@@ -297,6 +297,53 @@ function FileAttach({
   );
 }
 
+/** 에이전트가 남긴 결정 질문을 구조로 읽은 결과. */
+type DecisionQuestion = {
+  question: string;
+  reason: string | null;
+  options: { key: string; label: string; detail: string | null }[];
+  recommended: string | null;
+};
+
+/**
+ * 결정 대기 질문(`질문:` / `이유:` / `A) 이름 — 설명` / `추천:`)을 구조로 파싱한다.
+ * 규약을 따르지 않는 옛 질문은 null을 돌려 원문 렌더로 폴백한다.
+ */
+function parseDecisionQuestion(text: string): DecisionQuestion | null {
+  let question = "";
+  let reason: string | null = null;
+  let recommended: string | null = null;
+  const options: DecisionQuestion["options"] = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("```")) continue;
+    if (line.startsWith("질문:")) {
+      question = line.slice(3).trim();
+      continue;
+    }
+    if (line.startsWith("이유:")) {
+      reason = line.slice(3).trim();
+      continue;
+    }
+    if (line.startsWith("추천:")) {
+      recommended = line.slice(3).trim().match(/[A-Z]/)?.[0] ?? null;
+      continue;
+    }
+    // `A) 이름 — 설명` — 구분자는 em dash(—) 또는 하이픈을 허용한다.
+    const opt = line.match(/^([A-Z])\)\s*(.+)$/);
+    if (opt) {
+      const [label, detail] = opt[2].split(/\s+[—–-]\s+/);
+      options.push({
+        key: opt[1],
+        label: label.trim(),
+        detail: detail?.trim() ?? null,
+      });
+    }
+  }
+  if (!question && options.length === 0) return null;
+  return { question, reason, options, recommended };
+}
+
 /**
  * 재실행 다이얼로그: 이력 타임라인 + 추가 지시 입력(이미지·파일 첨부 가능) + 재실행.
  * 어떤 상태의 이슈에도 쓸 수 있다. 열 때 GET /issues/:id/notes로 이력 지연 로드.
@@ -330,6 +377,12 @@ function RerunDialog({
   const [files, setFiles] = useState<IssueAttachment[]>(
     (row.files as IssueAttachment[] | undefined) ?? [],
   );
+  // 결정 질문을 GitHub 이슈에 물어본 코멘트 URL(있으면 중복 게시 대신 링크를 보여준다).
+  const [askedUrl, setAskedUrl] = useState<string | null>(
+    (row.decisionCommentUrl as string | null | undefined) ?? null,
+  );
+  // 클릭해 고른 선택지 키(강조 표시용). 실제 반영은 추가 지시란 → 재실행.
+  const [picked, setPicked] = useState<string | null>(null);
 
   async function loadNotes(next: boolean) {
     setOpen(next);
@@ -417,10 +470,32 @@ function RerunDialog({
     }
   }
 
+  /**
+   * 결정 질문을 GitHub 이슈 코멘트로 물어본다.
+   * 답변은 자동으로 회수하지 않는다 — 답글을 읽고 아래 추가 지시란에 정리해 넣는다.
+   */
+  async function askOnGithub() {
+    setBusy(true);
+    try {
+      const next = await api.post<{ decisionCommentUrl?: string | null }>(
+        `/issues/${id}/decision-comment`,
+      );
+      setAskedUrl(next.decisionCommentUrl ?? null);
+      onChanged?.();
+      toast.success("GitHub 이슈에 질문을 남겼습니다.");
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // 에이전트의 마지막 질문(가장 최근 AGENT 메모) — 결정 대기일 때 강조
   const question = notes
     ? [...notes].reverse().find((n) => n.author === "agent")?.content
     : null;
+  // 규약을 지킨 질문이면 선택지 카드로, 아니면 원문 마크다운으로 보여준다.
+  const decision = question ? parseDecisionQuestion(question) : null;
 
   return (
     <Dialog open={open} onOpenChange={loadNotes}>
@@ -476,7 +551,88 @@ function RerunDialog({
               <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 에이전트 질문
               </div>
-              {question}
+              {decision ? (
+                <div className="space-y-3">
+                  {decision.question && (
+                    <div className="text-base font-medium leading-snug">
+                      {decision.question}
+                    </div>
+                  )}
+                  {decision.reason && (
+                    <div className="text-muted-foreground">{decision.reason}</div>
+                  )}
+                  {/* 선택지 카드: 누르면 아래 추가 지시란에 채워진다(재실행은 사람이 누른다). */}
+                  {decision.options.length > 0 && (
+                    <div className="space-y-2">
+                      {decision.options.map((o) => (
+                        <button
+                          key={o.key}
+                          type="button"
+                          onClick={() => {
+                            setPicked(o.key);
+                            setMemo(
+                              `${o.key}) ${o.label} 선택합니다. 이 방향으로 진행해 주세요.`,
+                            );
+                          }}
+                          className={`w-full cursor-pointer rounded-md border p-3 text-left transition-colors ${
+                            picked === o.key
+                              ? "border-[var(--accent)] bg-[var(--accent)]/10"
+                              : "border-border bg-background hover:bg-muted"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">
+                              {o.key}) {o.label}
+                            </span>
+                            {decision.recommended === o.key && (
+                              <Badge variant="success">추천</Badge>
+                            )}
+                          </div>
+                          {o.detail && (
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {o.detail}
+                            </div>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
+                  {question}
+                </Markdown>
+              )}
+              {/* 결정 권한이 다른 사람에게 있으면 이 질문을 GitHub 이슈로 물어본다.
+                  답변은 자동 회수하지 않으므로, 답글을 읽고 추가 지시란에 정리해 넣는다.
+                  수동 이슈(issueNumber 없음)는 게시할 곳이 없어 감춘다. */}
+              {row.issueNumber ? (
+                <div className="mt-3 border-t border-[var(--accent)]/20 pt-3">
+                  {askedUrl ? (
+                    <div className="text-xs text-muted-foreground">
+                      이 질문을 GitHub 이슈에 남겼습니다 —{" "}
+                      <a
+                        href={askedUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="underline"
+                      >
+                        코멘트 보기
+                      </a>
+                    </div>
+                  ) : (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={askOnGithub}
+                      disabled={busy}
+                      title="이 질문을 GitHub 이슈 코멘트로 남깁니다. 답글은 자동으로 반영되지 않으므로, 답을 읽고 아래 추가 지시란에 정리해 넣으세요."
+                    >
+                      GitHub 이슈에 물어보기
+                    </Button>
+                  )}
+                </div>
+              ) : null}
               <div className="mt-2 border-t border-[var(--accent)]/20 pt-2 text-xs text-muted-foreground">
                 답을 정하기 어려우면 <b>대화로 이어가기</b>로 에이전트와 상의할 수
                 있습니다. 이슈가 작업하던 브랜치를 이어받은 전용 작업 공간에서
