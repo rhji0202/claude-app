@@ -123,8 +123,11 @@ export interface RunAgentOptions {
    * 이슈 워커의 stale 회수·그레이스풀 셧다운이 살아있는 실행을 실제로 종료하는 데 쓴다.
    */
   abortController?: AbortController;
-  /** 이번 실행에서 쓰지 못하게 할 도구(예: 분석 단계의 Edit/Write/Bash). */
-  disallowedTools?: string[];
+  /**
+   * 이번 실행에서 쓸 수 있는 기본 도구의 허용 목록(예: 분석 단계의 Read/Grep/Glob).
+   * 생략하면 기본 도구 전체. 차단 목록과 달리 새로 생기거나 이름이 바뀐 도구도 막힌다.
+   */
+  tools?: string[];
   /** true면 프로젝트 MCP 서버를 붙이지 않는다(외부 쓰기가 가능한 도구 차단). */
   withoutMcp?: boolean;
 }
@@ -729,7 +732,7 @@ export class AgentService {
           env,
           // 취소 시 SDK가 쿼리를 중단하고 서브프로세스를 정리한다.
           abortController: opts.abortController,
-          ...(opts.disallowedTools ? { disallowedTools: opts.disallowedTools } : {}),
+          ...(opts.tools ? { tools: opts.tools } : {}),
         },
       });
 
@@ -1277,7 +1280,7 @@ export class AgentService {
           env,
           // 취소 시 SDK가 쿼리를 중단하고 서브프로세스를 정리한다.
           abortController: opts.abortController,
-          ...(opts.disallowedTools ? { disallowedTools: opts.disallowedTools } : {}),
+          ...(opts.tools ? { tools: opts.tools } : {}),
         },
       });
 
