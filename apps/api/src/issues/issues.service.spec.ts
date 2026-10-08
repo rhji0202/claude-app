@@ -1017,10 +1017,8 @@ describe("IssuesService (큐/워커)", () => {
       await service.executeClaimed(planTask as never);
 
       const opts = agent.runStream.mock.calls[0][1];
-      // 편집 도구뿐 아니라 셸(파일 수정·push 우회)과 서브에이전트도 막는다
-      expect(opts.disallowedTools).toEqual(
-        expect.arrayContaining(["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "Task"]),
-      );
+      // 차단 목록이 아니라 허용 목록 — 읽기 도구 외에는(셸·편집·서브에이전트·새 도구) 쓸 수 없다
+      expect(opts.tools).toEqual(["Read", "Grep", "Glob"]);
       // 외부에 쓸 수 있는 MCP 도구도 붙이지 않는다
       expect(opts.withoutMcp).toBe(true);
       expect(opts.prompt).toContain("## 작업 지시 (분석·기획)");
@@ -1096,7 +1094,7 @@ describe("IssuesService (큐/워커)", () => {
       expect(opts.prompt).toContain("환불 반영");
       expect(opts.prompt).not.toContain("TRIAGE");
       expect(opts.prompt).toContain("PR 생성");
-      expect(opts.disallowedTools).toBeUndefined();
+      expect(opts.tools).toBeUndefined();
       expect(opts.withoutMcp).toBeUndefined();
     });
 
