@@ -6,15 +6,10 @@ import {
   Download,
   Loader2,
   MessageSquare,
-  Paperclip,
   Play,
   Plus,
 } from "lucide-react";
-import type {
-  IssueAttachment,
-  IssueNote,
-  IssueProgressEvent,
-} from "@claude-app/shared";
+import type { IssueAttachment, IssueMode, IssueTask } from "@claude-app/shared";
 import {
   ISSUE_STATUS_ORDER as STATUS_ORDER,
   issueCategoryLabel,
@@ -26,15 +21,9 @@ import { PageHeader } from "@/components/PageHeader";
 import { StatusBadge, Mono } from "@/components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
-import { Markdown } from "@/components/Markdown";
-import { NoteList } from "@/components/NoteList";
-import {
-  ToolPart,
-  editedFilesFromLog,
-  fileBasename,
-} from "@/components/ToolPart";
-import { FilePen } from "lucide-react";
 import { api, upload, uploadUrl } from "@/lib/api";
+import { FileAttach, ModePicker, RunStatusLine, issueStateLabel } from "./issue-parts";
+import { IssueRunDialog } from "./IssueRunView";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -57,129 +46,27 @@ import {
 } from "@/components/ui/dialog";
 
 /**
- * 상태 배지를 클릭하면 오류 메시지·실행 결과 전문을 다이얼로그로 보여준다.
- * error/result가 있는 상태(오류·완료)에서만 클릭 가능하게 한다.
+ * 상태 셀: 배지(실행 중이면 지금 하는 일 한 줄 "명령 실행 중 · pnpm test").
+ * 누르면 실행 다이얼로그가 열린다(진행·결정·결과·재실행을 대화형으로).
  */
 function IssueStatusCell({
   row,
-  onChanged,
+  onOpen,
 }: {
   row: Record<string, unknown>;
-  onChanged?: () => void;
+  onOpen: () => void;
 }) {
-  const status = String(row.status);
-  const error = (row.error as string | null | undefined) ?? null;
-  const result = (row.result as string | null | undefined) ?? null;
-  const progress = (row.progress as string | null | undefined) ?? null;
-  const badge = (
-    <StatusBadge status={status} label={issueStatusLabel(status)} />
-  );
-
-  // 실행 중이면 배지 + 진행 상황(현재 도구). 진행 이력이 있으면 클릭 시 타임라인.
-  if (status === "running") {
-    return <RunningCell row={row} badge={badge} progress={progress} />;
-  }
-
-  // 실행이 끝난 상태(결정 대기·완료·오류·중단)는 모두 같은 다이얼로그를 쓴다.
-  // 결과·이력(결정 대기는 질문만)을 보여주고 추가 지시·재실행·대화 이어가기를 한자리에서 제공한다.
-  // (완료 뒤 "이거 왜 이렇게 고쳤어?"를 물으려면 완료 상태에도 대화가 필요하다.)
-  if (
-    status === "needs_decision" ||
-    status === "done" ||
-    status === "error" ||
-    status === "interrupted"
-  ) {
-    return <RerunDialog row={row} trigger={badge} onChanged={onChanged} />;
-  }
-
-  // 볼 내용이 없으면 배지만 (대기 등)
-  if (!error && !result) return badge;
-
-  return badge;
-}
-
-/**
- * 진행 로그에서 편집·작성된 파일을 모아 상단에 요약(claude-desktop식).
- * 편집된 파일이 없으면 렌더링하지 않는다.
- */
-function EditedFilesSummary({ log }: { log: IssueProgressEvent[] }) {
-  const files = editedFilesFromLog(log);
-  if (files.length === 0) return null;
+  const issue = row as unknown as IssueTask;
   return (
-    <div
-      className="mb-1 flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-secondary/30 px-2.5 py-2 text-xs"
-      title={files.join("\n")}
+    <button
+      type="button"
+      className="flex cursor-pointer flex-col gap-1 text-left"
+      onClick={onOpen}
+      title="실행 보기"
     >
-      <FilePen className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="shrink-0 font-medium">편집된 파일 {files.length}개</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">
-        {files.map((f) => fileBasename(f)).join(", ")}
-      </span>
-    </div>
-  );
-}
-
-/**
- * 실행 중 셀: 배지 + 현재 진행(도구) 한 줄. 진행 이력(progressLog)이 있으면
- * 배지를 클릭해 도구 호출 타임라인을 볼 수 있다. 목록은 SSE로 실시간 갱신됨.
- */
-function RunningCell({
-  row,
-  badge,
-  progress,
-}: {
-  row: Record<string, unknown>;
-  badge: React.ReactNode;
-  progress: string | null;
-}) {
-  const log = (row.progressLog as IssueProgressEvent[] | null | undefined) ?? [];
-  const line = (
-    <div className="flex flex-col gap-1">
-      {badge}
-      {progress && (
-        <span className="block max-w-[16rem] truncate text-xs text-muted-foreground">
-          {progress}
-        </span>
-      )}
-    </div>
-  );
-  if (log.length === 0) return line;
-
-  return (
-    <Dialog>
-      <DialogTrigger className="cursor-pointer text-left" title="진행 내역 보기">
-        {line}
-      </DialogTrigger>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader className="min-w-0">
-          <DialogTitle>진행 내역</DialogTitle>
-          <DialogDescription className="truncate">
-            {String(row.title ?? "")}
-          </DialogDescription>
-        </DialogHeader>
-        <EditedFilesSummary log={log} />
-        <div className="max-h-[60vh] min-w-0 space-y-2 overflow-y-auto">
-          {log.map((ev, i) =>
-            ev.t === "tool" ? (
-              <ToolPart key={i} name={ev.name ?? "tool"} input={ev.input ?? ev.detail} />
-            ) : ev.detail ? (
-              // 텍스트 발화는 채팅의 중간 발화처럼 흐린 말풍선으로
-              <div
-                key={i}
-                className="rounded-lg bg-secondary/50 px-3 py-2 text-sm text-muted-foreground"
-              >
-                <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
-                  {ev.detail}
-                </Markdown>
-              </div>
-            ) : null,
-          )}
-          <p className="pt-2 text-xs text-muted-foreground">
-            실행 중 · 실시간 갱신됩니다.
-          </p>
-        </div>
-      </DialogContent>
-    </Dialog>
+      <StatusBadge status={issue.status} label={issueStateLabel(issue)} />
+      {issue.status === "running" && <RunStatusLine log={issue.progressLog ?? []} />}
+    </button>
   );
 }
 
@@ -224,712 +111,6 @@ function ImageCell({ imgs, title }: { imgs: string[]; title: string }) {
   );
 }
 
-/**
- * 이미지가 아닌 파일(엑셀·PDF 등) 첨부 컨트롤. 등록 폼·재실행 다이얼로그가 공유한다.
- * 업로드 즉시 이슈 files[]에 쌓이므로, 다음 실행 때 에이전트 작업 디렉터리로 복사된다.
- *
- * ensureIssue: 업로드 대상 이슈 id를 확보한다(등록 폼은 첫 업로드 시 이슈를 생성).
- */
-function FileAttach({
-  ensureIssue,
-  attached,
-  onAttached,
-}: {
-  ensureIssue: () => Promise<string>;
-  attached: IssueAttachment[];
-  onAttached: (files: IssueAttachment[]) => void;
-}) {
-  const [busy, setBusy] = useState(false);
-
-  async function handleFiles(picked: File[]) {
-    if (picked.length === 0) return;
-    setBusy(true);
-    try {
-      const id = await ensureIssue();
-      const form = new FormData();
-      for (const f of picked) form.append("files", f);
-      const res = await upload<{ files: IssueAttachment[] }>(
-        `/issues/${id}/files`,
-        form,
-      );
-      onAttached(res.files);
-      toast.success(`파일 ${picked.length}개를 첨부했습니다.`);
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="space-y-1.5">
-      <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-input px-2 py-1 text-xs text-muted-foreground hover:text-foreground">
-        <Paperclip className="size-3.5" />
-        {busy ? "업로드 중..." : "파일 첨부 (엑셀·PDF 등)"}
-        <input
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            handleFiles(Array.from(e.target.files ?? []));
-            e.target.value = "";
-          }}
-        />
-      </label>
-      {attached.length > 0 && (
-        <ul className="space-y-1 text-xs">
-          {attached.map((f) => (
-            <li key={f.url} className="flex items-center gap-1.5">
-              <Paperclip className="size-3 shrink-0 text-muted-foreground" />
-              <a
-                href={uploadUrl(f.url)}
-                target="_blank"
-                rel="noreferrer"
-                className="truncate underline underline-offset-2"
-              >
-                {f.name}
-              </a>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-/** 에이전트가 남긴 결정 질문을 구조로 읽은 결과. */
-type DecisionQuestion = {
-  question: string;
-  reason: string | null;
-  options: { key: string; label: string; detail: string | null }[];
-  recommended: string | null;
-};
-
-/**
- * 결정 대기 질문(`질문:` / `이유:` / `A) 이름 — 설명` / `추천:`)을 구조로 파싱한다.
- * 규약을 따르지 않는 옛 질문은 null을 돌려 원문 렌더로 폴백한다.
- */
-function parseDecisionQuestion(text: string): DecisionQuestion | null {
-  let question = "";
-  let reason: string | null = null;
-  let recommended: string | null = null;
-  const options: DecisionQuestion["options"] = [];
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (!line || line.startsWith("```")) continue;
-    if (line.startsWith("질문:")) {
-      question = line.slice(3).trim();
-      continue;
-    }
-    if (line.startsWith("이유:")) {
-      reason = line.slice(3).trim();
-      continue;
-    }
-    if (line.startsWith("추천:")) {
-      recommended = line.slice(3).trim().match(/[A-Z]/)?.[0] ?? null;
-      continue;
-    }
-    // `A) 이름 — 설명` — 구분자는 em dash(—) 또는 하이픈을 허용한다.
-    const opt = line.match(/^([A-Z])\)\s*(.+)$/);
-    if (opt) {
-      const [label, detail] = opt[2].split(/\s+[—–-]\s+/);
-      options.push({
-        key: opt[1],
-        label: label.trim(),
-        detail: detail?.trim() ?? null,
-      });
-    }
-  }
-  if (!question && options.length === 0) return null;
-  return { question, reason, options, recommended };
-}
-
-/**
- * 재실행 다이얼로그: 이력 타임라인 + 추가 지시 입력(이미지·파일 첨부 가능) + 재실행.
- * 어떤 상태의 이슈에도 쓸 수 있다. 열 때 GET /issues/:id/notes로 이력 지연 로드.
- * 결정 대기는 답에 집중하도록 실행 결과·이력을 감추고 에이전트 질문만 보여준다.
- *
- * 재실행 동작:
- *  - 입력한 추가 지시가 있으면 먼저 POST /notes(HUMAN)로 남긴다(실행 시 프롬프트에 주입됨).
- *  - 상태가 needs_decision이면 POST /resume, 그 외에는 POST /run으로 재큐한다.
- *
- * 이미지: 등록 폼과 같은 방식(POST /issues/:id/images)으로 붙여넣기·드래그 업로드한다.
- * 업로드 즉시 이슈의 images[]에 쌓이므로, 다음 실행 때 첨부 이미지로 함께 전달된다.
- */
-function RerunDialog({
-  row,
-  trigger,
-  onChanged,
-}: {
-  row: Record<string, unknown>;
-  trigger: React.ReactNode;
-  onChanged?: () => void;
-}) {
-  const id = String(row.id);
-  const status = String(row.status);
-  const isDecision = status === "needs_decision";
-  const error = (row.error as string | null | undefined) ?? null;
-  const result = (row.result as string | null | undefined) ?? null;
-  const [open, setOpen] = useState(false);
-  const [notes, setNotes] = useState<IssueNote[] | null>(null);
-  const [memo, setMemo] = useState("");
-  const [busy, setBusy] = useState(false);
-  // 이번 재실행에 첨부한 파일(엑셀·PDF 등). 업로드 시점에 이미 이슈에 붙는다.
-  const [files, setFiles] = useState<IssueAttachment[]>(
-    (row.files as IssueAttachment[] | undefined) ?? [],
-  );
-  // 결정 질문을 GitHub 이슈에 물어본 코멘트 URL(있으면 중복 게시 대신 링크를 보여준다).
-  const [askedUrl, setAskedUrl] = useState<string | null>(
-    (row.decisionCommentUrl as string | null | undefined) ?? null,
-  );
-  // 클릭해 고른 선택지 키(강조 표시용). 실제 반영은 추가 지시란 → 재실행.
-  const [picked, setPicked] = useState<string | null>(null);
-
-  async function loadNotes(next: boolean) {
-    setOpen(next);
-    if (!next) return;
-    try {
-      setNotes(await api.get<IssueNote[]>(`/issues/${id}/notes`));
-    } catch (e) {
-      toast.error((e as Error).message);
-      setNotes([]);
-    }
-  }
-
-  /**
-   * 지시에 붙일 이미지 업로드. 등록 폼과 동일한 엔드포인트를 쓴다.
-   * 이슈는 이미 존재하므로 등록 폼의 ensureIssue 같은 선생성이 필요 없다.
-   */
-  async function uploadImage(file: File): Promise<string> {
-    const form = new FormData();
-    form.append("files", file);
-    const res = await upload<{ images: string[] }>(`/issues/${id}/images`, form);
-    const rel = res.images[res.images.length - 1];
-    onChanged?.();
-    return uploadUrl(rel);
-  }
-
-  async function addMemo() {
-    if (!memo.trim()) return;
-    setBusy(true);
-    try {
-      await api.post(`/issues/${id}/notes`, { content: memo.trim() });
-      setMemo("");
-      await loadNotes(true);
-      toast.success("지시를 추가했습니다.");
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  /**
-   * 이슈의 실행 세션을 이어받는 대화를 만들고 채팅 화면으로 이동한다.
-   * 이슈 상태는 바꾸지 않는다 — 대화에서 결론이 나도 이슈 완료는 사람이 정한다.
-   */
-  async function continueInChat() {
-    setBusy(true);
-    try {
-      // 입력해 둔 지시가 있으면 이력에 남긴다(대화와 별개로 이슈에 기록되어야 한다).
-      if (memo.trim()) {
-        await api.post(`/issues/${id}/notes`, { content: memo.trim() });
-        setMemo("");
-      }
-      // 전용 worktree에서 연다 — 이슈가 작업하던 브랜치를 기준으로 삼아
-      // 그 결과물을 보면서 이어갈 수 있다(clone base는 건드리지 않는다).
-      const s = await api.post<{ id: string }>("/chat/sessions", {
-        fromIssueId: id,
-        useWorktree: true,
-      });
-      setOpen(false);
-      onChanged?.();
-      window.location.href = `/chat?session=${s.id}`;
-    } catch (e) {
-      toast.error((e as Error).message);
-      setBusy(false);
-    }
-  }
-
-  async function rerun() {
-    setBusy(true);
-    try {
-      // 입력한 추가 지시가 있으면 먼저 메모로 남긴다(다음 실행 프롬프트에 주입).
-      if (memo.trim()) {
-        await api.post(`/issues/${id}/notes`, { content: memo.trim() });
-        setMemo("");
-      }
-      // 결정 대기는 resume, 그 외 상태는 run으로 재큐.
-      await api.post(`/issues/${id}/${isDecision ? "resume" : "run"}`);
-      toast.success("재실행 대기열에 넣었습니다. 워커가 처리합니다.");
-      setOpen(false);
-      onChanged?.();
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  /**
-   * 결정 질문을 GitHub 이슈 코멘트로 물어본다.
-   * 답변은 자동으로 회수하지 않는다 — 답글을 읽고 아래 추가 지시란에 정리해 넣는다.
-   */
-  async function askOnGithub() {
-    setBusy(true);
-    try {
-      const next = await api.post<{ decisionCommentUrl?: string | null }>(
-        `/issues/${id}/decision-comment`,
-      );
-      setAskedUrl(next.decisionCommentUrl ?? null);
-      onChanged?.();
-      toast.success("GitHub 이슈에 질문을 남겼습니다.");
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // 에이전트의 마지막 질문(가장 최근 AGENT 메모) — 결정 대기일 때 강조
-  const question = notes
-    ? [...notes].reverse().find((n) => n.author === "agent")?.content
-    : null;
-  // 규약을 지킨 질문이면 선택지 카드로, 아니면 원문 마크다운으로 보여준다.
-  const decision = question ? parseDecisionQuestion(question) : null;
-
-  return (
-    <Dialog open={open} onOpenChange={loadNotes}>
-      <DialogTrigger className="cursor-pointer" title="지시 후 재실행">
-        {trigger}
-      </DialogTrigger>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>
-            {isDecision
-              ? "사람 결정이 필요합니다"
-              : status === "done"
-                ? "실행 결과"
-                : status === "error"
-                  ? "실행 오류"
-                  : status === "interrupted"
-                    ? "실행 중단됨"
-                    : "추가 지시 후 재실행"}
-          </DialogTitle>
-          <DialogDescription>{String(row.title ?? "")}</DialogDescription>
-        </DialogHeader>
-        <div className="max-h-[60vh] space-y-4 overflow-y-auto">
-          {/* 오류·중단 사유 */}
-          {error && (
-            <div className="space-y-1.5">
-              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {status === "interrupted" ? "중단 사유" : "오류 메시지"}
-              </div>
-              <pre
-                className={`whitespace-pre-wrap rounded-md bg-muted p-3 text-sm ${
-                  status === "error" ? "text-destructive" : ""
-                }`}
-              >
-                {error}
-              </pre>
-            </div>
-          )}
-          {/* 실행 결과 — 완료 이슈에서 무엇을 했는지 확인하고 이어서 물어본다 */}
-          {result && !isDecision && (
-            <div className="space-y-1.5">
-              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                실행 결과
-              </div>
-              <div className="rounded-md bg-muted p-3">
-                <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
-                  {result}
-                </Markdown>
-              </div>
-            </div>
-          )}
-          {isDecision && question && (
-            <div className="rounded-md border border-[var(--accent)]/40 bg-[var(--accent)]/5 p-3 text-sm">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                에이전트 질문
-              </div>
-              {decision ? (
-                <div className="space-y-3">
-                  {decision.question && (
-                    <div className="text-base font-medium leading-snug">
-                      {decision.question}
-                    </div>
-                  )}
-                  {decision.reason && (
-                    <div className="text-muted-foreground">{decision.reason}</div>
-                  )}
-                  {/* 선택지 카드: 누르면 아래 추가 지시란에 채워진다(재실행은 사람이 누른다). */}
-                  {decision.options.length > 0 && (
-                    <div className="space-y-2">
-                      {decision.options.map((o) => (
-                        <button
-                          key={o.key}
-                          type="button"
-                          onClick={() => {
-                            setPicked(o.key);
-                            setMemo(
-                              `${o.key}) ${o.label} 선택합니다. 이 방향으로 진행해 주세요.`,
-                            );
-                          }}
-                          className={`w-full cursor-pointer rounded-md border p-3 text-left transition-colors ${
-                            picked === o.key
-                              ? "border-[var(--accent)] bg-[var(--accent)]/10"
-                              : "border-border bg-background hover:bg-muted"
-                          }`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium">
-                              {o.key}) {o.label}
-                            </span>
-                            {decision.recommended === o.key && (
-                              <Badge variant="success">추천</Badge>
-                            )}
-                          </div>
-                          {o.detail && (
-                            <div className="mt-1 text-xs text-muted-foreground">
-                              {o.detail}
-                            </div>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
-                  {question}
-                </Markdown>
-              )}
-              {/* 결정 권한이 다른 사람에게 있으면 이 질문을 GitHub 이슈로 물어본다.
-                  답변은 자동 회수하지 않으므로, 답글을 읽고 추가 지시란에 정리해 넣는다.
-                  수동 이슈(issueNumber 없음)는 게시할 곳이 없어 감춘다. */}
-              {row.issueNumber ? (
-                <div className="mt-3 border-t border-[var(--accent)]/20 pt-3">
-                  {askedUrl ? (
-                    <div className="text-xs text-muted-foreground">
-                      이 질문을 GitHub 이슈에 남겼습니다 —{" "}
-                      <a
-                        href={askedUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="underline"
-                      >
-                        코멘트 보기
-                      </a>
-                    </div>
-                  ) : (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={askOnGithub}
-                      disabled={busy}
-                      title="이 질문을 GitHub 이슈 코멘트로 남깁니다. 답글은 자동으로 반영되지 않으므로, 답을 읽고 아래 추가 지시란에 정리해 넣으세요."
-                    >
-                      GitHub 이슈에 물어보기
-                    </Button>
-                  )}
-                </div>
-              ) : null}
-              <div className="mt-2 border-t border-[var(--accent)]/20 pt-2 text-xs text-muted-foreground">
-                답을 정하기 어려우면 <b>대화로 이어가기</b>로 에이전트와 상의할 수
-                있습니다. 이슈가 작업하던 브랜치를 이어받은 전용 작업 공간에서
-                열리므로, 고친 내용을 보면서 물어볼 수 있습니다.
-              </div>
-            </div>
-          )}
-          {/* 이력 타임라인 */}
-          {!isDecision && (
-            <div className="space-y-2">
-              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                이력
-              </div>
-              <NoteList notes={notes} />
-            </div>
-          )}
-          {/* 추가 지시 입력 (이미지 붙여넣기/드래그 업로드 가능) */}
-          <div className="space-y-2">
-            <MarkdownEditor
-              value={memo}
-              onChange={setMemo}
-              onUploadImage={uploadImage}
-              placeholder="이번 실행에 반영할 추가 지시를 입력하세요. 이미지를 붙여넣거나 드래그하면 자동 업로드됩니다. (선택 — 비워두면 그대로 재실행)"
-              minRows={4}
-            />
-            <FileAttach
-              ensureIssue={async () => id}
-              attached={files}
-              onAttached={(next) => {
-                setFiles(next);
-                onChanged?.();
-              }}
-            />
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="secondary"
-                onClick={addMemo}
-                disabled={busy || !memo.trim()}
-              >
-                지시만 저장
-              </Button>
-              <Button onClick={rerun} disabled={busy}>
-                {memo.trim()
-                  ? "지시 반영해 재실행"
-                  : isDecision
-                    ? "재개"
-                    : "재실행"}
-              </Button>
-              {/* 실행이 끝난 이슈는 그 세션을 이어받아 대화로 풀어갈 수 있다.
-                  결정 대기는 답을 상의하고, 완료·오류는 "왜 이렇게 고쳤는지"를
-                  물어본다. 이슈 상태는 그대로 두므로 대화 뒤에도 재실행이 가능하다.
-                  실행된 적 없으면(sessionId 없음) 이어받을 맥락이 없어 감춘다. */}
-              {row.sessionId ? (
-                <Button
-                  variant="secondary"
-                  onClick={continueInChat}
-                  disabled={busy}
-                  title="이슈의 대화 맥락과 작업 브랜치를 이어받아 전용 작업 공간에서 채팅을 시작합니다. 이슈 브랜치는 그대로 두고 별도 브랜치로 분기하므로, 대화에서 무엇을 고치든 이슈 재실행에 영향이 없습니다."
-                >
-                  대화로 이어가기
-                </Button>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/**
- * 이슈 상세 다이얼로그: 목록에서 제목을 클릭하면 열린다.
- * 목록 행(row)에 이미 전체 IssueTask DTO가 들어있으므로 본문·이미지·결과는
- * 추가 요청 없이 렌더하고, 이력(notes)만 열 때 지연 로드한다.
- */
-function IssueDetailDialog({
-  row,
-  trigger,
-}: {
-  row: Record<string, unknown>;
-  trigger: React.ReactNode;
-}) {
-  const id = String(row.id);
-  const [open, setOpen] = useState(false);
-  const [notes, setNotes] = useState<IssueNote[] | null>(null);
-
-  const status = String(row.status);
-  const body = (row.body as string | null | undefined) ?? null;
-  const result = (row.result as string | null | undefined) ?? null;
-  const error = (row.error as string | null | undefined) ?? null;
-  const url = (row.url as string | null | undefined) ?? null;
-  const prUrl = (row.prUrl as string | null | undefined) ?? null;
-  const prompt = (row.prompt as string | null | undefined) ?? null;
-  const labels = (row.labels as string[] | undefined) ?? [];
-  const imgs = (row.images as string[] | undefined) ?? [];
-  const atts = (row.files as IssueAttachment[] | undefined) ?? [];
-  const num = row.issueNumber ? `#${row.issueNumber}` : null;
-  const isDecision = status === "needs_decision";
-  const question = notes
-    ? [...notes].reverse().find((n) => n.author === "agent")?.content
-    : null;
-
-  // 본문 이미지 치환용 맵: 서버는 서명된 상대경로를 주므로 절대 URL로 바꾼다.
-  const rawMap = (row.imageMap as Record<string, string> | null | undefined) ?? null;
-  const bodyImageMap = rawMap
-    ? Object.fromEntries(
-        Object.entries(rawMap).map(([orig, rel]) => [orig, uploadUrl(rel)]),
-      )
-    : null;
-
-  async function onOpenChange(next: boolean) {
-    setOpen(next);
-    // 이력은 열 때 한 번만 불러온다(닫았다 다시 열면 갱신).
-    if (!next) return;
-    try {
-      setNotes(await api.get<IssueNote[]>(`/issues/${id}/notes`));
-    } catch (e) {
-      toast.error((e as Error).message);
-      setNotes([]);
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogTrigger className="cursor-pointer text-left" title="이슈 상세 보기">
-        {trigger}
-      </DialogTrigger>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader className="min-w-0">
-          <DialogTitle className="flex min-w-0 items-center gap-2">
-            {num && <Mono>{num}</Mono>}
-            <span className="min-w-0 truncate">{String(row.title ?? "")}</span>
-          </DialogTitle>
-          <DialogDescription className="flex flex-wrap items-center gap-2">
-            <StatusBadge status={status} label={issueStatusLabel(status)} />
-            <Mono>{String(row.source)}</Mono>
-            {row.author ? <span>· {String(row.author)}</span> : null}
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="max-h-[65vh] min-w-0 space-y-4 overflow-y-auto">
-          {/* 링크·라벨 */}
-          {(url || prUrl || labels.length > 0) && (
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              {url && (
-                <a
-                  href={url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-[var(--accent)] underline underline-offset-2"
-                >
-                  GitHub 이슈
-                </a>
-              )}
-              {prUrl && (
-                <a
-                  href={prUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-[var(--accent)] underline underline-offset-2"
-                >
-                  PR
-                </a>
-              )}
-              {labels.map((l) => (
-                <Badge key={l} variant="muted">
-                  {l}
-                </Badge>
-              ))}
-            </div>
-          )}
-
-          {/* 본문 — 목록에서는 볼 수 없던 정보 */}
-          <Section title="본문">
-            {body ? (
-              <div className="rounded-md bg-muted p-3">
-                <Markdown
-                  className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2"
-                  imageMap={bodyImageMap}
-                >
-                  {body}
-                </Markdown>
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">본문이 없습니다.</p>
-            )}
-          </Section>
-
-          {prompt && (
-            <Section title="추가 지시">
-              <pre className="whitespace-pre-wrap rounded-md bg-muted p-3 text-sm">
-                {prompt}
-              </pre>
-            </Section>
-          )}
-
-          {imgs.length > 0 && (
-            <Section title={`첨부 이미지 (${imgs.length})`}>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {imgs.map((rel) => (
-                  <a key={rel} href={uploadUrl(rel)} target="_blank" rel="noreferrer">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={uploadUrl(rel)}
-                      alt=""
-                      className="aspect-square w-full rounded border border-border object-cover"
-                    />
-                  </a>
-                ))}
-              </div>
-            </Section>
-          )}
-
-          {atts.length > 0 && (
-            <Section title={`첨부 파일 (${atts.length})`}>
-              <ul className="space-y-1 text-sm">
-                {atts.map((f) => (
-                  <li key={f.url} className="flex items-center gap-1.5">
-                    <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
-                    <a
-                      href={uploadUrl(f.url)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="truncate underline underline-offset-2"
-                    >
-                      {f.name}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </Section>
-          )}
-
-          {error && (
-            <Section title={status === "interrupted" ? "중단 사유" : "오류 메시지"}>
-              <pre
-                className={`whitespace-pre-wrap rounded-md bg-muted p-3 text-sm ${
-                  status === "error" ? "text-destructive" : ""
-                }`}
-              >
-                {error}
-              </pre>
-            </Section>
-          )}
-
-          {/* 결정 대기는 실행 결과·이력 대신 에이전트 질문(가장 최근 AGENT 메모)만 보여준다. */}
-          {isDecision ? (
-            question && (
-              <Section title="에이전트 질문">
-                <div className="rounded-md bg-muted p-3">
-                  <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
-                    {question}
-                  </Markdown>
-                </div>
-              </Section>
-            )
-          ) : (
-            <>
-              {result && (
-                <Section title="실행 결과">
-                  <div className="rounded-md bg-muted p-3">
-                    <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
-                      {result}
-                    </Markdown>
-                  </div>
-                </Section>
-              )}
-
-              <Section title="이력">
-                <NoteList notes={notes} />
-              </Section>
-            </>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/** 상세 다이얼로그 내부 섹션(제목 + 내용) 공통 래퍼. */
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="min-w-0 space-y-1.5">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        {title}
-      </div>
-      {children}
-    </div>
-  );
-}
 
 interface Project {
   id: string;
@@ -958,6 +139,7 @@ function GithubImport({
   const [state, setState] = useState<"open" | "closed" | "all">("open");
   const [issues, setIssues] = useState<GhIssue[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [mode, setMode] = useState<IssueMode>("direct");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -990,7 +172,7 @@ function GithubImport({
     try {
       const res = await api.post<{ imported: number } | unknown[]>(
         "/issues/import",
-        { projectId, numbers: Array.from(selected) },
+        { projectId, numbers: Array.from(selected), mode },
       );
       const n = Array.isArray(res) ? res.length : 0;
       toast.success(`${n}개 이슈를 큐에 추가했습니다.`);
@@ -1108,6 +290,8 @@ function GithubImport({
           </div>
         )}
 
+        {issues.length > 0 && <ModePicker value={mode} onChange={setMode} />}
+
         <DialogFooter>
           <Button variant="secondary" onClick={() => onOpenChange(false)}>
             닫기
@@ -1131,23 +315,32 @@ interface ProjectRef {
 }
 
 /**
- * GitHub Issue 뷰어의 "에이전트로 처리" 링크(`/issues?import=<projectId>&number=<n>`)로
- * 들어왔을 때, 그 이슈 하나를 큐에 넣을지 확인한다. 큐 추가는 이 화면만 한다
- * (docs/rules/github-issue-separation.md 규칙 3). 이미 큐에 있으면 건너뛴다.
+ * GitHub Issue 뷰어의 "바로 처리"·"분석 후 진행" 링크
+ * (`/issues?import=<projectId>&number=<n>&mode=direct|plan`)로 들어왔을 때, 그 이슈 하나를
+ * 큐에 넣을지 확인한다. 링크의 모드가 기본값이고 여기서 바꿀 수 있다. 큐 추가는 이 화면만
+ * 한다(docs/rules/github-issue-separation.md 규칙 3). 이미 큐에 있으면 건너뛴다.
  */
 function ProcessFromGithub({
   target,
   projects,
   onClose,
   onImported,
+  onExisting,
 }: {
-  target: { projectId: string; number: number } | null;
+  target: { projectId: string; number: number; mode: IssueMode } | null;
   projects: ProjectRef[];
   onClose: () => void;
   onImported: (projectId: string) => void;
+  /** 이미 큐에 있는 이슈면 그 실행 창을 연다(거기서 이어가거나 '분석부터 다시'). */
+  onExisting: (issueId: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<IssueMode>("direct");
   const project = target ? projects.find((p) => p.id === target.projectId) : null;
+
+  useEffect(() => {
+    if (target) setMode(target.mode);
+  }, [target]);
 
   async function importOne() {
     if (!target) return;
@@ -1156,14 +349,22 @@ function ProcessFromGithub({
       const res = await api.post<unknown[]>("/issues/import", {
         projectId: target.projectId,
         numbers: [target.number],
+        mode,
       });
-      if (Array.isArray(res) && res.length > 0) {
-        toast.success(`#${target.number}을 큐에 추가했습니다. 워커가 처리합니다.`);
-      } else {
-        toast.info(`#${target.number}은 이미 큐에 있습니다.`);
-      }
       onImported(target.projectId);
       onClose();
+      if (Array.isArray(res) && res.length > 0) {
+        toast.success(`#${target.number}을 큐에 추가했습니다. 워커가 처리합니다.`);
+        return;
+      }
+      // 이미 등록된 이슈 — 모드를 몰래 바꾸지 않고, 그 실행 창을 열어 사람이 이어가게 한다.
+      const rows = await api.get<IssueTask[]>(`/issues?projectId=${target.projectId}`);
+      const existing = rows.find((r) => r.issueNumber === target.number);
+      toast.info(
+        `#${target.number}은 이미 큐에 있습니다.` +
+          (mode === "plan" ? " 실행 창에서 '분석부터 다시'로 분석 후 진행할 수 있습니다." : ""),
+      );
+      if (existing) onExisting(existing.id);
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -1181,6 +382,7 @@ function ProcessFromGithub({
             에이전트 작업 큐에 추가합니다.
           </DialogDescription>
         </DialogHeader>
+        <ModePicker value={mode} onChange={setMode} />
         <DialogFooter>
           <Button variant="secondary" onClick={onClose}>
             취소
@@ -1213,6 +415,7 @@ function ManualIssueWithImages({
   // 이미 생성된 이슈 id (이미지·파일 업로드 대상). 첫 저장 시 생성.
   const [issueId, setIssueId] = useState<string | null>(null);
   const [files, setFiles] = useState<IssueAttachment[]>([]);
+  const [mode, setMode] = useState<IssueMode>("direct");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -1235,6 +438,7 @@ function ManualIssueWithImages({
       body,
       prompt: prompt.trim() || undefined,
       source: "manual",
+      mode,
     });
     setIssueId(created.id);
     return created.id;
@@ -1258,6 +462,7 @@ function ManualIssueWithImages({
         title: title.trim(),
         body,
         prompt: prompt.trim() || undefined,
+        mode,
       });
       toast.success("이슈를 등록했습니다.");
       setTitle("");
@@ -1331,6 +536,10 @@ function ManualIssueWithImages({
               placeholder="에이전트에게 전달할 추가 지시 (선택)"
             />
           </div>
+          <div className="space-y-1.5">
+            <Label>처리 방식</Label>
+            <ModePicker value={mode} onChange={setMode} />
+          </div>
         </div>
 
         <DialogFooter>
@@ -1361,7 +570,10 @@ export default function IssuesPage() {
   const [ghTarget, setGhTarget] = useState<{
     projectId: string;
     number: number;
+    mode: IssueMode;
   } | null>(null);
+  // 실행 다이얼로그로 연 이슈(제목·상태·실행 버튼 공용). null이면 닫힘.
+  const [openIssueId, setOpenIssueId] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -1370,15 +582,15 @@ export default function IssuesPage() {
       .catch(() => setProjects([]));
   }, []);
 
-  // ?import=<projectId>&number=<n> 으로 들어오면 확인 다이얼로그를 띄우고 쿼리는 지운다
-  // (새로고침 때 다시 뜨지 않게).
+  // ?import=<projectId>&number=<n>&mode=direct|plan 으로 들어오면 확인 다이얼로그를 띄우고
+  // 쿼리는 지운다(새로고침 때 다시 뜨지 않게).
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const projectId = q.get("import");
     const number = Number(q.get("number"));
     if (!projectId || !number) return;
     window.history.replaceState(null, "", "/issues");
-    setGhTarget({ projectId, number });
+    setGhTarget({ projectId, number, mode: q.get("mode") === "plan" ? "plan" : "direct" });
   }, []);
 
   // 필터를 쿼리스트링으로 조립 — endpoint가 바뀌면 CrudPanel이 자동 재조회한다.
@@ -1420,7 +632,10 @@ export default function IssuesPage() {
           setFilterProjectId(projectId);
           setReload((r) => r + 1);
         }}
+        onExisting={setOpenIssueId}
       />
+
+      <IssueRunDialog id={openIssueId} onClose={() => setOpenIssueId(null)} />
 
       <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-3">
         <Label className="shrink-0 text-xs text-muted-foreground">
@@ -1514,17 +729,14 @@ export default function IssuesPage() {
             key: "title",
             label: "제목",
             render: (r) => (
-              <IssueDetailDialog
-                row={r}
-                trigger={
-                  <span
-                    className="block max-w-[55vw] truncate underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 hover:decoration-solid hover:decoration-[var(--accent)] sm:max-w-[26rem]"
-                    title={String(r.title ?? "")}
-                  >
-                    {String(r.title ?? "")}
-                  </span>
-                }
-              />
+              <button
+                type="button"
+                onClick={() => setOpenIssueId(String(r.id))}
+                className="block max-w-[55vw] cursor-pointer truncate text-left underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 hover:decoration-solid hover:decoration-[var(--accent)] sm:max-w-[26rem]"
+                title={String(r.title ?? "")}
+              >
+                {String(r.title ?? "")}
+              </button>
             ),
           },
           {
@@ -1536,7 +748,7 @@ export default function IssuesPage() {
             key: "status",
             label: "상태",
             render: (r) => (
-              <IssueStatusCell row={r} onChanged={() => setReload((n) => n + 1)} />
+              <IssueStatusCell row={r} onOpen={() => setOpenIssueId(String(r.id))} />
             ),
           },
           {
@@ -1578,33 +790,24 @@ export default function IssuesPage() {
           },
           {
             key: "rerun",
-            label: "재실행",
+            label: "실행",
             render: (r) => {
-              // 실행 중에는 재실행 대신 회전 아이콘으로 표시(재실행 막음).
-              if (String(r.status) === "running")
-                return (
-                  <span
-                    className="inline-flex size-8 items-center justify-center text-muted-foreground"
-                    title="실행 중"
-                    aria-label="실행 중"
-                  >
-                    <Loader2 className="size-4 animate-spin" />
-                  </span>
-                );
+              const running = String(r.status) === "running";
+              // 실행 다이얼로그를 연다. 실행 중이면 회전 아이콘으로 진행을 알린다.
               return (
-                <RerunDialog
-                  row={r}
-                  onChanged={() => setReload((n) => n + 1)}
-                  trigger={
-                    <span
-                      className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border hover:bg-muted/50"
-                      title="지시·재실행"
-                      aria-label="지시·재실행"
-                    >
-                      <Play className="size-4" />
-                    </span>
-                  }
-                />
+                <button
+                  type="button"
+                  onClick={() => setOpenIssueId(String(r.id))}
+                  className="inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md border border-border hover:bg-muted/50"
+                  title={running ? "실행 중 — 진행 보기" : "실행 열기"}
+                  aria-label={running ? "실행 중 — 진행 보기" : "실행 열기"}
+                >
+                  {running ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Play className="size-4" />
+                  )}
+                </button>
               );
             },
           },

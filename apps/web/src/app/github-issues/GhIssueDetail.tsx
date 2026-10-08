@@ -10,6 +10,7 @@ import {
   CircleDot,
   ExternalLink,
   Loader2,
+  MessagesSquare,
   Pencil,
   RefreshCw,
   Tags,
@@ -307,15 +308,24 @@ export function GhIssueDetail({
             <RefreshCw className="size-4" />
             새로고침
           </Button>
-          {/* 에이전트 처리는 이슈 화면 몫이다. 뷰어는 링크만 걸고 큐에 넣지 않는다
+          {/* 에이전트 처리는 이슈 화면 몫이다. 뷰어는 모드만 실은 링크를 걸고 큐에 넣지 않는다
               (docs/rules/github-issue-separation.md 규칙 3). */}
-          <Button asChild size="sm">
+          <Button asChild size="sm" variant="secondary">
             <Link
-              href={`/issues?import=${encodeURIComponent(projectId)}&number=${issue.number}`}
-              title="이슈 화면에서 이 이슈를 에이전트 작업 큐에 추가합니다."
+              href={`/issues?import=${encodeURIComponent(projectId)}&number=${issue.number}&mode=direct`}
+              title="이슈 화면에서 이 이슈를 에이전트 작업 큐에 추가해 곧바로 처리합니다."
             >
               <Bot className="size-4" />
-              에이전트로 처리
+              바로 처리
+            </Link>
+          </Button>
+          <Button asChild size="sm">
+            <Link
+              href={`/issues?import=${encodeURIComponent(projectId)}&number=${issue.number}&mode=plan`}
+              title="에이전트가 먼저 분석해 질문하고, 답으로 정한 기획안을 승인하면 처리합니다."
+            >
+              <MessagesSquare className="size-4" />
+              분석 후 진행
             </Link>
           </Button>
           <a

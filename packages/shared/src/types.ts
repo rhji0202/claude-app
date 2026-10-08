@@ -134,6 +134,33 @@ export type IssueTaskStatus =
   | "interrupted"
   | "needs_decision";
 
+/** 이슈 처리 모드: 바로 처리 vs 분석·인터뷰로 기획을 정한 뒤 처리 */
+export type IssueMode = "direct" | "plan";
+
+/** 분석 후 진행의 단계. interview·review 동안 status는 needs_decision. */
+export type IssuePlanStage = "interview" | "review" | "approved";
+
+/** 인터뷰 질문 한 건(질문·이유·선택지·추천). 선택지는 비어 있을 수 있다(직접 입력만). */
+export interface IssueInterviewQuestion {
+  id: string;
+  question: string;
+  reason: string | null;
+  options: { key: string; label: string; detail: string | null }[];
+  recommended: string | null;
+}
+
+/** 현재 인터뷰 라운드: 에이전트의 분석 요약 + 이번에 물을 질문들. */
+export interface IssueInterview {
+  analysis: string | null;
+  questions: IssueInterviewQuestion[];
+}
+
+/** 인터뷰 답 한 건. answer는 고른 선택지 문구 또는 직접 입력한 답. */
+export interface IssueInterviewAnswer {
+  questionId: string;
+  answer: string;
+}
+
 /** 이슈 메모 작성 주체 */
 export type IssueNoteAuthor = "human" | "agent" | "system";
 
@@ -211,6 +238,16 @@ export interface IssueTask {
   resultCommentUrl?: string | null;
   /** 결정 대기 질문을 GitHub 이슈에 물어본 코멘트 URL (없으면 아직 안 물어봄) */
   decisionCommentUrl?: string | null;
+  /** 처리 모드(바로 처리 / 분석 후 진행) */
+  mode: IssueMode;
+  /** 분석 후 진행의 단계(바로 처리면 null) */
+  planStage?: IssuePlanStage | null;
+  /** 현재 인터뷰 라운드(planStage=interview일 때) */
+  interview?: IssueInterview | null;
+  /** 에이전트가 쓴 기획안(마크다운) */
+  plan?: string | null;
+  /** 기획안을 GitHub 이슈 코멘트로 남긴 URL */
+  planCommentUrl?: string | null;
   /** autoPr 실행으로 생성된 PR URL (있으면 링크 표시) */
   prUrl?: string | null;
   /** triage 분류 결과(미분류면 null) */

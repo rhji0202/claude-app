@@ -6,18 +6,21 @@ import {
   FileText,
   GitBranch,
   PanelLeft,
-  Paperclip,
+  Plus,
   Square,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
-  AssistantLine,
-  ThinkingLine,
-  ToolLine,
-  UserLine,
+  AiProgress,
+  AnswerActions,
+  AssistantBlock,
+  ChatEmpty,
+  UserBubble,
   formatTokens,
-} from "@/components/TerminalTranscript";
+  type ProgressStep,
+} from "@/components/ChatUi";
+import { Markdown } from "@/components/Markdown";
 import { api, streamPost, upload, uploadUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -73,6 +76,9 @@ interface ChatMessage {
   content: string;
   parts?: Part[];
   attachments?: Attachment[];
+  /** 이번 실행의 시작·종료 시각(ms). 화면 전용 — 저장되지 않아 재로드 시 없다. */
+  startedAt?: number;
+  endedAt?: number;
 }
 type StreamEvent =
   | { type: "session"; sessionId: string }
@@ -248,33 +254,63 @@ function useIsNarrow() {
   return narrow;
 }
 
-/** assistant 메시지의 parts를 CLI 트랜스크립트 줄로 펼친다. */
-function AssistantParts({ parts }: { parts: Part[] }) {
+/** parts → 진행 단계(서브에이전트 하위 파트는 children으로 재귀). 빈 텍스트는 뺀다. */
+function partsToSteps(parts: Part[]): ProgressStep[] {
+  const steps: ProgressStep[] = [];
+  for (const p of parts) {
+    if (p.type === "text") {
+      if (p.text.trim()) steps.push({ kind: "text", text: p.text });
+      continue;
+    }
+    steps.push({
+      kind: "tool",
+      name: p.name,
+      input: p.input,
+      result: p.result,
+      isError: p.resultIsError,
+      elapsedSeconds: p.elapsedSeconds,
+      agent: p.agent,
+      children: p.children ? partsToSteps(p.children) : undefined,
+    });
+  }
+  return steps;
+}
+
+/**
+ * assistant 메시지: 마지막 도구 호출 뒤의 텍스트가 답변이고, 그 앞(도구·중간 발화)은
+ * 진행 표시로 접는다. 실행 중 답변이 흐르기 시작하면 진행 표시는 요약으로 바뀐다.
+ */
+function AssistantMessage({ message, live }: { message: ChatMessage; live: boolean }) {
+  const parts = message.parts ?? [];
+  let lastTool = -1;
+  parts.forEach((p, i) => {
+    if (p.type === "tool") lastTool = i;
+  });
+  const answer =
+    parts.length > 0
+      ? parts
+          .slice(lastTool + 1)
+          .map((p) => (p.type === "text" ? p.text : ""))
+          .filter((t) => t.trim())
+          .join("\n\n")
+      : message.content; // 구 메시지(parts 없음) 폴백
+  // 보여줄 게 없으면(중단 직후 빈 응답 등) 아이콘만 남지 않게 그리지 않는다.
+  if (!live && !answer && parts.length === 0) return null;
   return (
-    <>
-      {parts.map((p) => {
-        if (p.type === "tool") {
-          return (
-            <ToolLine
-              key={p.id}
-              name={p.name}
-              input={p.input}
-              result={p.result}
-              resultIsError={p.resultIsError}
-              elapsedSeconds={p.elapsedSeconds}
-              agent={p.agent}
-            >
-              {/* 서브에이전트가 만든 하위 트랜스크립트(재귀) */}
-              {p.children && p.children.length > 0 && (
-                <AssistantParts parts={p.children} />
-              )}
-            </ToolLine>
-          );
-        }
-        if (!p.text) return p.streaming ? <ThinkingLine key={p.id} /> : null;
-        return <AssistantLine key={p.id} text={p.text} />;
-      })}
-    </>
+    <AssistantBlock>
+      <AiProgress
+        steps={partsToSteps(parts.slice(0, lastTool + 1))}
+        live={live && !answer}
+        startedAt={message.startedAt}
+        endedAt={message.endedAt}
+      />
+      {answer && (
+        <Markdown className="markdown-body">
+          {answer}
+        </Markdown>
+      )}
+      {answer && !live && <AnswerActions text={answer} />}
+    </AssistantBlock>
   );
 }
 
@@ -542,8 +578,8 @@ export default function ChatPage() {
         content: text,
         attachments: attachments.length > 0 ? attachments : undefined,
       },
-      // assistant 자리 확보 (parts를 스트리밍으로 채움)
-      { role: "assistant", content: "", parts: [] },
+      // assistant 자리 확보 (parts를 스트리밍으로 채움). 시작 시각은 진행 표시 경과 시간용.
+      { role: "assistant", content: "", parts: [], startedAt: Date.now() },
     ]);
     setRunningSessionId(sessionId);
     runningSessionIdRef.current = sessionId; // effect를 기다리지 않고 즉시 반영
@@ -698,6 +734,15 @@ export default function ChatPage() {
       // 실행이 끝나면 진행분은 버린다 — 이후 재방문은 저장된 내역이 정본이다.
       // (남겨두면 완료된 세션에 옛 진행 표시가 다시 붙는다)
       liveParts.current = null;
+      // 종료 시각 — 진행 표시가 "N초 동안 작업함" 요약으로 바뀐다.
+      if (sessionId === activeIdRef.current) {
+        const endedAt = Date.now();
+        setMessages((msgs) => {
+          const last = msgs[msgs.length - 1];
+          if (last?.role !== "assistant") return msgs;
+          return [...msgs.slice(0, -1), { ...last, endedAt }];
+        });
+      }
       // 실행 중 다른 세션을 보느라 놓친 이벤트가 있고, 지금 그 세션으로 돌아와
       // 있다면 서버 내역으로 맞춘다. 놓친 게 없으면 화면이 이미 정확하다.
       if (missedRef.current && sessionId === activeIdRef.current) {
@@ -764,7 +809,7 @@ export default function ChatPage() {
     // 화면을 꽉 채우고 스크롤은 트랜스크립트에만 준다(Shell이 /chat에서 padding 제거).
     <div className="flex h-full min-h-0">
       {/* 데스크톱 세션 목록 (>=lg) */}
-      <aside className="hidden w-64 shrink-0 border-r border-border lg:block">
+      <aside className="hidden w-72 shrink-0 border-r border-border bg-card lg:block">
         {sessionList}
       </aside>
 
@@ -812,9 +857,9 @@ export default function ChatPage() {
         </DialogContent>
       </Dialog>
 
-      {/* 터미널 */}
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col font-mono text-[13px] leading-relaxed">
-        {/* CLI 기동 배너 — 상단 고정 */}
+      {/* 대화 */}
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* 상단 — 대화 제목·프로젝트·브랜치 */}
         <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
           {/* 모바일 목록 열기 */}
           <Button
@@ -827,13 +872,11 @@ export default function ChatPage() {
             <PanelLeft className="size-5" />
           </Button>
           <div className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-2">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="select-none text-accent">✻</span>
-              <span className="truncate font-semibold">
-                {activeProject?.name ?? "프로젝트 미선택"}
-              </span>
-            </div>
+            <span className="truncate text-sm font-semibold">
+              {activeSession ? activeSession.title || "새 대화" : "대화"}
+            </span>
             <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+              {activeProject && <span className="truncate">{activeProject.name}</span>}
               {/* 실행 중인 브랜치 — clone 전이면 표시하지 않는다(거짓 정보 방지) */}
               {branch && (
                 <span
@@ -844,287 +887,288 @@ export default function ChatPage() {
                   <span className="truncate">{branch}</span>
                 </span>
               )}
-              {activeSession && (
-                <span className="truncate">
-                  {activeSession.title || "새 대화"}
-                </span>
-              )}
             </div>
           </div>
         </div>
 
         {!activeId ? (
-          <div className="flex flex-1 items-center justify-center p-8 text-center text-muted-foreground">
-            대화를 선택하거나 새로 시작하세요.
+          <div className="flex flex-1 items-center justify-center p-8">
+            <ChatEmpty
+              title="무엇을 도와드릴까요?"
+              hint="대화를 선택하거나, 프로젝트를 골라 새 대화를 시작하세요."
+            />
           </div>
         ) : (
           <>
             <div
               ref={scrollRef}
-              className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain px-3 py-3"
+              className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
             >
-              {loadingMsgs ? (
-                <div className="text-muted-foreground">불러오는 중…</div>
-              ) : messages.length === 0 ? (
-                <div className="text-muted-foreground">
-                  메시지를 입력해 세션을 시작하세요.
-                </div>
-              ) : (
-                messages.map((m, i) =>
-                  // 키는 저장 id 우선, 없으면 세션을 접두사로 붙인 인덱스.
-                  // 순수 인덱스만 쓰면 세션을 옮길 때 React가 같은 위치의
-                  // 컴포넌트를 재사용해 도구 줄의 펼침 상태가 엉뚱한 줄로 옮겨간다.
-                  m.role === "user" ? (
-                    <div key={m.id ?? `${activeId}:${i}`} className="min-w-0">
-                      <UserLine text={m.content} />
-                      {m.attachments && m.attachments.length > 0 && (
-                        <div className="mt-1 flex flex-wrap gap-2 pl-4">
-                          {m.attachments.map((a) =>
-                            a.kind === "image" ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                key={a.url}
-                                src={uploadUrl(a.url)}
-                                alt={a.name}
-                                className="max-h-40 rounded border border-border object-contain"
-                              />
-                            ) : (
-                              <a
-                                key={a.url}
-                                href={uploadUrl(a.url)}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-xs hover:border-accent"
-                              >
-                                <FileText className="size-3.5 shrink-0 text-muted-foreground" />
-                                <span className="max-w-48 truncate">{a.name}</span>
-                              </a>
-                            ),
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div
-                      key={m.id ?? `${activeId}:${i}`}
-                      className="min-w-0 space-y-1"
-                    >
-                      {m.parts && m.parts.length > 0 ? (
-                        <AssistantParts parts={m.parts} />
-                      ) : m.content ? (
-                        // 구 메시지(parts 없음) 폴백
-                        <AssistantLine text={m.content} />
-                      ) : streaming ? (
-                        <ThinkingLine />
-                      ) : null}
-                    </div>
-                  ),
-                )
-              )}
+              <div className="mx-auto flex max-w-3xl flex-col gap-6 p-4 sm:p-6">
+                {loadingMsgs ? (
+                  <div className="text-sm text-muted-foreground">불러오는 중…</div>
+                ) : messages.length === 0 ? (
+                  <ChatEmpty
+                    title="무엇을 도와드릴까요?"
+                    hint="질문하거나 작업을 맡기면 에이전트가 프로젝트에서 직접 확인하고 처리합니다."
+                  />
+                ) : (
+                  messages.map((m, i) =>
+                    // 키는 저장 id 우선, 없으면 세션을 접두사로 붙인 인덱스.
+                    // 순수 인덱스만 쓰면 세션을 옮길 때 React가 같은 위치의
+                    // 컴포넌트를 재사용해 단계 펼침 상태가 엉뚱한 메시지로 옮겨간다.
+                    m.role === "user" ? (
+                      <UserBubble
+                        key={m.id ?? `${activeId}:${i}`}
+                        extra={
+                          m.attachments && m.attachments.length > 0 ? (
+                            <div className="flex max-w-[85%] flex-wrap justify-end gap-2">
+                              {m.attachments.map((a) =>
+                                a.kind === "image" ? (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img
+                                    key={a.url}
+                                    src={uploadUrl(a.url)}
+                                    alt={a.name}
+                                    className="max-h-40 rounded-lg border border-border object-contain"
+                                  />
+                                ) : (
+                                  <a
+                                    key={a.url}
+                                    href={uploadUrl(a.url)}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-2 py-1 text-xs hover:border-accent"
+                                  >
+                                    <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                                    <span className="max-w-48 truncate">{a.name}</span>
+                                  </a>
+                                ),
+                              )}
+                            </div>
+                          ) : undefined
+                        }
+                      >
+                        <span className="whitespace-pre-wrap">{m.content}</span>
+                      </UserBubble>
+                    ) : (
+                      <AssistantMessage
+                        key={m.id ?? `${activeId}:${i}`}
+                        message={m}
+                        live={streaming && i === messages.length - 1}
+                      />
+                    ),
+                  )
+                )}
+              </div>
             </div>
 
             {/* 입력 — 하단 고정. 모바일 홈바를 피하도록 safe-area를 더한다. */}
             <form
-              className="shrink-0 border-t border-border px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+              className="shrink-0 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
               onSubmit={(e) => {
                 e.preventDefault();
                 send();
               }}
             >
-              {/* 대기 중인 첨부 — 전송 전까지 여기서 뺄 수 있다 */}
-              {(pending.length > 0 || uploading) && (
-                <div className="mb-2 flex flex-wrap items-center gap-2">
-                  {pending.map((a) => (
-                    <span
-                      key={a.url}
-                      className="flex items-center gap-1.5 rounded-md border border-border bg-card py-1 pl-1.5 pr-1 text-xs"
-                    >
-                      {a.kind === "image" ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={uploadUrl(a.url)}
-                          alt={a.name}
-                          className="size-8 rounded object-cover"
-                        />
-                      ) : (
-                        <FileText className="size-4 shrink-0 text-muted-foreground" />
-                      )}
-                      <span className="max-w-40 truncate">{a.name}</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setPending((prev) =>
-                            prev.filter((x) => x.url !== a.url),
-                          )
-                        }
-                        className="rounded p-0.5 text-muted-foreground hover:text-destructive"
-                        aria-label={`${a.name} 첨부 제거`}
-                      >
-                        <X className="size-3.5" />
-                      </button>
-                    </span>
-                  ))}
-                  {uploading && (
-                    <span className="text-xs text-muted-foreground">
-                      업로드 중…
-                    </span>
-                  )}
-                </div>
-              )}
-              <div
-                className={`flex items-end gap-2 rounded-lg border bg-card px-3 py-2 focus-within:border-accent ${
-                  dragging ? "border-accent border-dashed" : "border-border"
-                }`}
-                onDragEnter={(e) => {
-                  if (!e.dataTransfer.types.includes("Files")) return;
-                  dragDepth.current += 1;
-                  setDragging(true);
-                }}
-                onDragOver={(e) => {
-                  // preventDefault를 해야 브라우저 기본 열기 동작을 막고 drop이 뜬다.
-                  if (e.dataTransfer.types.includes("Files")) e.preventDefault();
-                }}
-                onDragLeave={() => {
-                  dragDepth.current -= 1;
-                  if (dragDepth.current <= 0) {
+              <div className="mx-auto flex max-w-3xl flex-col gap-1.5">
+                <div
+                  className={`flex flex-col gap-1 rounded-2xl border bg-card px-3 pt-3 pb-2 shadow-sm transition-colors ${
+                    dragging ? "border-dashed border-accent" : "border-border"
+                  }`}
+                  onDragEnter={(e) => {
+                    if (!e.dataTransfer.types.includes("Files")) return;
+                    dragDepth.current += 1;
+                    setDragging(true);
+                  }}
+                  onDragOver={(e) => {
+                    // preventDefault를 해야 브라우저 기본 열기 동작을 막고 drop이 뜬다.
+                    if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+                  }}
+                  onDragLeave={() => {
+                    dragDepth.current -= 1;
+                    if (dragDepth.current <= 0) {
+                      dragDepth.current = 0;
+                      setDragging(false);
+                    }
+                  }}
+                  onDrop={(e) => {
+                    if (!e.dataTransfer.types.includes("Files")) return;
+                    e.preventDefault();
                     dragDepth.current = 0;
                     setDragging(false);
-                  }
-                }}
-                onDrop={(e) => {
-                  if (!e.dataTransfer.types.includes("Files")) return;
-                  e.preventDefault();
-                  dragDepth.current = 0;
-                  setDragging(false);
-                  uploadFiles(Array.from(e.dataTransfer.files));
-                }}
-              >
-                <span className="select-none pb-1.5 text-accent">&gt;</span>
-                <Textarea
-                  ref={textareaRef}
-                  value={input}
-                  onChange={(e) => {
-                    setInput(e.target.value);
-                    // 직접 타이핑하면 히스토리 탐색을 벗어난다.
-                    if (histIndex !== -1) setHistIndex(-1);
+                    uploadFiles(Array.from(e.dataTransfer.files));
                   }}
-                  onPaste={(e) => {
-                    // 스크린샷 붙여넣기 — 클립보드에 파일이 있을 때만 가로챈다.
-                    // (텍스트 붙여넣기는 기본 동작을 그대로 둔다)
-                    const files = Array.from(e.clipboardData.files);
-                    if (files.length === 0) return;
-                    e.preventDefault();
-                    uploadFiles(files);
-                  }}
-                  onKeyDown={(e) => {
-                    // 모바일은 Enter=줄바꿈(전송은 버튼으로). 데스크톱만 Enter 전송.
-                    if (e.key === "Enter" && !e.shiftKey && !isNarrow) {
-                      e.preventDefault();
-                      send();
-                      return;
-                    }
-                    // ↑/↓ 히스토리 — 커서가 해당 방향 경계에 있을 때만 가로챈다.
-                    // (여러 줄 입력에서 커서 이동을 빼앗지 않기 위함)
-                    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-                      const el = e.currentTarget;
-                      // 선택 영역이 있으면 커서 이동이 우선
-                      if (el.selectionStart !== el.selectionEnd) return;
-                      const atStart = el.selectionStart === 0;
-                      const atEnd = el.selectionStart === el.value.length;
-                      if (e.key === "ArrowUp" && atStart) {
-                        e.preventDefault();
-                        navigateHistory(-1);
-                      } else if (e.key === "ArrowDown" && atEnd) {
-                        e.preventDefault();
-                        navigateHistory(1);
-                      }
-                    }
-                  }}
-                  placeholder={streaming ? "실행 중…" : "무엇을 도와드릴까요?"}
-                  // 16px(text-base) — iOS Safari가 폰트 16px 미만이면 확대한다.
-                  className="max-h-40 min-h-7 flex-1 resize-none border-0 bg-transparent px-0 py-1 font-mono text-base shadow-none focus-visible:ring-0 lg:text-[13px]"
-                  rows={1}
-                />
-                {/* 첨부 — 숨은 file input을 대신 연다 */}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => {
-                    uploadFiles(Array.from(e.target.files ?? []));
-                    // 같은 파일을 연속으로 고를 수 있게 값을 비운다.
-                    e.target.value = "";
-                  }}
-                />
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={!activeId || uploading}
-                  className="size-9 shrink-0 text-muted-foreground"
-                  aria-label="파일 첨부"
                 >
-                  <Paperclip className="size-4" />
-                </Button>
-                {/* 실행 중에는 중단 버튼 — 터치에는 esc가 없다 */}
-                {streaming ? (
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    onClick={stopStreaming}
-                    className="size-9 shrink-0 text-destructive"
-                    aria-label="실행 중단"
-                  >
-                    <Square className="size-4" />
-                  </Button>
-                ) : (
-                  <Button
-                    type="submit"
-                    size="icon"
-                    disabled={(!input.trim() && pending.length === 0) || uploading}
-                    className="size-9 shrink-0"
-                    aria-label="전송"
-                  >
-                    <ArrowUp className="size-4" />
-                  </Button>
-                )}
-              </div>
-              <div className="mt-1 flex items-center gap-x-4 px-2 text-xs text-muted-foreground">
+                  {/* 대기 중인 첨부 — 전송 전까지 여기서 뺄 수 있다 */}
+                  {(pending.length > 0 || uploading) && (
+                    <div className="flex flex-wrap items-center gap-2 pb-1">
+                      {pending.map((a) => (
+                        <span
+                          key={a.url}
+                          className="flex items-center gap-1.5 rounded-lg border border-border bg-background py-1 pl-1.5 pr-1 text-xs"
+                        >
+                          {a.kind === "image" ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={uploadUrl(a.url)}
+                              alt={a.name}
+                              className="size-8 rounded object-cover"
+                            />
+                          ) : (
+                            <FileText className="size-4 shrink-0 text-muted-foreground" />
+                          )}
+                          <span className="max-w-40 truncate">{a.name}</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPending((prev) => prev.filter((x) => x.url !== a.url))
+                            }
+                            className="rounded p-0.5 text-muted-foreground hover:text-destructive"
+                            aria-label={`${a.name} 첨부 제거`}
+                          >
+                            <X className="size-3.5" />
+                          </button>
+                        </span>
+                      ))}
+                      {uploading && (
+                        <span className="text-xs text-muted-foreground">업로드 중…</span>
+                      )}
+                    </div>
+                  )}
+                  <Textarea
+                    ref={textareaRef}
+                    value={input}
+                    onChange={(e) => {
+                      setInput(e.target.value);
+                      // 직접 타이핑하면 히스토리 탐색을 벗어난다.
+                      if (histIndex !== -1) setHistIndex(-1);
+                    }}
+                    onPaste={(e) => {
+                      // 스크린샷 붙여넣기 — 클립보드에 파일이 있을 때만 가로챈다.
+                      // (텍스트 붙여넣기는 기본 동작을 그대로 둔다)
+                      const files = Array.from(e.clipboardData.files);
+                      if (files.length === 0) return;
+                      e.preventDefault();
+                      uploadFiles(files);
+                    }}
+                    onKeyDown={(e) => {
+                      // 모바일은 Enter=줄바꿈(전송은 버튼으로). 데스크톱만 Enter 전송.
+                      // 한글 조합 중 Enter는 조합 확정이므로 전송하지 않는다.
+                      if (
+                        e.key === "Enter" &&
+                        !e.shiftKey &&
+                        !isNarrow &&
+                        !e.nativeEvent.isComposing
+                      ) {
+                        e.preventDefault();
+                        send();
+                        return;
+                      }
+                      // ↑/↓ 히스토리 — 커서가 해당 방향 경계에 있을 때만 가로챈다.
+                      // (여러 줄 입력에서 커서 이동을 빼앗지 않기 위함)
+                      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                        const el = e.currentTarget;
+                        // 선택 영역이 있으면 커서 이동이 우선
+                        if (el.selectionStart !== el.selectionEnd) return;
+                        const atStart = el.selectionStart === 0;
+                        const atEnd = el.selectionStart === el.value.length;
+                        if (e.key === "ArrowUp" && atStart) {
+                          e.preventDefault();
+                          navigateHistory(-1);
+                        } else if (e.key === "ArrowDown" && atEnd) {
+                          e.preventDefault();
+                          navigateHistory(1);
+                        }
+                      }
+                    }}
+                    placeholder={streaming ? "실행 중…" : "무엇이든 물어보세요"}
+                    aria-label="메시지 입력"
+                    // 16px(text-base) — iOS Safari가 폰트 16px 미만이면 확대한다.
+                    className="max-h-48 min-h-11 resize-none border-0 bg-transparent px-1 py-1 text-base shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 lg:text-[0.95rem]"
+                    rows={1}
+                  />
+                  {/* 첨부 — 숨은 file input을 대신 연다 */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      uploadFiles(Array.from(e.target.files ?? []));
+                      // 같은 파일을 연속으로 고를 수 있게 값을 비운다.
+                      e.target.value = "";
+                    }}
+                  />
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={!activeId || uploading}
+                      className="size-9 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
+                      aria-label="파일 또는 사진 추가"
+                      title="파일 또는 사진 추가"
+                    >
+                      <Plus className="size-5" />
+                    </Button>
+                    <div className="ml-auto flex min-w-0 items-center gap-3 text-xs text-muted-foreground">
+                      {/* 재시도 중 — 내용이 다시 흐르면 사라진다 */}
+                      {retrying && (
+                        <span className="truncate text-warning">
+                          재시도 {retrying.attempt}
+                          {retrying.maxRetries > 0 && `/${retrying.maxRetries}`} —{" "}
+                          {retrying.reason}
+                        </span>
+                      )}
+                      {/* 사고 토큰 — 실행 중 누적되며 실행이 끝나도 결과로 남긴다 */}
+                      {thinkingTokens > 0 && (
+                        <span className="shrink-0 tabular-nums">
+                          사고 {formatTokens(thinkingTokens)} 토큰
+                        </span>
+                      )}
+                      {/* 컨텍스트 잔량 — 턴이 끝날 때 갱신된다. 80% 넘으면 경고색으로. */}
+                      {contextUsage && (
+                        <span
+                          className={`shrink-0 tabular-nums ${
+                            contextUsage.percentage >= 80 ? "text-warning" : ""
+                          }`}
+                          title={`컨텍스트 ${formatTokens(contextUsage.usedTokens)} 토큰 사용 중`}
+                        >
+                          컨텍스트 {Math.round(contextUsage.percentage)}%
+                        </span>
+                      )}
+                    </div>
+                    {/* 실행 중에는 중단 버튼 — 터치에는 esc가 없다 */}
+                    {streaming ? (
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="secondary"
+                        onClick={stopStreaming}
+                        className="size-9 shrink-0 rounded-full"
+                        aria-label="실행 중단"
+                      >
+                        <Square className="size-3.5 fill-current" />
+                      </Button>
+                    ) : (
+                      <Button
+                        type="submit"
+                        size="icon"
+                        disabled={(!input.trim() && pending.length === 0) || uploading}
+                        className="size-9 shrink-0 rounded-full"
+                        aria-label="전송"
+                      >
+                        <ArrowUp className="size-4" />
+                      </Button>
+                    )}
+                  </div>
+                </div>
                 {/* 키보드 힌트는 데스크톱에만 의미가 있다 */}
-                <span className="hidden lg:inline">⏎ 전송</span>
-                <span className="hidden lg:inline">⇧⏎ 줄바꿈</span>
-                <span className="hidden lg:inline">↑↓ 히스토리</span>
-                {streaming && (
-                  <span className="hidden lg:inline">esc 중단</span>
-                )}
-                {/* 재시도 중 — 내용이 다시 흐르면 사라진다 */}
-                {retrying && (
-                  <span className="text-warning">
-                    재시도 {retrying.attempt}
-                    {retrying.maxRetries > 0 && `/${retrying.maxRetries}`} —{" "}
-                    {retrying.reason}
-                  </span>
-                )}
-                {/* 사고 토큰 — 실행 중 누적되며 실행이 끝나도 결과로 남긴다 */}
-                {thinkingTokens > 0 && (
-                  <span className="ml-auto tabular-nums">
-                    사고 {formatTokens(thinkingTokens)} 토큰
-                  </span>
-                )}
-                {/* 컨텍스트 잔량 — 턴이 끝날 때 갱신된다. 80% 넘으면 경고색으로. */}
-                {contextUsage && (
-                  <span
-                    className={`tabular-nums ${
-                      thinkingTokens > 0 ? "" : "ml-auto"
-                    } ${contextUsage.percentage >= 80 ? "text-warning" : ""}`}
-                    title={`컨텍스트 ${formatTokens(contextUsage.usedTokens)} 토큰 사용 중`}
-                  >
-                    컨텍스트 {Math.round(contextUsage.percentage)}%
-                  </span>
-                )}
+                <p className="hidden text-center text-xs text-muted-foreground lg:block">
+                  ⏎ 전송 · ⇧⏎ 줄바꿈 · ↑↓ 히스토리{streaming && " · esc 중단"}
+                </p>
               </div>
             </form>
           </>

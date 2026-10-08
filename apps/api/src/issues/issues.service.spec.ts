@@ -1,4 +1,4 @@
-import { IssueStatus } from "@prisma/client";
+import { IssueMode, IssueStatus, PlanStage } from "@prisma/client";
 import { ConfigService } from "@nestjs/config";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
@@ -883,6 +883,59 @@ describe("IssuesService (큐/워커)", () => {
     });
   });
 
+  describe("cancel (사용자 중지)", () => {
+    const running = { id: "i1", projectId: "p1", status: IssueStatus.RUNNING };
+
+    it("실행 중이 아니면 거부한다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        ...running,
+        status: IssueStatus.DONE,
+      });
+      await expect(service.cancel("i1", "u1")).rejects.toThrow();
+    });
+
+    it("이 서버에서 실행 중인 실행 핸들이 없으면 거부한다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue(running);
+      await expect(service.cancel("i1", "u1")).rejects.toThrow();
+    });
+
+    it("실행 중 중지하면 INTERRUPTED + 중지 사유로 끝나고 자동 재시도 대상에서 빠진다", async () => {
+      prisma.project.findUnique.mockResolvedValue({
+        id: "p1",
+        gitRepo: "o/r",
+        gitBranch: "main",
+        gitTokenEnc: "enc",
+        ownerId: "u1",
+      });
+      prisma.issueTask.findUnique.mockResolvedValue(running);
+      (service as unknown as { get: jest.Mock }).get = jest
+        .fn()
+        .mockResolvedValue({ id: "i1", status: "running" });
+      // 실행 도중 사용자가 중지 → SDK는 abort로 throw한다.
+      agent.runStream.mockImplementation(async () => {
+        await service.cancel("i1", "u1");
+        throw new Error("aborted");
+      });
+
+      await service.executeClaimed({
+        id: "i1",
+        projectId: "p1",
+        images: [],
+        files: [],
+        sessionId: null,
+        repo: "o/r",
+        title: "t",
+        labels: [],
+      } as never);
+
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.INTERRUPTED);
+      expect(upd.error).toBe("사용자가 중지했습니다.");
+      // ISSUE_MAX_RETRY=2 → attempts가 이를 넘어야 워커 재시도(attempts <= maxRetry)에서 빠진다.
+      expect(upd.attempts).toBe(3);
+    });
+  });
+
   describe("resume (결정 대기 재개)", () => {
     it("NEEDS_DECISION 이슈를 QUEUED로 되돌린다", async () => {
       prisma.issueTask.findUnique.mockResolvedValue({
@@ -907,6 +960,295 @@ describe("IssuesService (큐/워커)", () => {
         status: IssueStatus.DONE,
       });
       await expect(service.resume("i1", "u1")).rejects.toThrow();
+    });
+  });
+
+  describe("분석 후 진행 (PLAN 모드)", () => {
+    const planTask = {
+      id: "i1",
+      projectId: "p1",
+      images: [],
+      files: [],
+      sessionId: null,
+      repo: "o/r",
+      title: "t",
+      labels: [],
+      mode: IssueMode.PLAN,
+      planStage: null,
+      plan: null,
+      forcePlan: false,
+    };
+    const planProject = {
+      id: "p1",
+      gitRepo: "o/r",
+      gitBranch: "main",
+      gitTokenEnc: "enc",
+      ownerId: "u1",
+      autoPr: true,
+      autoMerge: false,
+      autoTriage: true,
+    };
+    const questionsText = [
+      "분석했습니다.",
+      "<<<RESULT",
+      "ANALYSIS: 환불 시 주문 상태를 바꾸는 기능입니다.",
+      "QUESTIONS:",
+      "[Q1]",
+      "질문: 환불 감지는 어떻게 할까요?",
+      "이유: 반영 시점이 달라집니다.",
+      "A) 즉시 반영 — 환불하자마자 바뀝니다",
+      "B) 주기 확인 — 10분 안에 바뀝니다",
+      "추천: A",
+      "[Q2]",
+      "질문: 부분 환불도 취소로 볼까요?",
+      "이유: 정책 결정입니다.",
+      "A) 예 — 일부만 환불해도 취소됩니다",
+      "B) 아니오 — 전액 환불만 취소됩니다",
+      "PLAN: none",
+      ">>>",
+    ].join("\n");
+
+    beforeEach(() => {
+      prisma.project.findUnique.mockResolvedValue(planProject);
+    });
+
+    it("분석 실행은 편집 도구를 막고 PR·triage 없이 분석 지시로 돈다", async () => {
+      mockAgentResult({ status: "ok", sessionId: "s1", text: questionsText });
+      await service.executeClaimed(planTask as never);
+
+      const opts = agent.runStream.mock.calls[0][1];
+      expect(opts.disallowedTools).toEqual(
+        expect.arrayContaining(["Edit", "MultiEdit", "Write", "NotebookEdit"]),
+      );
+      expect(opts.prompt).toContain("## 작업 지시 (분석·기획)");
+      expect(opts.prompt).not.toContain("PR 생성");
+      expect(opts.prompt).not.toContain("TRIAGE");
+      expect(opts.systemPrompt).not.toContain("Pull Request");
+    });
+
+    it("QUESTIONS가 있으면 질문을 구조화해 인터뷰 단계로 멈추고 질문을 메모로 남긴다", async () => {
+      mockAgentResult({ status: "ok", sessionId: "s1", text: questionsText });
+      await service.executeClaimed(planTask as never);
+
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.NEEDS_DECISION);
+      expect(upd.planStage).toBe(PlanStage.INTERVIEW);
+      const interview = upd.interview as {
+        analysis: string;
+        questions: { id: string; question: string; options: unknown[]; recommended: string | null }[];
+      };
+      expect(interview.analysis).toBe("환불 시 주문 상태를 바꾸는 기능입니다.");
+      expect(interview.questions).toHaveLength(2);
+      expect(interview.questions[0]).toMatchObject({
+        id: "Q1",
+        question: "환불 감지는 어떻게 할까요?",
+        recommended: "A",
+      });
+      expect(interview.questions[0].options).toHaveLength(2);
+      expect(prisma.issueNote.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ author: "AGENT" }),
+        }),
+      );
+    });
+
+    it("PLAN이 있으면 기획안을 저장하고 검토 단계로 멈춘다", async () => {
+      mockAgentResult({
+        status: "ok",
+        sessionId: "s1",
+        text: "<<<RESULT\nANALYSIS: 요약\nQUESTIONS: none\nPLAN:\n## 목표\n환불을 반영한다.\nAPI: 변경 없음\n>>>",
+      });
+      await service.executeClaimed(planTask as never);
+
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.NEEDS_DECISION);
+      expect(upd.planStage).toBe(PlanStage.REVIEW);
+      // 대문자 KEY: 형태의 줄이 있어도 기획안이 잘리지 않는다
+      expect(upd.plan).toBe("## 목표\n환불을 반영한다.\nAPI: 변경 없음");
+      expect(upd.forcePlan).toBe(false);
+    });
+
+    it("forcePlan이면 더 묻지 말고 기획안을 쓰라고 지시한다", async () => {
+      mockAgentResult({ status: "ok", sessionId: "s1", text: questionsText });
+      await service.executeClaimed({ ...planTask, forcePlan: true } as never);
+      expect(agent.runStream.mock.calls[0][1].prompt).toContain("더 묻지 말고");
+    });
+
+    it("질문도 기획안도 없으면 오류로 끝난다", async () => {
+      mockAgentResult({ status: "ok", sessionId: "s1", text: "결과 없음" });
+      await service.executeClaimed(planTask as never);
+      expect(statusUpdate().status).toBe(IssueStatus.ERROR);
+    });
+
+    it("승인된 기획안이 있으면 코드 작업 지시에 기획안을 넣고 triage는 생략한다", async () => {
+      mockAgentResult({ status: "ok", sessionId: "s1", text: "완료" });
+      await service.executeClaimed({
+        ...planTask,
+        planStage: PlanStage.APPROVED,
+        plan: "## 목표\n환불 반영",
+      } as never);
+
+      const opts = agent.runStream.mock.calls[0][1];
+      expect(opts.prompt).toContain("## 승인된 기획안");
+      expect(opts.prompt).toContain("환불 반영");
+      expect(opts.prompt).not.toContain("TRIAGE");
+      expect(opts.prompt).toContain("PR 생성");
+      expect(opts.disallowedTools).toBeUndefined();
+    });
+
+    it("인터뷰 답을 메모로 남기고 다시 큐에 넣는다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        id: "i1",
+        projectId: "p1",
+        status: IssueStatus.NEEDS_DECISION,
+        planStage: PlanStage.INTERVIEW,
+        interview: {
+          analysis: null,
+          questions: [
+            { id: "Q1", question: "환불 감지는?", reason: null, options: [], recommended: null },
+          ],
+        },
+      });
+      (service as unknown as { get: jest.Mock }).get = jest.fn().mockResolvedValue({});
+
+      await service.answerInterview("i1", [{ questionId: "Q1", answer: "즉시 반영" }], false, "u1");
+
+      expect(prisma.issueNote.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            author: "HUMAN",
+            content: expect.stringContaining("즉시 반영"),
+          }),
+        }),
+      );
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.QUEUED);
+      expect(upd.forcePlan).toBe(false);
+    });
+
+    it("'그만 묻기'로 답하면 다음 분석이 기획안을 쓰게 한다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        id: "i1",
+        projectId: "p1",
+        status: IssueStatus.NEEDS_DECISION,
+        planStage: PlanStage.INTERVIEW,
+        interview: { analysis: null, questions: [] },
+      });
+      (service as unknown as { get: jest.Mock }).get = jest.fn().mockResolvedValue({});
+      await service.answerInterview("i1", [], true, "u1");
+      expect(statusUpdate().forcePlan).toBe(true);
+    });
+
+    it("인터뷰 단계가 아니면 답을 받지 않는다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        id: "i1",
+        projectId: "p1",
+        status: IssueStatus.DONE,
+        planStage: null,
+      });
+      await expect(service.answerInterview("i1", [], false, "u1")).rejects.toThrow();
+    });
+
+    it("기획안 수정 요청은 메모로 남기고 기획안을 다시 쓰게 큐에 넣는다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        id: "i1",
+        projectId: "p1",
+        status: IssueStatus.NEEDS_DECISION,
+        planStage: PlanStage.REVIEW,
+      });
+      (service as unknown as { get: jest.Mock }).get = jest.fn().mockResolvedValue({});
+      await service.revisePlan("i1", "부분 환불은 빼줘", "u1");
+
+      expect(prisma.issueNote.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            author: "HUMAN",
+            content: expect.stringContaining("부분 환불은 빼줘"),
+          }),
+        }),
+      );
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.QUEUED);
+      expect(upd.forcePlan).toBe(true);
+    });
+
+    it("기획안을 승인하면 승인 단계로 바꿔 코드 작업을 큐에 넣는다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        id: "i1",
+        projectId: "p1",
+        status: IssueStatus.NEEDS_DECISION,
+        planStage: PlanStage.REVIEW,
+        plan: "기획",
+      });
+      (service as unknown as { get: jest.Mock }).get = jest.fn().mockResolvedValue({});
+      await service.approvePlan("i1", "u1");
+
+      const upd = statusUpdate();
+      expect(upd.status).toBe(IssueStatus.QUEUED);
+      expect(upd.planStage).toBe(PlanStage.APPROVED);
+      expect(upd.attempts).toBe(0);
+    });
+
+    it("검토 단계가 아니면 승인하지 않는다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        id: "i1",
+        projectId: "p1",
+        status: IssueStatus.NEEDS_DECISION,
+        planStage: PlanStage.INTERVIEW,
+      });
+      await expect(service.approvePlan("i1", "u1")).rejects.toThrow();
+    });
+
+    it("분석부터 다시 하면 기획 산출물을 지우고 분석 모드로 큐에 넣는다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        id: "i1",
+        projectId: "p1",
+        status: IssueStatus.DONE,
+        mode: IssueMode.DIRECT,
+      });
+      (service as unknown as { get: jest.Mock }).get = jest.fn().mockResolvedValue({});
+      await service.replan("i1", "u1");
+
+      expect(statusUpdate()).toMatchObject({
+        status: IssueStatus.QUEUED,
+        mode: IssueMode.PLAN,
+        planStage: null,
+        plan: null,
+        forcePlan: false,
+        attempts: 0,
+      });
+    });
+
+    it("실행 중에는 분석부터 다시 할 수 없다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        id: "i1",
+        projectId: "p1",
+        status: IssueStatus.RUNNING,
+      });
+      await expect(service.replan("i1", "u1")).rejects.toThrow();
+    });
+
+    it("인터뷰·검토 단계는 일반 재개로 넘길 수 없다", async () => {
+      prisma.issueTask.findUnique.mockResolvedValue({
+        id: "i1",
+        projectId: "p1",
+        status: IssueStatus.NEEDS_DECISION,
+        planStage: PlanStage.INTERVIEW,
+      });
+      await expect(service.resume("i1", "u1")).rejects.toThrow();
+    });
+
+    it("가져오기에서 분석 모드를 고르면 분석 모드로 등록한다", async () => {
+      prisma.issueTask.findMany.mockResolvedValue([]);
+      prisma.issueTask.create.mockResolvedValue({
+        ...planTask,
+        id: "n1",
+        status: IssueStatus.QUEUED,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await service.importIssues("p1", [7], "u1", "plan");
+      expect(prisma.issueTask.create.mock.calls[0][0].data.mode).toBe(IssueMode.PLAN);
     });
   });
 

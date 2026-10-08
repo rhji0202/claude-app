@@ -130,17 +130,15 @@ export function SessionList({
                   <div
                     key={s.id}
                     className={cn(
-                      "flex items-center gap-1 rounded-md pl-2.5 pr-1 transition-colors",
-                      activeId === s.id
-                        ? "bg-accent/15 text-accent"
-                        : "hover:bg-secondary",
+                      "flex items-center gap-1 rounded-lg pl-2 pr-1 transition-colors",
+                      activeId === s.id ? "bg-muted" : "hover:bg-muted",
                     )}
                   >
                     <button
                       className="flex min-h-11 min-w-0 flex-1 items-center gap-2 py-2 text-left text-sm"
                       onClick={() => onOpenSession(s.id)}
                     >
-                      <MessageSquare className="size-4 shrink-0" />
+                      <MessageSquare className="size-3.5 shrink-0 text-muted-foreground" />
                       <span className="flex min-w-0 flex-1 flex-col">
                         <span className="flex min-w-0 items-center gap-1">
                           <span className="truncate">{s.title || "새 대화"}</span>
