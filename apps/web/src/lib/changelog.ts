@@ -22,6 +22,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       { kind: "improved", text: "채팅을 대화형 화면(말풍선·진행 표시·마크다운 답변)으로 개편" },
       { kind: "improved", text: "결정 대기 이슈는 실행 결과·이력을 감추고 에이전트 질문만 표시" },
       { kind: "improved", text: "이슈 목록의 실행 상태를 '명령 실행 중'처럼 간단히 표시" },
+      { kind: "fixed", text: "배포 환경에서 사이드바 로고가 보이지 않던 문제" },
     ],
   },
   {

@@ -9,6 +9,8 @@
     "pretypecheck": "pnpm --filter @claude-app/shared build",
     "dev": "next dev -p 6002",
     "build": "next build",
+    "// postbuild": "standalone 산출물에는 public·.next/static이 빠지므로 빌드 뒤 복사한다(빠지면 로고·청크 404).",
+    "postbuild": "node scripts/copy-standalone-assets.mjs",
     "start": "next start -p 6002",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
