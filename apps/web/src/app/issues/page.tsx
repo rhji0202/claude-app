@@ -81,7 +81,7 @@ function IssueStatusCell({
   }
 
   // 실행이 끝난 상태(결정 대기·완료·오류·중단)는 모두 같은 다이얼로그를 쓴다.
-  // 결과·이력을 보여주고 추가 지시·재실행·대화 이어가기를 한자리에서 제공한다.
+  // 결과·이력(결정 대기는 질문만)을 보여주고 추가 지시·재실행·대화 이어가기를 한자리에서 제공한다.
   // (완료 뒤 "이거 왜 이렇게 고쳤어?"를 물으려면 완료 상태에도 대화가 필요하다.)
   if (
     status === "needs_decision" ||
@@ -347,6 +347,7 @@ function parseDecisionQuestion(text: string): DecisionQuestion | null {
 /**
  * 재실행 다이얼로그: 이력 타임라인 + 추가 지시 입력(이미지·파일 첨부 가능) + 재실행.
  * 어떤 상태의 이슈에도 쓸 수 있다. 열 때 GET /issues/:id/notes로 이력 지연 로드.
+ * 결정 대기는 답에 집중하도록 실행 결과·이력을 감추고 에이전트 질문만 보여준다.
  *
  * 재실행 동작:
  *  - 입력한 추가 지시가 있으면 먼저 POST /notes(HUMAN)로 남긴다(실행 시 프롬프트에 주입됨).
@@ -534,7 +535,7 @@ function RerunDialog({
             </div>
           )}
           {/* 실행 결과 — 완료 이슈에서 무엇을 했는지 확인하고 이어서 물어본다 */}
-          {result && (
+          {result && !isDecision && (
             <div className="space-y-1.5">
               <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 실행 결과
@@ -641,12 +642,14 @@ function RerunDialog({
             </div>
           )}
           {/* 이력 타임라인 */}
-          <div className="space-y-2">
-            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              이력
+          {!isDecision && (
+            <div className="space-y-2">
+              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                이력
+              </div>
+              <NoteList notes={notes} />
             </div>
-            <NoteList notes={notes} />
-          </div>
+          )}
           {/* 추가 지시 입력 (이미지 붙여넣기/드래그 업로드 가능) */}
           <div className="space-y-2">
             <MarkdownEditor
@@ -728,6 +731,10 @@ function IssueDetailDialog({
   const imgs = (row.images as string[] | undefined) ?? [];
   const atts = (row.files as IssueAttachment[] | undefined) ?? [];
   const num = row.issueNumber ? `#${row.issueNumber}` : null;
+  const isDecision = status === "needs_decision";
+  const question = notes
+    ? [...notes].reverse().find((n) => n.author === "agent")?.content
+    : null;
 
   // 본문 이미지 치환용 맵: 서버는 서명된 상대경로를 주므로 절대 URL로 바꾼다.
   const rawMap = (row.imageMap as Record<string, string> | null | undefined) ?? null;
@@ -872,19 +879,34 @@ function IssueDetailDialog({
             </Section>
           )}
 
-          {result && (
-            <Section title="실행 결과">
-              <div className="rounded-md bg-muted p-3">
-                <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
-                  {result}
-                </Markdown>
-              </div>
-            </Section>
-          )}
+          {/* 결정 대기는 실행 결과·이력 대신 에이전트 질문(가장 최근 AGENT 메모)만 보여준다. */}
+          {isDecision ? (
+            question && (
+              <Section title="에이전트 질문">
+                <div className="rounded-md bg-muted p-3">
+                  <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
+                    {question}
+                  </Markdown>
+                </div>
+              </Section>
+            )
+          ) : (
+            <>
+              {result && (
+                <Section title="실행 결과">
+                  <div className="rounded-md bg-muted p-3">
+                    <Markdown className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-2">
+                      {result}
+                    </Markdown>
+                  </div>
+                </Section>
+              )}
 
-          <Section title="이력">
-            <NoteList notes={notes} />
-          </Section>
+              <Section title="이력">
+                <NoteList notes={notes} />
+              </Section>
+            </>
+          )}
         </div>
       </DialogContent>
     </Dialog>
