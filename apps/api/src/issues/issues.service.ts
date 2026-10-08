@@ -106,8 +106,20 @@ const DECISION_FORMAT = [
   "- 선택지는 2~3개로 제한하고, 각 줄은 한 문장으로 끝냅니다.",
 ].join("\n");
 
-/** 분석·기획 단계에서 막는 편집 도구. 코드는 기획안 승인 뒤에만 바꾼다. */
-const PLAN_DISALLOWED_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
+/**
+ * 분석·기획 단계에서 막는 도구. 코드는 기획안 승인 뒤에만 바꾼다.
+ * 편집 도구만 막으면 Bash로 파일을 고치거나 환경의 GitHub 토큰으로 push할 수 있고,
+ * 서브에이전트(Task)는 이 제한을 물려받는다는 보장이 없다. 이슈 본문은 신뢰할 수 없는
+ * 입력이므로 프롬프트 지시가 아니라 도구 차단으로 읽기 전용을 강제한다(Read/Grep/Glob만으로 조사).
+ */
+const PLAN_DISALLOWED_TOOLS = [
+  "Edit",
+  "MultiEdit",
+  "Write",
+  "NotebookEdit",
+  "Bash",
+  "Task",
+];
 
 /** 기획안 작성 형식. 승인하는 사람이 비개발자일 수 있어 쉬운 말·고정 제목으로 쓰게 한다. */
 const PLAN_FORMAT = [
@@ -1426,8 +1438,10 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
             : ISSUE_SYSTEM_PROMPT_BASE,
           // 취소 신호 전달 → abort 시 SDK가 서브프로세스를 정리하고 스트림을 종료한다.
           abortController,
-          // 분석 단계는 편집 도구를 막는다(코드는 기획안 승인 뒤에만 바꾼다).
+          // 분석 단계는 읽기 전용: 편집·셸·서브에이전트 도구와 MCP 서버를 막는다
+          // (코드는 기획안 승인 뒤에만 바꾼다).
           disallowedTools: planning ? PLAN_DISALLOWED_TOOLS : undefined,
+          withoutMcp: planning || undefined,
         });
         // 분석이 끝났으면 질문(인터뷰) 또는 기획안(검토)으로 멈춘다.
         // 실패·중단은 아래 일반 경로가 처리한다(PR·triage는 분석에서 꺼져 있다).
