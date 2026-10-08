@@ -8,6 +8,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { CryptoService } from "../crypto/crypto.service";
 import { ClaudeAccountService } from "../claude-account/claude-account.service";
 import type { AgentUsage } from "@claude-app/shared";
+import { DEFAULT_MODEL } from "@claude-app/shared";
 // 타입 전용 import — 컴파일 시 지워지므로 SDK 런타임 동적 로드에 영향 없다.
 import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 
@@ -400,7 +401,7 @@ export class AgentService {
   ): Promise<{ model: string; effort: EffortLevel | null }> {
     const cfg = await this.claudeAccounts.getModelConfig(userId, claudeAccountId);
     const model =
-      cfg.model ?? this.config.get<string>("ANTHROPIC_MODEL") ?? "claude-opus-5";
+      cfg.model ?? this.config.get<string>("ANTHROPIC_MODEL") ?? DEFAULT_MODEL;
     // effort 미지원 모델(Haiku 등)은 env 전역 기본으로도 폴백하지 않는다 —
     // 계정은 Haiku인데 effort는 전역값에서 흘러드는 경로를 막는다.
     const effort = cfg.effortSupported

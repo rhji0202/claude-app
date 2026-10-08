@@ -490,6 +490,16 @@ describe("AgentService.resolveModel / clearEffortEnv", () => {
     });
   });
 
+  it("계정·env 모두 지정이 없으면 계열 별칭 opus(최신 Opus)를 쓴다", async () => {
+    config.get.mockImplementation(() => undefined);
+    accounts.getModelConfig.mockResolvedValue({
+      model: null,
+      effort: null,
+      effortSupported: true,
+    });
+    expect((await resolveModel("u1")).model).toBe("opus");
+  });
+
   it("xhigh/max도 그대로 해석한다(env 우회는 이 값을 버렸음)", async () => {
     accounts.getModelConfig.mockResolvedValue({
       model: "claude-opus-5",
