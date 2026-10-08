@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
 import {
-  ChevronRight,
+  Bot,
   FilePen,
   FilePlus,
   FileText,
@@ -16,28 +15,31 @@ import {
 import { cn } from "@/lib/utils";
 
 /**
- * 도구 이름 → 사람이 읽는 동작 라벨·아이콘 매핑(claude-desktop식).
- * SDK 도구명 규칙(Edit/Write/Read/Bash/Grep/Glob/WebFetch/WebSearch/TodoWrite).
- * MCP 도구(mcp__…)나 미매핑 도구는 기본(렌치)으로 떨어진다.
+ * 도구 호출 표시 도우미(채팅·이슈 공용): 도구명 → 진행 문구·아이콘,
+ * 입력(JSON) 해석, 펼침 상세(diff·명령어·결과).
+ * SDK 도구명 규칙(Edit/Write/Read/Bash/Grep/Glob/WebFetch/WebSearch/TodoWrite/Task).
+ * MCP 도구(mcp__…)나 미매핑 도구는 기본(렌치)과 원래 이름으로 떨어진다.
  */
-const TOOL_META: Record<string, { label: string; icon: LucideIcon }> = {
-  Edit: { label: "편집", icon: FilePen },
-  MultiEdit: { label: "편집", icon: FilePen },
-  Write: { label: "작성", icon: FilePlus },
-  NotebookEdit: { label: "편집", icon: FilePen },
-  Read: { label: "읽기", icon: FileText },
-  Bash: { label: "실행", icon: Terminal },
-  Grep: { label: "검색", icon: Search },
-  Glob: { label: "탐색", icon: Search },
-  WebFetch: { label: "가져오기", icon: Globe },
-  WebSearch: { label: "웹 검색", icon: Globe },
-  TodoWrite: { label: "할 일", icon: ListTodo },
+const TOOL_META: Record<string, { active: string; done: string; icon: LucideIcon }> = {
+  Edit: { active: "파일 편집 중", done: "파일 편집함", icon: FilePen },
+  MultiEdit: { active: "파일 편집 중", done: "파일 편집함", icon: FilePen },
+  Write: { active: "파일 작성 중", done: "파일 작성함", icon: FilePlus },
+  NotebookEdit: { active: "노트북 편집 중", done: "노트북 편집함", icon: FilePen },
+  Read: { active: "파일 읽는 중", done: "파일 읽음", icon: FileText },
+  Bash: { active: "명령 실행 중", done: "명령 실행함", icon: Terminal },
+  Grep: { active: "코드 검색 중", done: "코드 검색함", icon: Search },
+  Glob: { active: "파일 찾는 중", done: "파일 찾음", icon: Search },
+  WebFetch: { active: "웹 페이지 가져오는 중", done: "웹 페이지 가져옴", icon: Globe },
+  WebSearch: { active: "웹 검색 중", done: "웹 검색함", icon: Globe },
+  TodoWrite: { active: "할 일 정리 중", done: "할 일 정리함", icon: ListTodo },
+  Task: { active: "서브에이전트 실행 중", done: "서브에이전트 실행함", icon: Bot },
 };
 
-function metaFor(name: string): { label: string | null; icon: LucideIcon } {
-  const m = TOOL_META[name];
-  if (m) return m;
-  return { label: null, icon: Wrench };
+/** 도구의 진행/완료 문구와 아이콘. 미매핑 도구는 이름 그대로 쓴다. */
+export function toolCopy(name: string): { active: string; done: string; icon: LucideIcon } {
+  return (
+    TOOL_META[name] ?? { active: `${name} 실행 중`, done: `${name} 실행함`, icon: Wrench }
+  );
 }
 
 /** 편집/작성 도구인지(펼침 시 diff/내용 뷰 대상). */
@@ -61,6 +63,7 @@ interface ParsedInput {
   command?: string;
   pattern?: string;
   url?: string;
+  prompt?: string;
   oldString?: string;
   newString?: string;
   content?: string;
@@ -86,6 +89,7 @@ function parseInput(raw: string | undefined): ParsedInput {
       command: str("command"),
       pattern: str("pattern"),
       url: str("url"),
+      prompt: str("description") ?? str("prompt"),
       oldString: str("old_string"),
       newString: str("new_string"),
       content: str("content") ?? str("new_source"),
@@ -96,15 +100,16 @@ function parseInput(raw: string | undefined): ParsedInput {
   }
 }
 
-/**
- * 도구 헤더의 대상 요약("foo.ts", "npm test" 등). 없으면 detail 폴백.
- */
-function targetLabel(name: string, p: ParsedInput, detail?: string): string | null {
+/** 도구 대상 요약("foo.ts", "npm test" 등). 입력이 JSON이 아니면 원문(요약 문자열)을 쓴다. */
+export function toolTarget(input: string | undefined): string | null {
+  const p = parseInput(input);
   if (p.filePath) return basename(p.filePath);
   if (p.command) return p.command;
   if (p.pattern) return p.pattern;
   if (p.url) return p.url;
-  return detail ?? null;
+  if (p.prompt) return p.prompt;
+  if (input && !input.trimStart().startsWith("{")) return input;
+  return null;
 }
 
 /** old→new 한 쌍을 diff 스타일로. */
@@ -132,6 +137,74 @@ function DiffBlock({ oldStr, newStr }: { oldStr?: string; newStr?: string }) {
 }
 
 /**
+ * 도구 호출 펼침 상세: 편집은 diff, 작성은 내용, bash는 명령어, 그 외는 원본 input.
+ * 실행 결과(result)가 있으면 아래에 붙인다. 보여줄 게 없으면 null.
+ */
+export function ToolDetail({
+  name,
+  input,
+  result,
+  isError,
+}: {
+  name: string;
+  input?: string;
+  result?: string;
+  isError?: boolean;
+}) {
+  if (!input && !result) return null;
+  const parsed = parseInput(input);
+  const known = parsed.oldString || parsed.edits || parsed.content || parsed.command;
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5 overflow-hidden rounded-md border border-border bg-background/40 py-1.5 [&_pre]:break-words">
+      {isFileTool(name) && parsed.filePath && (
+        <div className="break-all px-2.5 font-mono text-[11px] text-muted-foreground">
+          {parsed.filePath}
+        </div>
+      )}
+      {(parsed.oldString || parsed.newString) && (
+        <div className="px-2.5">
+          <DiffBlock oldStr={parsed.oldString} newStr={parsed.newString} />
+        </div>
+      )}
+      {parsed.edits && parsed.edits.length > 0 && (
+        <div className="space-y-2 px-2.5">
+          {parsed.edits.map((e, i) => (
+            <DiffBlock key={i} oldStr={e.oldString} newStr={e.newString} />
+          ))}
+        </div>
+      )}
+      {parsed.content && !parsed.oldString && !parsed.edits && (
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap bg-emerald-500/5 px-2.5 py-1 font-mono text-[11px] text-muted-foreground">
+          {parsed.content}
+        </pre>
+      )}
+      {parsed.command && (
+        <pre className="overflow-x-auto whitespace-pre-wrap px-2.5 font-mono text-[11px] text-muted-foreground">
+          <span className="select-none text-muted-foreground/60">$ </span>
+          {parsed.command}
+        </pre>
+      )}
+      {/* 폴백: 알려진 필드가 없으면 원본 입력 */}
+      {input && !known && (
+        <pre className="overflow-x-auto whitespace-pre-wrap px-2.5 font-mono text-[11px] text-muted-foreground">
+          {input}
+        </pre>
+      )}
+      {result && (
+        <pre
+          className={cn(
+            "max-h-64 overflow-auto whitespace-pre-wrap border-t border-border px-2.5 pt-1.5 font-mono text-[11px]",
+            isError ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {result}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/**
  * 진행 로그(도구 이벤트 배열)에서 편집·작성된 파일 경로 목록을 추출한다(중복 제거·순서 보존).
  * claude-desktop식 "편집된 파일 N개" 요약용. 채팅·이슈 공용.
  */
@@ -154,91 +227,4 @@ export function editedFilesFromLog(
 /** 파일 경로에서 파일명만 노출(공용). */
 export function fileBasename(p: string): string {
   return basename(p);
-}
-
-/**
- * 도구 사용 칩(claude-desktop식). 접으면 아이콘 + "편집 foo.ts" 한 줄,
- * 펼치면 편집은 diff, 작성은 내용, bash는 명령어, 그 외는 원본 input.
- * 채팅 타임라인과 이슈 진행 내역에서 공통 사용한다.
- */
-export function ToolPart({ name, input }: { name: string; input?: string }) {
-  const [open, setOpen] = useState(false);
-  const { label, icon: Icon } = metaFor(name);
-  const parsed = parseInput(input);
-  const target = targetLabel(name, parsed, undefined);
-  const hasBody = Boolean(input);
-
-  return (
-    <div className="min-w-0 overflow-hidden rounded-md border border-border bg-background/40 text-xs">
-      <button
-        type="button"
-        className="flex w-full min-w-0 items-center gap-1.5 px-2.5 py-1.5 text-left text-muted-foreground hover:text-foreground"
-        onClick={() => setOpen((v) => !v)}
-        title={target ?? name}
-      >
-        <ChevronRight
-          className={cn(
-            "size-3.5 shrink-0 transition-transform",
-            open && "rotate-90",
-          )}
-        />
-        <Icon className="size-3.5 shrink-0" />
-        {label ? (
-          <span className="shrink-0 font-medium text-foreground/80">{label}</span>
-        ) : (
-          <span className="shrink-0 font-mono">{name}</span>
-        )}
-        {target && (
-          <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">
-            {target}
-          </span>
-        )}
-      </button>
-      {open && hasBody && (
-        <div className="border-t border-border">
-          {isFileTool(name) && parsed.filePath && (
-            <div className="break-all px-2.5 pt-2 font-mono text-[11px] text-muted-foreground">
-              {parsed.filePath}
-            </div>
-          )}
-          {/* Edit: old→new diff */}
-          {(parsed.oldString || parsed.newString) && (
-            <div className="px-2.5 py-2">
-              <DiffBlock oldStr={parsed.oldString} newStr={parsed.newString} />
-            </div>
-          )}
-          {/* MultiEdit: 여러 diff */}
-          {parsed.edits && parsed.edits.length > 0 && (
-            <div className="space-y-2 px-2.5 py-2">
-              {parsed.edits.map((e, i) => (
-                <DiffBlock key={i} oldStr={e.oldString} newStr={e.newString} />
-              ))}
-            </div>
-          )}
-          {/* Write: 작성 내용 */}
-          {parsed.content && !parsed.oldString && !parsed.edits && (
-            <pre className="overflow-x-auto whitespace-pre-wrap bg-emerald-500/5 px-2.5 py-2 font-mono text-[11px] text-muted-foreground">
-              {parsed.content}
-            </pre>
-          )}
-          {/* Bash: 명령어 */}
-          {parsed.command && (
-            <pre className="overflow-x-auto whitespace-pre-wrap px-2.5 py-2 font-mono text-[11px] text-muted-foreground">
-              <span className="select-none text-muted-foreground/60">$ </span>
-              {parsed.command}
-            </pre>
-          )}
-          {/* 폴백: 알려진 필드가 없으면 원본 JSON */}
-          {!parsed.oldString &&
-            !parsed.edits &&
-            !parsed.content &&
-            !parsed.command && (
-              <pre className="overflow-x-auto px-2.5 py-2 font-mono text-[11px] text-muted-foreground">
-                {input}
-              </pre>
-            )}
-        </div>
-      )}
-    </div>
-  );
 }

@@ -96,8 +96,9 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   // 공유 링크 페이지는 로그인 없이 접근 (사이드바/게이트 없음)
   const isPublic = pathname?.startsWith("/share");
-  // 채팅은 CLI처럼 화면을 꽉 채우고 트랜스크립트만 스크롤한다(모바일 필수).
-  const fullBleed = pathname?.startsWith("/chat") ?? false;
+  // 채팅·이슈 실행 화면은 화면을 꽉 채우고 본문만 스크롤한다(하단 입력창 고정).
+  const fullBleed =
+    pathname?.startsWith("/chat") || /^\/issues\/[^/]+$/.test(pathname ?? "");
 
   if (isPublic) return <>{children}</>;
   return <AuthedShell fullBleed={fullBleed}>{children}</AuthedShell>;

@@ -14,7 +14,14 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     date: "2026-10-08",
     changes: [
+      { kind: "new", text: "분석 후 진행 — 에이전트가 이슈를 분석해 질문하고, 답으로 정한 기획안을 승인하면 작업" },
+      { kind: "new", text: "GitHub Issue에서 '바로 처리'·'분석 후 진행'으로 이슈 화면에 넘겨 에이전트로 처리" },
+      { kind: "new", text: "이슈 실행을 대화형 화면·다이얼로그로 보고, 실행 중 중지" },
+      { kind: "new", text: "대시보드에 체인지로그 섹션 추가" },
       { kind: "new", text: "더원 에이전트 로고 추가 — 사이드바·상단바·파비콘" },
+      { kind: "improved", text: "채팅을 대화형 화면(말풍선·진행 표시·마크다운 답변)으로 개편" },
+      { kind: "improved", text: "결정 대기 이슈는 실행 결과·이력을 감추고 에이전트 질문만 표시" },
+      { kind: "improved", text: "이슈 목록의 실행 상태를 '명령 실행 중'처럼 간단히 표시" },
     ],
   },
   {

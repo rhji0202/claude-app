@@ -469,6 +469,7 @@ export function GhIssuesClient() {
               </div>
             ) : (
               <GhIssueList
+                projectId={projectId}
                 issues={result.issues}
                 activeLabels={activeLabels}
                 onLabelClick={toggleLabelFilter}

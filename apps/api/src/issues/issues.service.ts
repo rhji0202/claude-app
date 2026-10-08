@@ -10,9 +10,11 @@ import { ConfigService } from "@nestjs/config";
 import type { Project } from "@prisma/client";
 import {
   Prisma,
+  IssueMode,
   IssueSource as PrismaSource,
   IssueStatus,
   IssueNoteAuthor,
+  PlanStage,
   IssueTask as PrismaIssue,
   IssueNote as PrismaNote,
   UsageKind,
@@ -36,8 +38,13 @@ import { IssueEventsService } from "./issue-events.service";
 import { CreateIssueTaskDto, UpdateIssueTaskDto } from "./issues.dto";
 import type {
   IssueTask as IssueDto,
+  IssueInterview,
+  IssueInterviewAnswer,
+  IssueInterviewQuestion,
+  IssueMode as IssueModeDto,
   IssueNote as IssueNoteDto,
   IssueNoteAuthor as IssueNoteAuthorDto,
+  IssuePlanStage,
   IssueSource,
   IssueTaskStatus,
   IssueWorkerStats,
@@ -98,6 +105,40 @@ const DECISION_FORMAT = [
   "- 각 선택지는 그것을 고르면 사용자가 화면에서 무엇을 겪게 되는지로만 설명합니다. 구현 방식·장단점·영향 범위는 적지 마세요.",
   "- 선택지는 2~3개로 제한하고, 각 줄은 한 문장으로 끝냅니다.",
 ].join("\n");
+
+/**
+ * 분석·기획 단계에서 막는 도구. 코드는 기획안 승인 뒤에만 바꾼다.
+ * 편집 도구만 막으면 Bash로 파일을 고치거나 환경의 GitHub 토큰으로 push할 수 있고,
+ * 서브에이전트(Task)는 이 제한을 물려받는다는 보장이 없다. 이슈 본문은 신뢰할 수 없는
+ * 입력이므로 프롬프트 지시가 아니라 도구 차단으로 읽기 전용을 강제한다(Read/Grep/Glob만으로 조사).
+ */
+const PLAN_DISALLOWED_TOOLS = [
+  "Edit",
+  "MultiEdit",
+  "Write",
+  "NotebookEdit",
+  "Bash",
+  "Task",
+];
+
+/** 기획안 작성 형식. 승인하는 사람이 비개발자일 수 있어 쉬운 말·고정 제목으로 쓰게 한다. */
+const PLAN_FORMAT = [
+  "마크다운으로, 아래 제목을 이 순서대로 씁니다. 읽는 사람은 비개발자일 수 있으니 쉬운 말로 짧게 씁니다.",
+  "### 목표",
+  "### 진행 방향",
+  "### 작업 범위",
+  "### 하지 않을 것",
+  "### 가정",
+  "제목은 위 다섯 개를 그대로 씁니다. '가정'에는 사람이 정하지 않아 임의로 정한 부분을 적고, 없으면 '없음'이라고 씁니다.",
+].join("\n");
+
+const toMode = (m: IssueModeDto | undefined): IssueMode =>
+  m === "plan" ? IssueMode.PLAN : IssueMode.DIRECT;
+const PLAN_STAGE_TO_DTO: Record<PlanStage, IssuePlanStage> = {
+  INTERVIEW: "interview",
+  REVIEW: "review",
+  APPROVED: "approved",
+};
 
 /** 텍스트를 한 줄 미리보기로(개행 정리 + 길이 제한). */
 function preview(text: string, max = 140): string {
@@ -187,6 +228,31 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
     ctrl.abort();
     this.logger.warn(`이슈 실행 취소 신호 전송: ${issueId}`);
     return true;
+  }
+
+  /**
+   * 사용자가 중지한 실행(issueId). 실행 루프가 INTERRUPTED로 끝낼 때 이 표시를 보고
+   * 사유를 남기고 자동 재시도에서 뺀다(stale 회수·셧다운 중단은 재시도 대상으로 남김).
+   */
+  private readonly userCancels = new Set<string>();
+
+  /**
+   * 실행 중인 이슈를 사용자가 중지한다. 실행 핸들이 있는 프로세스에서만 가능하다
+   * (다른 워커 프로세스의 실행·좀비는 stale 회수가 처리한다).
+   */
+  async cancel(id: string, userId: string): Promise<IssueDto> {
+    const task = await this.getRaw(id);
+    await this.projects.assertCanEdit(task.projectId, userId);
+    if (task.status !== IssueStatus.RUNNING)
+      throw new BadRequestException("실행 중인 이슈만 중지할 수 있습니다.");
+    this.userCancels.add(id);
+    if (!this.abortRun(id)) {
+      this.userCancels.delete(id);
+      throw new BadRequestException(
+        "이 서버에서 실행 중인 이슈가 아닙니다. 잠시 후 다시 시도하세요.",
+      );
+    }
+    return this.get(id, userId);
   }
 
   /** 실행 중인 모든 이슈를 취소한다(그레이스풀 셧다운용). 취소한 건수 반환. */
@@ -281,6 +347,11 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
       error: i.error,
       resultCommentUrl: i.resultCommentUrl,
       decisionCommentUrl: i.decisionCommentUrl,
+      mode: i.mode === IssueMode.PLAN ? "plan" : "direct",
+      planStage: i.planStage ? PLAN_STAGE_TO_DTO[i.planStage] : null,
+      interview: (i.interview as IssueInterview | null) ?? null,
+      plan: i.plan,
+      planCommentUrl: i.planCommentUrl,
       prUrl: i.prUrl,
       category: (i.category as IssueDto["category"]) ?? null,
       progress: i.progress,
@@ -443,6 +514,7 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
         prompt: dto.prompt,
         url: dto.url,
         source: toSource(dto.source ?? "manual"),
+        mode: toMode(dto.mode),
         status: IssueStatus.QUEUED,
       },
     });
@@ -515,6 +587,7 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
         body: dto.body,
         labels: dto.labels,
         prompt: dto.prompt,
+        ...(dto.mode ? { mode: toMode(dto.mode) } : {}),
       },
     });
     return this.toDto(row);
@@ -616,18 +689,19 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
     return created.length;
   }
 
-  /** 선택한 GitHub 이슈들을 큐로 가져온다 (중복 제외) */
+  /** 선택한 GitHub 이슈들을 큐로 가져온다 (중복 제외). mode=plan이면 분석 후 진행. */
   async importIssues(
     projectId: string,
     numbers: number[],
     userId: string,
+    mode: IssueModeDto = "direct",
   ): Promise<IssueDto[]> {
     await this.projects.assertCanEdit(projectId, userId);
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new BadRequestException("프로젝트를 찾을 수 없습니다.");
     if (!project.gitRepo)
       throw new BadRequestException("프로젝트에 gitRepo가 설정되어 있지 않습니다.");
-    return this.importNumbers(project, numbers, this.tokenOf(project));
+    return this.importNumbers(project, numbers, this.tokenOf(project), mode);
   }
 
   /**
@@ -638,6 +712,7 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
     project: Project,
     numbers: number[],
     token: string | null,
+    mode: IssueModeDto = "direct",
   ): Promise<IssueDto[]> {
     const projectId = project.id;
     const repo = project.gitRepo!;
@@ -665,6 +740,7 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
             labels: issue.labels,
             author: issue.author,
             source: PrismaSource.GITHUB,
+            mode: toMode(mode),
             status: IssueStatus.QUEUED,
           },
         });
@@ -760,19 +836,18 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  /** GitHub 이슈 본문·코멘트를 가져와 에이전트 프롬프트를 구성 */
-  private async buildPrompt(
+  /**
+   * 이슈 맥락(GitHub 본문·코멘트·라벨·첨부·이전 이력)을 프롬프트 줄로 만든다.
+   * 처리(buildPrompt)·분석(buildPlanPrompt) 프롬프트가 공유하고, 지시는 각자 덧붙인다.
+   */
+  private async promptContext(
     task: PrismaIssue,
     token: string | null,
-    pr?: { branch: string; base: string; autoMerge: boolean },
-    triage?: boolean,
+    intro: string,
     notes?: PrismaNote[],
     attachments?: string[],
-  ): Promise<string> {
-    const lines: string[] = [
-      `GitHub 저장소 ${task.repo}의 이슈 ${task.issueNumber ? `#${task.issueNumber}` : ""} "${task.title}"를 해결해 주세요.`,
-      "",
-    ];
+  ): Promise<string[]> {
+    const lines: string[] = [intro, ""];
     let body = task.body ?? "";
     if (task.issueNumber && task.repo) {
       try {
@@ -853,6 +928,37 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
         lines.push(`- [${label[n.author]}] ${this.stripImageMarkdown(n.content)}`);
       }
       lines.push("");
+    }
+    return lines;
+  }
+
+  /**
+   * 처리(코드 작업) 프롬프트. 분석 후 진행에서 승인된 기획안이 있으면(plan)
+   * 그 방향·범위대로 작업하게 기획안을 주입한다(이때 triage는 호출측이 끈다).
+   */
+  private async buildPrompt(
+    task: PrismaIssue,
+    token: string | null,
+    pr?: { branch: string; base: string; autoMerge: boolean },
+    triage?: boolean,
+    notes?: PrismaNote[],
+    attachments?: string[],
+    plan?: string,
+  ): Promise<string> {
+    const lines = await this.promptContext(
+      task,
+      token,
+      `GitHub 저장소 ${task.repo}의 이슈 ${task.issueNumber ? `#${task.issueNumber}` : ""} "${task.title}"를 해결해 주세요.`,
+      notes,
+      attachments,
+    );
+    if (plan) {
+      lines.push(
+        "## 승인된 기획안",
+        "사람이 인터뷰로 방향을 정하고 검토·승인한 기획안입니다. 이 방향과 범위대로 작업하고, '하지 않을 것'에 적힌 일은 하지 마세요.",
+        plan,
+        "",
+      );
     }
     if (triage) {
       // triage: 먼저 이슈를 4개 카테고리로 분류하고, 카테고리에 맞는 행동을 지시한다.
@@ -951,6 +1057,142 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
       ">>>",
     );
     return lines.join("\n");
+  }
+
+  /**
+   * 분석·기획 프롬프트(분석 후 진행). 코드를 고치지 않고 조사만 한 뒤,
+   * 정할 쟁점이 남았으면 질문(QUESTIONS)을, 없으면 기획안(PLAN)을 낸다.
+   * 이전 질문·답·수정 요청은 promptContext가 이력으로 주입한다.
+   */
+  private async buildPlanPrompt(
+    task: PrismaIssue,
+    token: string | null,
+    notes?: PrismaNote[],
+    attachments?: string[],
+  ): Promise<string> {
+    const lines = await this.promptContext(
+      task,
+      token,
+      `GitHub 저장소 ${task.repo}의 이슈 ${task.issueNumber ? `#${task.issueNumber}` : ""} "${task.title}"를 분석해 진행 방향을 기획해 주세요.`,
+      notes,
+      attachments,
+    );
+    lines.push(
+      "## 작업 지시 (분석·기획)",
+      "이번 실행은 코드를 바꾸지 않는 분석·기획 단계입니다. 파일을 만들거나 고치지 말고, 커밋·push·PR·이슈 코멘트도 하지 마세요.",
+      "1. 이슈와 관련 코드를 조사해 무엇을 어떻게 바꿔야 하는지 파악합니다.",
+      "2. 진행 방향을 정하는 데 사람의 결정이 필요한 쟁점을 찾습니다. 위 '이전 진행 이력'에서 이미 답한 것은 다시 묻지 마세요.",
+    );
+    if (task.forcePlan) {
+      lines.push(
+        "3. 이번에는 더 묻지 말고 기획안을 작성해 `PLAN`에 씁니다. 아직 정하지 않은 쟁점은 합리적으로 정하고 기획안의 '가정'에 적습니다. `QUESTIONS`는 none으로 둡니다.",
+      );
+    } else {
+      lines.push(
+        "3. 아직 정해야 할 쟁점이 있으면 질문으로 정리해 `QUESTIONS`에 적고 `PLAN`은 none으로 둡니다. 꼭 필요한 것만, 한 번에 5개까지 묻습니다.",
+        "4. 더 정할 것이 없으면 `QUESTIONS`는 none으로 두고 기획안을 `PLAN`에 씁니다.",
+      );
+    }
+    if (task.plan) {
+      lines.push(
+        "",
+        "## 현재 기획안",
+        "이전에 작성한 기획안입니다. '이전 진행 이력'의 마지막 사람 수정 요청을 반영해 기획안 전체를 다시 쓰세요.",
+        task.plan,
+      );
+    }
+    lines.push(
+      "",
+      "## 질문 형식",
+      "각 질문은 `[Q1]`, `[Q2]`처럼 번호만 있는 줄로 시작하고, 그 아래 줄들은 다음 형식을 따릅니다.",
+      DECISION_FORMAT,
+      "",
+      "## 기획안 형식",
+      PLAN_FORMAT,
+    );
+    if (task.prompt) lines.push("", "## 추가 지시", task.prompt);
+    lines.push(
+      "",
+      "## 결과 보고 (필수)",
+      "조사를 마친 뒤, 응답의 **맨 끝**에 아래 블록을 정확히 한 번 출력하세요.",
+      "블록 밖에는 어떤 설명도 넣지 말고, 해당 없는 항목은 반드시 `none`으로 적으세요. `PLAN`은 반드시 마지막 항목입니다.",
+      "",
+      "<<<RESULT",
+      "ANALYSIS: <이슈와 관련 코드를 조사한 결과를 비개발자도 읽을 수 있게 2~3문장으로>",
+      "QUESTIONS: <위 '질문 형식'의 질문들 또는 none>",
+      "PLAN: <위 '기획안 형식'의 기획안 또는 none>",
+      ">>>",
+    );
+    return lines.join("\n");
+  }
+
+  /**
+   * 분석 결과 블록(ANALYSIS·QUESTIONS·PLAN)을 읽는다. PLAN은 마크다운이라
+   * 대문자 `KEY:` 줄이 섞일 수 있어 블록 끝까지 통째로 취한다(그래서 마지막 항목).
+   */
+  private parsePlanning(text: string | null | undefined): {
+    analysis: string | null;
+    questions: IssueInterviewQuestion[];
+    plan: string | null;
+  } {
+    const block = this.extractResultBlock(text);
+    const field = (re: RegExp) => {
+      const v = block.match(re)?.[1]?.trim();
+      // none이거나 채우지 않은 플레이스홀더(<…>)면 값 없음
+      if (!v || /^none[.。]?$/i.test(v) || /^<[^>]*>$/.test(v)) return null;
+      return v;
+    };
+    const analysis = field(/(?:^|\n)ANALYSIS:\s*([\s\S]*?)(?=\nQUESTIONS:|\nPLAN:|$)/i);
+    const rawQuestions = field(/(?:^|\n)QUESTIONS:\s*([\s\S]*?)(?=\nPLAN:|$)/i);
+    const plan = field(/(?:^|\n)PLAN:\s*([\s\S]*)$/i);
+    return {
+      analysis,
+      questions: rawQuestions ? this.parseQuestions(rawQuestions) : [],
+      plan,
+    };
+  }
+
+  /**
+   * `[Q1]` 단위로 나눠 각 질문을 질문·이유·선택지·추천으로 구조화한다.
+   * 번호 줄이 없으면 전체를 질문 하나로 보고, `질문:` 줄이 없으면 원문을 질문으로 쓴다.
+   */
+  private parseQuestions(raw: string): IssueInterviewQuestion[] {
+    const chunks = raw.split(/^\s*\[Q(\d+)\]\s*$/m);
+    // split 결과: [머리말, 번호, 본문, 번호, 본문, …]
+    const pairs: { id: string; body: string }[] = [];
+    if (chunks.length === 1) {
+      pairs.push({ id: "Q1", body: chunks[0] });
+    } else {
+      for (let i = 1; i < chunks.length; i += 2) {
+        pairs.push({ id: `Q${chunks[i]}`, body: chunks[i + 1] ?? "" });
+      }
+    }
+    return pairs
+      .map(({ id, body }) => {
+        let question = "";
+        let reason: string | null = null;
+        let recommended: string | null = null;
+        const options: IssueInterviewQuestion["options"] = [];
+        for (const rawLine of body.split("\n")) {
+          const line = rawLine.trim();
+          if (!line) continue;
+          if (line.startsWith("질문:")) question = line.slice(3).trim();
+          else if (line.startsWith("이유:")) reason = line.slice(3).trim();
+          else if (line.startsWith("추천:"))
+            recommended = line.slice(3).trim().match(/[A-Z]/)?.[0] ?? null;
+          else {
+            // `A) 이름 — 설명` — 구분자는 em dash(—) 또는 하이픈을 허용한다.
+            const opt = line.match(/^([A-Z])\)\s*(.+)$/);
+            if (opt) {
+              const [label, detail] = opt[2].split(/\s+[—–-]\s+/);
+              options.push({ key: opt[1], label: label.trim(), detail: detail?.trim() ?? null });
+            }
+          }
+        }
+        if (!question) question = body.trim();
+        return { id, question, reason, options, recommended };
+      })
+      .filter((q) => q.question);
   }
 
   /**
@@ -1129,9 +1371,17 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
         project.gitBranch,
       );
       try {
+        // 분석 후 진행: 기획안 승인 전에는 코드를 바꾸지 않는 분석·기획 실행이고,
+        // 승인 뒤에는 기획안을 주입한 코드 작업 실행이다(triage는 인터뷰가 대신한다).
+        const planning =
+          task.mode === IssueMode.PLAN && task.planStage !== PlanStage.APPROVED;
+        const approvedPlan =
+          task.mode === IssueMode.PLAN && task.planStage === PlanStage.APPROVED
+            ? (task.plan ?? undefined)
+            : undefined;
         // autoPr이면 브랜치 push + PR 생성을 프롬프트로 지시(에이전트가 gh CLI로 수행).
         // base 브랜치는 프로젝트 gitBranch, 없으면 관리 clone의 기본 브랜치.
-        const prOpts = project.autoPr
+        const prOpts = project.autoPr && !planning
           ? {
               branch: wt.branch,
               base:
@@ -1142,7 +1392,7 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
             }
           : undefined;
         // 3. 프롬프트·이미지 구성 후 에이전트 실행(cwd=worktree)
-        const triage = project.autoTriage;
+        const triage = project.autoTriage && !planning && !approvedPlan;
         // 재개 시 이전 메모/이력을 프롬프트에 주입(설계 5.3)
         const notes = await this.prisma.issueNote.findMany({
           where: { issueId: task.id },
@@ -1151,14 +1401,17 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
         // 첨부 파일(엑셀·PDF 등)을 worktree로 복사한다. 프롬프트에 실제 경로를
         // 적어야 하므로 buildPrompt보다 먼저 수행한다.
         const attachments = await this.stageAttachments(task, wt.path);
-        const prompt = await this.buildPrompt(
-          task,
-          token,
-          prOpts,
-          triage,
-          notes,
-          attachments,
-        );
+        const prompt = planning
+          ? await this.buildPlanPrompt(task, token, notes, attachments)
+          : await this.buildPrompt(
+              task,
+              token,
+              prOpts,
+              triage,
+              notes,
+              attachments,
+              approvedPlan,
+            );
         const images: { data: string; mediaType: string }[] = [];
         for (const rel of task.images) {
           try {
@@ -1185,7 +1438,17 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
             : ISSUE_SYSTEM_PROMPT_BASE,
           // 취소 신호 전달 → abort 시 SDK가 서브프로세스를 정리하고 스트림을 종료한다.
           abortController,
+          // 분석 단계는 읽기 전용: 편집·셸·서브에이전트 도구와 MCP 서버를 막는다
+          // (코드는 기획안 승인 뒤에만 바꾼다).
+          disallowedTools: planning ? PLAN_DISALLOWED_TOOLS : undefined,
+          withoutMcp: planning || undefined,
         });
+        // 분석이 끝났으면 질문(인터뷰) 또는 기획안(검토)으로 멈춘다.
+        // 실패·중단은 아래 일반 경로가 처리한다(PR·triage는 분석에서 꺼져 있다).
+        if (planning && res.status === "ok") {
+          await this.finishPlanning(task, project, res);
+          return; // finally에서 worktree 정리
+        }
         // 성공했지만 에이전트가 사람 결정을 요청했으면(DECISION_NEEDED) NEEDS_DECISION 우선.
         const question =
           res.status === "ok" ? this.parseDecision(res.text) : null;
@@ -1228,10 +1491,16 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
           triage && status === IssueStatus.DONE
             ? this.parseTriage(res.text)
             : null;
+        // 사용자가 중지했으면 사유를 남기고 재시도 횟수를 소진시켜 워커가 다시 집지 않게 한다.
+        const userCancelled =
+          status === IssueStatus.INTERRUPTED && this.userCancels.has(task.id);
         await this.finishRun(task.id, status, {
           sessionId: res.sessionId ?? task.sessionId,
           result: res.text,
-          error: res.error ?? null,
+          error: userCancelled ? "사용자가 중지했습니다." : (res.error ?? null),
+          ...(userCancelled
+            ? { attempts: (this.config.get<number>("ISSUE_MAX_RETRY") ?? 2) + 1 }
+            : {}),
           ...(prOpts ? { prUrl } : {}),
           ...(triage ? { category } : {}),
           usage: res.usage,
@@ -1277,6 +1546,7 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
     } finally {
       // 실행 종료(정상·중단·오류 무관) → 컨트롤러 해제. 이후 stale 회수는 좀비로 취급.
       this.activeRuns.delete(task.id);
+      this.userCancels.delete(task.id);
     }
   }
 
@@ -1428,6 +1698,73 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** 실행 종료 상태 기록. 이슈가 이미 삭제됐어도 프로세스가 죽지 않도록 방어. */
+  /**
+   * 분석·기획 실행이 성공했을 때 결과를 단계로 옮긴다.
+   *  - 질문이 있으면(그리고 기획안 강제가 아니면) 인터뷰 단계: 질문을 구조화해 저장하고,
+   *    다음 분석이 이미 물은 것을 알도록 질문 원문을 AGENT 메모로 남긴다.
+   *  - 기획안이 있으면 검토 단계: 기획안을 저장하고 강제 플래그를 내린다.
+   *  - 둘 다 없으면 읽을 수 없는 결과이므로 오류로 끝낸다.
+   */
+  private async finishPlanning(
+    task: PrismaIssue,
+    project: Project,
+    res: RunResult,
+  ): Promise<void> {
+    const parsed = this.parsePlanning(res.text);
+    const base = {
+      sessionId: res.sessionId ?? task.sessionId,
+      result: res.text,
+      usage: res.usage,
+      projectId: project.id,
+      claudeAccountId: res.accountId ?? project.claudeAccountId,
+      userId: project.ownerId,
+    };
+
+    if (parsed.questions.length > 0 && !task.forcePlan) {
+      await this.addNote(
+        task.id,
+        IssueNoteAuthor.AGENT,
+        `에이전트 질문\n${parsed.questions.map((q) => `- ${q.question}`).join("\n")}`,
+      );
+      await this.finishRun(task.id, IssueStatus.NEEDS_DECISION, {
+        ...base,
+        error: null,
+        planStage: PlanStage.INTERVIEW,
+        interview: { analysis: parsed.analysis, questions: parsed.questions },
+      });
+      await this.notify.notify(project.id, {
+        event: "issue.error",
+        title: `이슈 "${task.title}" — 인터뷰 답변 필요`,
+        url: task.url,
+        detail: parsed.questions.map((q) => q.question).join("\n"),
+      });
+      return;
+    }
+
+    if (parsed.plan) {
+      await this.finishRun(task.id, IssueStatus.NEEDS_DECISION, {
+        ...base,
+        error: null,
+        planStage: PlanStage.REVIEW,
+        interview: null,
+        plan: parsed.plan,
+        forcePlan: false,
+      });
+      await this.notify.notify(project.id, {
+        event: "issue.error",
+        title: `이슈 "${task.title}" — 기획안 검토 필요`,
+        url: task.url,
+        detail: parsed.analysis ?? undefined,
+      });
+      return;
+    }
+
+    await this.finishRun(task.id, IssueStatus.ERROR, {
+      ...base,
+      error: "분석 결과에서 질문이나 기획안을 찾지 못했습니다. 분석부터 다시 실행해 주세요.",
+    });
+  }
+
   private async finishRun(
     id: string,
     status: IssueStatus,
@@ -1437,6 +1774,13 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
       error?: string | null;
       prUrl?: string | null;
       category?: string | null;
+      /** 재시도 횟수 덮어쓰기(사용자 중지 시 maxRetry 초과로 설정해 자동 재시도 제외). */
+      attempts?: number;
+      /** 분석 후 진행: 단계·인터뷰·기획안·기획안 강제 플래그. */
+      planStage?: PlanStage | null;
+      interview?: IssueInterview | null;
+      plan?: string | null;
+      forcePlan?: boolean;
       /** SDK 사용량. 있으면 IssueTask 컬럼 + 원장(UsageRecord)에 기록. */
       usage?: RunResult["usage"];
       /** 원장 기록용 프로젝트·계정·사용자(usage가 있을 때만 필요). */
@@ -1460,6 +1804,18 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
           ...(data.error !== undefined ? { error: data.error } : {}),
           ...(data.prUrl !== undefined ? { prUrl: data.prUrl } : {}),
           ...(data.category !== undefined ? { category: data.category } : {}),
+          ...(data.attempts !== undefined ? { attempts: data.attempts } : {}),
+          ...(data.planStage !== undefined ? { planStage: data.planStage } : {}),
+          ...(data.interview !== undefined
+            ? {
+                interview:
+                  data.interview === null
+                    ? Prisma.JsonNull
+                    : (data.interview as unknown as Prisma.InputJsonValue),
+              }
+            : {}),
+          ...(data.plan !== undefined ? { plan: data.plan } : {}),
+          ...(data.forcePlan !== undefined ? { forcePlan: data.forcePlan } : {}),
           ...(u
             ? {
                 costUsd: u.costUsd,
@@ -1615,6 +1971,14 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
     await this.projects.assertCanEdit(task.projectId, userId);
     if (task.status !== IssueStatus.NEEDS_DECISION)
       throw new BadRequestException("결정 대기 상태의 이슈만 재개할 수 있습니다.");
+    // 인터뷰·기획안 검토는 답 제출·승인으로만 넘어간다(그냥 재개하면 답 없이 다시 분석한다).
+    if (
+      task.planStage === PlanStage.INTERVIEW ||
+      task.planStage === PlanStage.REVIEW
+    )
+      throw new BadRequestException(
+        "인터뷰 답을 제출하거나 기획안을 승인해 진행하세요.",
+      );
     await this.addNote(id, IssueNoteAuthor.SYSTEM, "사람이 재개했습니다.");
     await this.prisma.issueTask.update({
       where: { id },
@@ -1627,6 +1991,153 @@ export class IssuesService implements OnModuleInit, OnModuleDestroy {
       },
     });
     return this.get(id, userId);
+  }
+
+  // ---- 분석 후 진행(인터뷰 → 기획안 → 승인) ----
+
+  /** 다시 워커가 집도록 큐에 넣는 공통 필드(재시도·이전 오류 초기화). */
+  private readonly requeueFields = {
+    status: IssueStatus.QUEUED,
+    error: null,
+    attempts: 0,
+    claimedAt: null,
+    lockedBy: null,
+  } as const;
+
+  /** 상태·단계를 확인하고 편집 권한을 검사한다. 맞지 않으면 400. */
+  private async assertPlanStage(
+    id: string,
+    userId: string,
+    stage: PlanStage,
+    message: string,
+  ): Promise<PrismaIssue> {
+    const task = await this.getRaw(id);
+    await this.projects.assertCanEdit(task.projectId, userId);
+    if (task.status !== IssueStatus.NEEDS_DECISION || task.planStage !== stage)
+      throw new BadRequestException(message);
+    return task;
+  }
+
+  /**
+   * 인터뷰 답을 제출한다. 질문·답을 사람 메모로 남겨 다음 분석 프롬프트에 들어가게 하고
+   * 다시 큐에 넣는다. stop이면 남은 질문은 두고 다음 분석이 기획안을 쓰게 한다.
+   */
+  async answerInterview(
+    id: string,
+    answers: IssueInterviewAnswer[],
+    stop: boolean,
+    userId: string,
+  ): Promise<IssueDto> {
+    const task = await this.assertPlanStage(
+      id,
+      userId,
+      PlanStage.INTERVIEW,
+      "인터뷰 답변을 기다리는 이슈가 아닙니다.",
+    );
+    if (!stop && answers.length === 0)
+      throw new BadRequestException("답을 입력하세요.");
+    const questions = (task.interview as IssueInterview | null)?.questions ?? [];
+    const lines = answers.map((a) => {
+      const q = questions.find((x) => x.id === a.questionId);
+      return `- ${q?.question ?? a.questionId} → ${a.answer.trim()}`;
+    });
+    if (stop) lines.push("더 묻지 말고 지금까지의 답으로 기획안을 작성해 주세요.");
+    await this.addNote(id, IssueNoteAuthor.HUMAN, `인터뷰 답변\n${lines.join("\n")}`);
+    await this.prisma.issueTask.update({
+      where: { id },
+      data: { ...this.requeueFields, forcePlan: stop },
+    });
+    return this.get(id, userId);
+  }
+
+  /** 기획안 수정 요청: 요청을 사람 메모로 남기고 기획안을 다시 쓰게 큐에 넣는다. */
+  async revisePlan(id: string, request: string, userId: string): Promise<IssueDto> {
+    await this.assertPlanStage(
+      id,
+      userId,
+      PlanStage.REVIEW,
+      "기획안 검토 중인 이슈가 아닙니다.",
+    );
+    if (!request.trim()) throw new BadRequestException("수정 요청을 입력하세요.");
+    await this.addNote(id, IssueNoteAuthor.HUMAN, `기획안 수정 요청: ${request.trim()}`);
+    await this.prisma.issueTask.update({
+      where: { id },
+      data: { ...this.requeueFields, forcePlan: true },
+    });
+    return this.get(id, userId);
+  }
+
+  /** 기획안 승인: 승인 단계로 바꿔 기획안대로 코드 작업을 큐에 넣는다. */
+  async approvePlan(id: string, userId: string): Promise<IssueDto> {
+    const task = await this.assertPlanStage(
+      id,
+      userId,
+      PlanStage.REVIEW,
+      "기획안 검토 중인 이슈가 아닙니다.",
+    );
+    if (!task.plan) throw new BadRequestException("승인할 기획안이 없습니다.");
+    await this.prisma.issueTask.update({
+      where: { id },
+      data: { ...this.requeueFields, planStage: PlanStage.APPROVED },
+    });
+    return this.get(id, userId);
+  }
+
+  /**
+   * 분석부터 다시: 어떤 이슈든(바로 처리였던 것 포함) 분석 후 진행 모드로 바꾸고
+   * 이전 인터뷰·기획안을 지운 뒤 분석을 큐에 넣는다. 실행 중이면 거부한다.
+   */
+  async replan(id: string, userId: string): Promise<IssueDto> {
+    const task = await this.getRaw(id);
+    await this.projects.assertCanEdit(task.projectId, userId);
+    if (task.status === IssueStatus.RUNNING)
+      throw new BadRequestException("실행 중인 이슈는 중지한 뒤 다시 분석하세요.");
+    await this.prisma.issueTask.update({
+      where: { id },
+      data: {
+        ...this.requeueFields,
+        mode: IssueMode.PLAN,
+        planStage: null,
+        interview: Prisma.JsonNull,
+        plan: null,
+        planCommentUrl: null,
+        forcePlan: false,
+      },
+    });
+    return this.get(id, userId);
+  }
+
+  /**
+   * 기획안을 GitHub 이슈 코멘트로 남긴다 (외부 쓰기). 결정 질문 게시와 같은 방식으로
+   * 원문에 의견을 어디에 남기면 되는지만 한 줄 덧붙인다(봇 머리말·이모지 없음).
+   */
+  async commentPlan(id: string, userId: string): Promise<IssueDto> {
+    const task = await this.getRaw(id);
+    await this.projects.assertCanEdit(task.projectId, userId);
+    if (!task.plan) throw new BadRequestException("게시할 기획안이 없습니다.");
+    if (!task.issueNumber)
+      throw new BadRequestException("수동 이슈에는 코멘트를 게시할 수 없습니다.");
+    const project = await this.prisma.project.findUnique({
+      where: { id: task.projectId },
+    });
+    if (!project) throw new BadRequestException("프로젝트를 찾을 수 없습니다.");
+    const token = this.tokenOf(project);
+    if (!token)
+      throw new BadRequestException(
+        "프로젝트에 GitHub 토큰이 설정되어 있지 않습니다.",
+      );
+    const comment = await this.github.createComment(
+      task.repo,
+      task.issueNumber,
+      `${task.plan.trim()}\n\n이 방향으로 진행하려고 합니다. 의견이 있으면 답글로 알려주세요.`,
+      token,
+    );
+    return this.toDto(
+      await this.prisma.issueTask.update({
+        where: { id },
+        data: { planCommentUrl: comment.html_url },
+      }),
+    );
   }
 
   /** 실행 결과를 GitHub 이슈에 코멘트로 게시 (외부 쓰기) */

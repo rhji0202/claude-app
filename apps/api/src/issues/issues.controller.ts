@@ -16,7 +16,13 @@ import { FilesInterceptor } from "@nestjs/platform-express";
 import { IssuesService } from "./issues.service";
 import { IssueWorkerService } from "./issue-worker.service";
 import { IssueEventsService } from "./issue-events.service";
-import { CreateIssueTaskDto, UpdateIssueTaskDto } from "./issues.dto";
+import {
+  AnswerInterviewDto,
+  CreateIssueTaskDto,
+  ImportIssuesDto,
+  RevisePlanDto,
+  UpdateIssueTaskDto,
+} from "./issues.dto";
 import { MAX_FILE_BYTES, MAX_IMAGE_BYTES } from "../uploads/uploads.service";
 import { CurrentUser, type AuthUser } from "../auth/current-user.decorator";
 import { AdminOnly } from "../auth/admin.decorator";
@@ -133,11 +139,13 @@ export class IssuesController {
   }
 
   @Post("import")
-  import(
-    @Body() body: { projectId: string; numbers: number[] },
-    @CurrentUser() user: AuthUser,
-  ) {
-    return this.issues.importIssues(body.projectId, body.numbers ?? [], user.userId);
+  import(@Body() body: ImportIssuesDto, @CurrentUser() user: AuthUser) {
+    return this.issues.importIssues(
+      body.projectId,
+      body.numbers ?? [],
+      user.userId,
+      body.mode,
+    );
   }
 
   /** 이슈에 이미지 첨부(다중). multipart field name: files */
@@ -179,6 +187,11 @@ export class IssuesController {
     return this.issues.startRun(id, user.userId);
   }
 
+  @Post(":id/cancel")
+  cancel(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.issues.cancel(id, user.userId);
+  }
+
   @Post(":id/requeue")
   requeue(@Param("id") id: string, @CurrentUser() user: AuthUser) {
     return this.issues.requeue(id, user.userId);
@@ -206,6 +219,44 @@ export class IssuesController {
   @Post(":id/comment")
   comment(@Param("id") id: string, @CurrentUser() user: AuthUser) {
     return this.issues.commentResult(id, user.userId);
+  }
+
+  /** 분석 후 진행: 인터뷰 답 제출(stop=true면 그만 묻고 기획안 작성). */
+  @Post(":id/interview")
+  answerInterview(
+    @Param("id") id: string,
+    @Body() body: AnswerInterviewDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.issues.answerInterview(id, body.answers, body.stop ?? false, user.userId);
+  }
+
+  /** 분석 후 진행: 기획안 수정 요청(에이전트가 기획안을 다시 쓴다). */
+  @Post(":id/plan/revise")
+  revisePlan(
+    @Param("id") id: string,
+    @Body() body: RevisePlanDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.issues.revisePlan(id, body.request, user.userId);
+  }
+
+  /** 분석 후 진행: 기획안 승인 → 기획안대로 처리 시작. */
+  @Post(":id/plan/approve")
+  approvePlan(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.issues.approvePlan(id, user.userId);
+  }
+
+  /** 분석부터 다시(어떤 이슈든 분석 후 진행으로 전환). */
+  @Post(":id/replan")
+  replan(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.issues.replan(id, user.userId);
+  }
+
+  /** 기획안을 GitHub 이슈 코멘트로 남긴다. */
+  @Post(":id/plan-comment")
+  planComment(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.issues.commentPlan(id, user.userId);
   }
 
   @Post(":id/decision-comment")
