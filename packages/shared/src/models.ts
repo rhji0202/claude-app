@@ -30,8 +30,27 @@ export interface ModelOption {
   supportsEffort: boolean;
 }
 
-/** 선택 가능한 모델. 최신 세대 우선. */
+/**
+ * 선택 가능한 모델 = 계열 별칭. 버전을 고정하지 않고 CLI(Agent SDK)가 실행 시점에
+ * 그 계열의 최신 모델로 푼다(예: opus → claude-opus-5-5). 새 모델이 나오면 이 목록을
+ * 고치지 않고 Agent SDK만 올리면 된다. 실제로 쓰인 모델 id는 사용량 기록에 남는다.
+ * 현재 세대(5.5·Fable 5.1)는 모두 effort를 지원한다.
+ */
 export const MODEL_OPTIONS: ModelOption[] = [
+  { id: "opus", label: "Opus (최신)", supportsEffort: true },
+  { id: "sonnet", label: "Sonnet (최신)", supportsEffort: true },
+  { id: "haiku", label: "Haiku (최신)", supportsEffort: true },
+  { id: "fable", label: "Fable (최신)", supportsEffort: true },
+];
+
+/** 계정별 지정이 없을 때의 기본 모델. */
+export const DEFAULT_MODEL = "opus";
+
+/**
+ * 예전에 버전 고정 id로 저장·설정된 값. 선택지에는 보이지 않지만, 기존 env 설정이
+ * 부팅 검증에서 막히지 않고 effort 지원 여부도 맞게 판단하도록 남겨 둔다.
+ */
+export const LEGACY_MODEL_OPTIONS: ModelOption[] = [
   { id: "claude-opus-5", label: "Opus 5", supportsEffort: true },
   { id: "claude-fable-5", label: "Fable 5", supportsEffort: true },
   { id: "claude-sonnet-5", label: "Sonnet 5", supportsEffort: true },
@@ -39,14 +58,17 @@ export const MODEL_OPTIONS: ModelOption[] = [
   { id: "claude-haiku-4-5", label: "Haiku 4.5", supportsEffort: false },
 ];
 
-export const MODEL_IDS: string[] = MODEL_OPTIONS.map((m) => m.id);
+/** 받아들이는 모델 값(별칭 + 예전 고정 id). 저장·env 검증에 쓴다. */
+export const MODEL_IDS: string[] = [...MODEL_OPTIONS, ...LEGACY_MODEL_OPTIONS].map(
+  (m) => m.id,
+);
 
 /**
- * 이 모델이 effort를 지원하는가. 목록에 없는 모델(직접 지정한 신규/레거시 id)은
+ * 이 모델이 effort를 지원하는가. 목록에 없는 모델(직접 지정한 신규 id)은
  * 지원한다고 본다 — 모르는 모델에 대해 조용히 effort를 버리는 쪽이 더 위험하다.
  */
 export function modelSupportsEffort(model: string | null | undefined): boolean {
   if (!model) return true;
-  const found = MODEL_OPTIONS.find((m) => m.id === model);
+  const found = [...MODEL_OPTIONS, ...LEGACY_MODEL_OPTIONS].find((m) => m.id === model);
   return found ? found.supportsEffort : true;
 }

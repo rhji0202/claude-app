@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { EFFORT_LEVELS, MODEL_IDS } from "@claude-app/shared";
+import { DEFAULT_MODEL, EFFORT_LEVELS, MODEL_IDS } from "@claude-app/shared";
 
 /**
  * 환경변수 검증 스키마. 부팅 시 @nestjs/config가 이 함수로 검증한다.
@@ -20,10 +20,11 @@ export const envSchema = z.object({
   // 활성 Claude 계정이 없을 때의 폴백 OAuth 토큰 (선택, sk-ant-oat...)
   ANTHROPIC_OAUTH_TOKEN: z.string().optional(),
   // 실행 기본 모델(계정별 지정이 없을 때). 오타난 모델 id로 첫 실행이 실패하는 것을
-  // 막기 위해 부팅 시 알려진 목록으로 제한한다(추가는 shared/models.ts).
+  // 막기 위해 부팅 시 알려진 목록(계열 별칭 opus·sonnet·haiku·fable 또는 예전 고정 id)으로
+  // 제한한다. 별칭은 Agent SDK가 그 계열의 최신 모델로 풀어 준다(shared/models.ts).
   ANTHROPIC_MODEL: z
     .enum(MODEL_IDS as [string, ...string[]])
-    .default("claude-opus-5"),
+    .default(DEFAULT_MODEL),
   // 실행 기본 reasoning effort. low|medium|high|xhigh|max.
   ANTHROPIC_EFFORT: z
     .enum(EFFORT_LEVELS as unknown as [string, ...string[]])

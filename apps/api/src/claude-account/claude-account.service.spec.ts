@@ -206,6 +206,16 @@ describe("ClaudeAccountService", () => {
       expect(db.claudeAccount.update.mock.calls[0][0].data.effort).toBeNull();
     });
 
+    it("별칭 haiku(최신 Haiku)는 effort를 지원하므로 그대로 저장한다", async () => {
+      // 예전 고정 id claude-haiku-4-5와 달리 현재 Haiku는 effort를 지원한다.
+      mockUpdateEcho({ model: null, effort: null });
+      await service.update("a1", "u1", { model: "haiku", effort: "low" });
+      expect(db.claudeAccount.update.mock.calls[0][0].data).toMatchObject({
+        model: "haiku",
+        effort: "low",
+      });
+    });
+
     it("effort 지원 모델이면 지정값을 그대로 저장한다", async () => {
       mockUpdateEcho({ model: "claude-opus-5", effort: null });
       await service.update("a1", "u1", { effort: "low" });
