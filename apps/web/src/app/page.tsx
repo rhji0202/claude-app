@@ -14,6 +14,7 @@ import {
 import { api } from "@/lib/api";
 import { PageHeader } from "@/components/PageHeader";
 import { UsagePanel } from "@/components/UsagePanel";
+import { ChangelogPanel } from "@/components/ChangelogPanel";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -86,6 +87,8 @@ export default function Dashboard() {
       </div>
 
       <UsagePanel />
+
+      <ChangelogPanel />
 
       <Card className="mt-6">
         <CardContent className="p-5">
