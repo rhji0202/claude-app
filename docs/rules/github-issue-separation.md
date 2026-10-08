@@ -75,6 +75,9 @@ GitHub Issue 뷰어 (건드리지 말 것 — 큐 작업 시)
   `*.githubusercontent.com`의 https URL로 제한한다(SSRF 방지).
   이 서명 로직은 `/uploads`(UploadsService)와 같은 발상이지만 **코드는 공유하지
   않는다** — `GhImageProxyService`가 전용 구현이다.
+- 목록·상세의 "에이전트로 처리"는 `/issues?import=<projectId>&number=<n>` **링크일 뿐**이다.
+  확인과 큐 추가(`POST /api/issues/import`)는 이슈 화면이 한다. 뷰어는 큐 API를
+  호출하지 않고, 두 쪽은 URL 외에 아무것도 공유하지 않는다.
 
 ## 위반 시
 

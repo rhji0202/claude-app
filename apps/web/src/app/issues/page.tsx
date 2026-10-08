@@ -1108,6 +1108,71 @@ interface ProjectRef {
   gitRepo?: string | null;
 }
 
+/**
+ * GitHub Issue 뷰어의 "에이전트로 처리" 링크(`/issues?import=<projectId>&number=<n>`)로
+ * 들어왔을 때, 그 이슈 하나를 큐에 넣을지 확인한다. 큐 추가는 이 화면만 한다
+ * (docs/rules/github-issue-separation.md 규칙 3). 이미 큐에 있으면 건너뛴다.
+ */
+function ProcessFromGithub({
+  target,
+  projects,
+  onClose,
+  onImported,
+}: {
+  target: { projectId: string; number: number } | null;
+  projects: ProjectRef[];
+  onClose: () => void;
+  onImported: (projectId: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const project = target ? projects.find((p) => p.id === target.projectId) : null;
+
+  async function importOne() {
+    if (!target) return;
+    setBusy(true);
+    try {
+      const res = await api.post<unknown[]>("/issues/import", {
+        projectId: target.projectId,
+        numbers: [target.number],
+      });
+      if (Array.isArray(res) && res.length > 0) {
+        toast.success(`#${target.number}을 큐에 추가했습니다. 워커가 처리합니다.`);
+      } else {
+        toast.info(`#${target.number}은 이미 큐에 있습니다.`);
+      }
+      onImported(target.projectId);
+      onClose();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={!!target} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>에이전트로 처리</DialogTitle>
+          <DialogDescription>
+            {project?.gitRepo ?? project?.name ?? "프로젝트"} #{target?.number} 이슈를
+            에이전트 작업 큐에 추가합니다.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="secondary" onClick={onClose}>
+            취소
+          </Button>
+          <Button onClick={importOne} disabled={busy}>
+            {busy ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
+            큐에 추가
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /** 이미지 첨부가 가능한 수동 이슈 등록 (마크다운 에디터 + 붙여넣기 업로드) */
 function ManualIssueWithImages({
   open,
@@ -1270,12 +1335,28 @@ export default function IssuesPage() {
   // 등록 폼 두 개는 레이어 팝업(다이얼로그)으로 띄운다.
   const [importOpen, setImportOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
+  // GitHub Issue 뷰어에서 "에이전트로 처리"로 넘어온 대상(확인 다이얼로그용).
+  const [ghTarget, setGhTarget] = useState<{
+    projectId: string;
+    number: number;
+  } | null>(null);
 
   useEffect(() => {
     api
       .get<ProjectRef[]>("/projects")
       .then(setProjects)
       .catch(() => setProjects([]));
+  }, []);
+
+  // ?import=<projectId>&number=<n> 으로 들어오면 확인 다이얼로그를 띄우고 쿼리는 지운다
+  // (새로고침 때 다시 뜨지 않게).
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const projectId = q.get("import");
+    const number = Number(q.get("number"));
+    if (!projectId || !number) return;
+    window.history.replaceState(null, "", "/issues");
+    setGhTarget({ projectId, number });
   }, []);
 
   // 필터를 쿼리스트링으로 조립 — endpoint가 바뀌면 CrudPanel이 자동 재조회한다.
@@ -1306,6 +1387,17 @@ export default function IssuesPage() {
         open={manualOpen}
         onOpenChange={setManualOpen}
         onCreated={() => setReload((r) => r + 1)}
+      />
+
+      <ProcessFromGithub
+        target={ghTarget}
+        projects={projects}
+        onClose={() => setGhTarget(null)}
+        onImported={(projectId) => {
+          // 방금 넣은 이슈가 바로 보이도록 해당 프로젝트로 거른다.
+          setFilterProjectId(projectId);
+          setReload((r) => r + 1);
+        }}
       />
 
       <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-3">

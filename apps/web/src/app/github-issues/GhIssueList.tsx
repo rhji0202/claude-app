@@ -1,7 +1,9 @@
 "use client";
 
-import { MessageSquare } from "lucide-react";
+import Link from "next/link";
+import { Bot, MessageSquare } from "lucide-react";
 import type { GhIssue } from "@claude-app/shared";
+import { Button } from "@/components/ui/button";
 import { GhAvatar, GhStateIcon } from "./GhBits";
 import { GhLabelChip } from "./GhLabelChip";
 import { absoluteTime, relativeTime } from "./gh-utils";
@@ -11,11 +13,13 @@ import { absoluteTime, relativeTime } from "./gh-utils";
  * ⚠️ GitHub Issue 뷰어 전용 (docs/rules/github-issue-separation.md).
  */
 export function GhIssueList({
+  projectId,
   issues,
   onOpen,
   onLabelClick,
   activeLabels,
 }: {
+  projectId: string;
   issues: GhIssue[];
   onOpen: (number: number) => void;
   onLabelClick: (name: string) => void;
@@ -81,6 +85,23 @@ export function GhIssueList({
                   {issue.comments}
                 </span>
               )}
+              {/* 이슈 화면으로 넘기는 링크일 뿐 — 뷰어는 큐에 넣지 않는다(규칙 3).
+                  행 클릭(상세 열기)으로 번지지 않게 전파를 막는다. */}
+              <Button
+                asChild
+                variant="secondary"
+                size="sm"
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                <Link
+                  href={`/issues?import=${encodeURIComponent(projectId)}&number=${issue.number}`}
+                  title="이슈 화면에서 이 이슈를 에이전트 작업 큐에 추가합니다."
+                >
+                  <Bot className="size-4" />
+                  <span className="hidden sm:inline">에이전트로 처리</span>
+                </Link>
+              </Button>
             </div>
           </div>
         </li>
