@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Bot,
   LayoutDashboard,
   FolderGit2,
   CircleDot,
@@ -56,7 +55,7 @@ export default function Sidebar({
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
       <div className="flex items-center gap-2 px-5 py-5 text-base font-bold">
-        <Bot className="size-5 text-accent" />
+        <img src="/brand/logo-mark.svg" alt="" className="size-6 rounded-[23%] dark:ring-1 dark:ring-white/15" />
         더원 에이전트
       </div>
 

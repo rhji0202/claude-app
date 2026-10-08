@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 64" role="img" aria-label="더원 에이전트">
+  <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="14.25" fill="#1a2435" stroke="#ffffff" stroke-opacity="0.14" stroke-width="1.5"/>
+  <path d="M25 16H33V48H25V26.5L17.5 30.5V22.5Z" fill="#f5f7fa" stroke="#f5f7fa" stroke-width="1.5" stroke-linejoin="round"/>
+  <rect x="37.5" y="41.5" width="10" height="6.5" rx="1.6" fill="#22c55e"/>
+  <text x="80" y="35" font-family="Pretendard, 'Noto Sans KR', 'Malgun Gothic', sans-serif" font-size="27" font-weight="800" letter-spacing="-0.6" fill="#f2f4f8">더원 에이전트</text>
+  <text x="81" y="54" font-family="'Fira Sans', 'Segoe UI', sans-serif" font-size="12.5" font-weight="600" letter-spacing="2.6" fill="#4ade80">THEONE AGENT</text>
+</svg>
